@@ -21,11 +21,12 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from aios import economics, optimise
+from aios import economics, optimise, planner
 from aios.deck import ScheduleStep
 from aios.margin import Norms
 from aios.policy import Action, apply, explain, plan_shutdowns
 from aios.schedule import ScheduleProblem, validate
+from aios.summary import Fluids
 from aios.surrogate import Surrogate
 
 
@@ -43,6 +44,9 @@ class CycleResult:
 
     rate_choices: tuple[optimise.RateChoice, ...]
     """Подбор режимов по скважинам. Пусто, если подбор был выключен."""
+
+    allocations: tuple[planner.Allocation, ...]
+    """Что урезал планировщик, согласуя предложения с ограничениями объекта."""
 
     steps: tuple[ScheduleStep, ...]
     warnings: tuple[str, ...]
@@ -76,6 +80,8 @@ class CycleResult:
         if self.rate_choices:
             lines += [optimise.explain(list(self.rate_choices)), ""]
         lines.append(explain(list(self.actions)))
+        if self.allocations:
+            lines += ["", planner.explain(list(self.allocations))]
         if self.warnings:
             lines += ["", f"Предупреждения ({len(self.warnings)}):"]
             lines += [f"  ! {warning}" for warning in self.warnings[:10]]
@@ -93,7 +99,9 @@ def run_cycle(surrogate: Surrogate,
               start_date: date,
               lookback_months: int = 6,
               known_wells: frozenset[str] | None = None,
-              tune_rates: bool = True) -> CycleResult:
+              tune_rates: bool = True,
+              limits: planner.Limits | None = None,
+              fluids: Fluids | None = None) -> CycleResult:
     """Пройти цикл один раз: спрогнозировать, продиагностировать, решить, оценить.
 
     Порядок именно такой и не иначе: диагноз ставится по прогнозу базового
@@ -123,6 +131,14 @@ def run_cycle(surrogate: Surrogate,
     )
     steps = apply(tuned, actions)
 
+    # последним слово за планировщиком: скважинные агенты предлагают, глядя каждый
+    # на себя, а вода и мощность по жидкости принадлежат объекту целиком
+    allocations: list[planner.Allocation] = []
+    if limits is not None:
+        steps, allocations = planner.enforce(
+            steps, surrogate.predict(steps), norms, limits, fluids
+        )
+
     rows = surrogate.predict(steps)
     result = _npv(rows, start_date)
 
@@ -134,6 +150,7 @@ def run_cycle(surrogate: Surrogate,
         chdd_m=result.chdd_m,
         actions=tuple(actions),
         rate_choices=tuple(choices),
+        allocations=tuple(allocations),
         steps=tuple(steps),
         warnings=tuple(warnings),
         problems=tuple(problems),
@@ -154,6 +171,7 @@ def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date) -
         chdd_m=confirmed.chdd_m,
         actions=result.actions,
         rate_choices=result.rate_choices,
+        allocations=result.allocations,
         steps=result.steps,
         warnings=result.warnings,
         problems=result.problems,

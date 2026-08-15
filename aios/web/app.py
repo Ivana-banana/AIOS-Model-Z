@@ -171,6 +171,8 @@ def create_app(root: Path | None = None) -> FastAPI:
             control_start=configuration.case.control_start,
             start_date=configuration.economics.start_date,
             lookback_months=configuration.policy.lookback_months,
+            limits=configuration.limits,
+            fluids=configuration.fluids,
         )
         return TEMPLATES.TemplateResponse(
             request=request,

@@ -182,3 +182,27 @@ def test_summary_names_both_numbers(surrogate, norms):
     assert "ЧДД после решений" in text
     assert "Прирост" in text
     assert "скв. bad" in text
+
+
+def test_planner_has_the_last_word_in_the_cycle(surrogate, norms):
+    """Ограничения объекта применяются после скважинных решений, а не вместо них."""
+    from aios.planner import Limits
+
+    result = loop.run_cycle(
+        surrogate, plan(), norms,
+        control_start=CONTROL_START, start_date=CONTROL_START,
+        limits=Limits(max_field_liquid_m3_per_day=20.0, enforce_water_balance=False),
+    )
+
+    assert result.allocations
+    assert {item.resource for item in result.allocations} == {"жидкость"}
+    for step in result.steps:
+        working = sum(c.liquid_rate or 0.0 for c in step.producers if c.status == "OPEN")
+        assert working <= 20.0 + 1e-9
+    assert "Согласование" in result.summary() or "жидкость:" in result.summary()
+
+
+def test_without_limits_the_planner_stays_out(surrogate, norms):
+    result = loop.run_cycle(surrogate, plan(), norms,
+                            control_start=CONTROL_START, start_date=CONTROL_START)
+    assert result.allocations == ()

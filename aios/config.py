@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from aios.planner import Limits
 from aios.summary import Fluids
 
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "config.toml"
@@ -49,6 +50,7 @@ class Config:
     case: CaseConfig
     economics: EconomicsConfig
     fluids: Fluids
+    limits: Limits
     policy: PolicyConfig
     run: RunConfig
     source: Path
@@ -65,6 +67,7 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
     case = _section(raw, "case", source)
     economics = _section(raw, "economics", source)
     fluids = _section(raw, "fluids", source)
+    limits = _section(raw, "limits", source)
     policy = _section(raw, "policy", source)
     run = _section(raw, "run", source)
 
@@ -82,6 +85,17 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
         fluids=Fluids(
             oil_density=float(_value(fluids, "oil_density", "fluids", source)),
             water_density=float(_value(fluids, "water_density", "fluids", source)),
+        ),
+        limits=Limits(
+            # ноль в конфигурации означает «предела нет»: в TOML нет пустого значения,
+            # а держать магическую строку хуже, чем один задокументированный ноль
+            max_field_liquid_m3_per_day=(
+                float(_value(limits, "max_field_liquid_m3_per_day", "limits", source)) or None
+            ),
+            enforce_water_balance=bool(
+                _value(limits, "enforce_water_balance", "limits", source)
+            ),
+            water_tolerance=float(_value(limits, "water_tolerance", "limits", source)),
         ),
         policy=PolicyConfig(
             lookback_months=int(_value(policy, "lookback_months", "policy", source)),

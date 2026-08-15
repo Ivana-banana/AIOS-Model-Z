@@ -105,6 +105,37 @@
   {% endif %}
 </section>
 
+{% if result.allocations %}
+<section>
+  <h2>Согласование планировщиком</h2>
+  <p class="muted">
+    Скважинные агенты предлагают режимы, глядя каждый на себя. Вода и мощность по
+    жидкости принадлежат объекту целиком, поэтому последнее слово за планировщиком:
+    он режет предложения там, где они не помещаются в общий ресурс. Порядок реза
+    по жидкости экономический — первой уходит скважина, которая приносит меньше
+    всех на кубометр.
+  </p>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Скважина</th><th>Ресурс</th><th>Было</th><th>Стало</th><th>Основание</th></tr>
+      </thead>
+      <tbody>
+      {% for item in result.allocations %}
+        <tr>
+          <td>{{ item.well }}</td>
+          <td>{{ item.resource }}</td>
+          <td>{{ '%.4g'|format(item.before) }}</td>
+          <td>{{ '%.4g'|format(item.after) }}</td>
+          <td style="text-align:left; white-space:normal">{{ item.reason }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 {% if result.warnings %}
 <section>
   <h2>Границы применимости суррогата</h2>

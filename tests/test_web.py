@@ -28,6 +28,11 @@ norms_file = "{norms}"
 oil_density = 913.0765883224138
 water_density = 1172.0
 
+[limits]
+max_field_liquid_m3_per_day = 0
+enforce_water_balance = true
+water_tolerance = 1.0
+
 [policy]
 lookback_months = 6
 
