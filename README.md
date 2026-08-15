@@ -101,6 +101,7 @@ docker/          образ с OPM Flow и рантаймом
 scripts/
   build_case.py  собрать кейс:  python scripts/build_case.py
   run_flow.sh    запустить OPM Flow (Linux)
+  export_rows.py проверить прогон и собрать rows.csv для команды
   transcribe.py  расшифровка записей встреч организаторов
 docs/
   onboarding-team.md подключение нового участника
