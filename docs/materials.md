@@ -52,8 +52,8 @@ ORSD (IBM Data Platform), Reservoir Models Dataset (https://hw.tpu.ru/en/dataset
 
 | Ремоут | URL |
 |---|---|
-| `true` (организаторы) | *заполнить* |
-| `origin` (зеркало) | *заполнить* |
+| `origin` | https://github.com/Ivana-banana/AIOS.git |
+| `true` (организаторы) | *заполнить, когда выдадут* |
 
 Настройка — в `GIT.md`. Git входит в обязательный пакет материалов: без него
 решение к валидации не допускается.
