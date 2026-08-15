@@ -14,8 +14,13 @@
 #   3. проверяет, что результат (.UNSMRY) вообще появился.
 set -euo pipefail
 
-DATA_FILE="${1:?укажите .DATA файл: scripts/run_flow.sh runs/base/RUN.DATA [процессов]}"
+DATA_FILE="${1:?укажите .DATA файл: scripts/run_flow.sh runs/base/RUN.DATA [процессов] [флаги flow]}"
 PROCESSES="${2:-$(nproc 2>/dev/null || echo 1)}"
+# Всё, что после числа процессов, уходит симулятору как есть. Флаги не
+# зашиваются в скрипт намеренно: ослабление строгости разбора (например
+# --parsing-strictness=low) меняет физику расчёта и обязано быть видно в команде,
+# которой прогон воспроизводится, а не прятаться в скрипте.
+FLOW_ARGS=("${@:3}")
 
 if [[ ! -f "$DATA_FILE" ]]; then
     echo "нет такого файла: $DATA_FILE" >&2
@@ -33,6 +38,7 @@ LOG_FILE="$CASE_DIR/$CASE_NAME.run.log"
 
 echo "кейс:      $DATA_FILE"
 echo "процессов: $PROCESSES"
+echo "флаги:    ${FLOW_ARGS[*]:-нет}"
 echo "лог:       $LOG_FILE"
 echo "flow:      $(flow --version 2>&1 | head -1)"
 echo
@@ -42,10 +48,10 @@ set +e
 if [[ "$PROCESSES" -gt 1 ]] && command -v mpirun >/dev/null 2>&1; then
     # --allow-run-as-root: в контейнере процесс идёт от root, без флага mpirun встаёт
     mpirun --allow-run-as-root -np "$PROCESSES" flow "$DATA_FILE" \
-        --output-dir="$CASE_DIR" 2>&1 | tee "$LOG_FILE"
+        --output-dir="$CASE_DIR" "${FLOW_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
 else
-    flow "$DATA_FILE" --output-dir="$CASE_DIR" 2>&1 | tee "$LOG_FILE"
+    flow "$DATA_FILE" --output-dir="$CASE_DIR" "${FLOW_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
     STATUS=${PIPESTATUS[0]}
 fi
 set -e
@@ -58,8 +64,15 @@ echo "код возврата: $STATUS"
 echo
 echo "--- пропущенные и непонятые ключевые слова ---"
 # Flow сообщает о них по-разному в разных версиях, поэтому ловим все формулировки.
-if grep -n -i -E "unsupported keyword|not supported|unrecognized|ignoring keyword|keyword .* is ignored|Unknown keyword" \
-        "$LOG_FILE" "$CASE_DIR/$CASE_NAME.PRT" 2>/dev/null | sort -u -t: -k3 | head -40; then
+# Результат кладётся в переменную, а не проверяется кодом возврата конвейера: при
+# `set -o pipefail` код берётся от любого звена, и `| head` даёт ненулевой код на
+# оборванном SIGPIPE — то есть непустой список докладывался бы как «нет». Ровно та
+# ошибка, от которой этот блок и защищает: молча пропущенное ключевое слово
+# меняет физику расчёта.
+SKIPPED="$(grep -n -i -E "unsupported keyword|not supported|unrecognized|ignoring keyword|keyword .* is ignored|Unknown keyword" \
+        "$LOG_FILE" "$CASE_DIR/$CASE_NAME.PRT" 2>/dev/null | sort -u -t: -k3 || true)"
+if [[ -n "$SKIPPED" ]]; then
+    printf '%s\n' "$SKIPPED" | head -40
     echo "(проверьте каждое: молча пропущенное ключевое слово меняет физику расчёта)"
 else
     echo "нет"
@@ -73,7 +86,11 @@ grep -c -i "warning" "$LOG_FILE" 2>/dev/null | sed 's/^/строк с warning: /
 if [[ ! -f "$CASE_DIR/$CASE_NAME.UNSMRY" ]]; then
     echo
     echo "результата нет: $CASE_DIR/$CASE_NAME.UNSMRY не создан" >&2
-    exit "${STATUS:-1}"
+    # Отказ независимо от кода симулятора: flow умеет выйти с нулём, не создав
+    # результата (дек не дочитан, прогон оборван на первом шаге, вывод ушёл в
+    # другой каталог). Вернуть здесь ноль — значит записать пустой кейс в датасет
+    # суррогата при пакетном прогоне DoE и обнаружить это через сотню расчётов.
+    exit 1
 fi
 
 echo

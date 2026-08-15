@@ -76,6 +76,72 @@ def test_shell_scripts_are_executable():
         assert os.access(path, os.X_OK), f"{path.name} не исполняемый — инструкция запуска врёт"
 
 
+def _fake_flow(tmp_path: Path, body: str) -> dict[str, str]:
+    """PATH с подставным `flow`, чтобы проверять поведение обвязки без симулятора."""
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    script = binary / "flow"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        '[[ "$1" == "--version" ]] && { echo "flow 0.0-fake"; exit 0; }\n'
+        f"{body}\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return {**os.environ, "PATH": f"{binary}:{os.environ['PATH']}"}
+
+
+def test_run_flow_fails_when_the_result_is_missing(tmp_path: Path):
+    """Симулятор умеет выйти с нулём, не создав `.UNSMRY`.
+
+    Такой прогон обязан быть отказом: при пакетном счёте DoE иначе в датасет
+    молча попадают пустые кейсы, и обнаруживается это через сотню расчётов.
+    """
+    case = tmp_path / "case"
+    case.mkdir()
+    (case / "RUN.DATA").write_text("", encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", str(SCRIPTS / "run_flow.sh"), str(case / "RUN.DATA"), "1"],
+        cwd=ROOT, capture_output=True, text=True, timeout=120,
+        env=_fake_flow(tmp_path, "exit 0"),
+    )
+    assert result.returncode != 0, (
+        "результата нет, а скрипт доложил об успехе:\n" + result.stdout[-800:]
+    )
+
+
+def test_run_flow_reports_skipped_keywords(tmp_path: Path):
+    """Блок пропущенных ключевых слов — главная защита от тихой подмены физики.
+
+    Flow не падает на том, чего не понял: он это игнорирует и считает дальше.
+    Если блок скажет «нет» при непустом списке, прогон будет принят за
+    корректный, хотя посчитана другая модель.
+    """
+    case = tmp_path / "case"
+    case.mkdir()
+    (case / "RUN.DATA").write_text("", encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", str(SCRIPTS / "run_flow.sh"), str(case / "RUN.DATA"), "1"],
+        cwd=ROOT, capture_output=True, text=True, timeout=120,
+        env=_fake_flow(
+            tmp_path,
+            'echo "Error: Unsupported keywords or keyword items:"\n'
+            'echo "  PINCHREG: keyword not supported"\n'
+            f'touch "{case}/RUN.UNSMRY"\n'
+            "exit 0",
+        ),
+    )
+    assert "PINCHREG" in result.stdout, (
+        "пропущенное ключевое слово не попало в отчёт скрипта:\n" + result.stdout[-800:]
+    )
+    block = result.stdout.split("--- пропущенные и непонятые ключевые слова ---", 1)[-1]
+    assert not block.lstrip().startswith("нет"), (
+        "блок доложил «нет» при непустом списке:\n" + block[:400]
+    )
+
+
 @pytest.mark.parametrize("name", [name for name in REQUIRED if name.endswith(".py")])
 def test_python_scripts_run_from_a_clean_checkout(name: str):
     """`python scripts/<имя>.py --help` обязан работать без установки пакета.
