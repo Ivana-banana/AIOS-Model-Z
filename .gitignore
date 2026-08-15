@@ -59,3 +59,7 @@ __pycache__/
 *.log
 ~$*
 .DS_Store
+
+# --- служебное автономной сессии (AFK) ---
+.afk/
+.afk-critic-*.md
