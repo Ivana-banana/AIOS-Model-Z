@@ -1,7 +1,12 @@
 # Контекст сборки: дек, записи, окружение и результаты в образ не идут.
 Lib/
-Scripts/
 Include/
+# `Scripts/` (venv под Windows) здесь писать нельзя: на регистронезависимой
+# файловой системе тем же паттерном исключается наш scripts/, и сборка падает
+# на `COPY scripts`. Артефакты venv перечислены поимённо.
+Scripts/*.exe
+Scripts/activate*
+.venv/
 .git/
 .idea/
 .pytest_cache/

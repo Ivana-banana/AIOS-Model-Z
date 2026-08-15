@@ -19,7 +19,9 @@ target-version = "py311"
 # Эталонный расчётчик организаторов вендорен как есть и под наш линтер не подгоняется.
 # Скрипт выгрузки организаторов из тНавигатора хранится дословно как контракт:
 # он исполняется в их окружении с глобалями тНавигатора и под наш линтер не подходит.
-extend-exclude = ["vendor", "Lib", "Scripts", "Include", "docs/method/organisers-export-script_1.py"]
+# «Scripts» в этом списке не пишем: под Windows он же означает наш scripts/, и тогда
+# скрипты запуска молча перестают линтоваться (тем же способом они выпали из git).
+extend-exclude = ["vendor", "Lib", "Include", "docs/method/organisers-export-script_1.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
