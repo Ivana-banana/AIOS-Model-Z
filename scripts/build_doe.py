@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -71,7 +72,32 @@ def main(argv: list[str] | None = None) -> int:
         config.case.model_dir,
         control_start=config.case.control_start,
     )
-    print(f"\nсобрано кейсов: {len(written)} в {arguments.run_root}")
+
+    # Манифест: без него отклик не связать с управлением. Восстанавливать
+    # множители повторным запуском генератора можно, но тогда датасет зависит от
+    # того, что никто не поменял seed, диапазон и число точек, — а это ровно тот
+    # молчаливый сдвиг, который потом не найти.
+    manifest = Path(arguments.run_root) / "doe.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "seed": config.run.seed,
+                "samples": arguments.samples,
+                "bounds": [arguments.low, arguments.high],
+                "control_start": config.case.control_start.isoformat(),
+                "coverage": report,
+                "scenarios": [
+                    {"name": s.name, "multipliers": s.multipliers, "shut_wells": list(s.shut_wells)}
+                    for s in scenarios
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"\nманифест:       {manifest}")
+    print(f"собрано кейсов: {len(written)} в {arguments.run_root}")
     print("прогон пакетом:")
     print(f"  for d in {arguments.run_root}/doe-*; do scripts/run_flow.sh "
           f"\"$d/{config.case.case_name}.DATA\" {config.run.processes}; done")
