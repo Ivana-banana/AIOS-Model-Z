@@ -1,0 +1,26 @@
+[project]
+name = "aios-track2"
+version = "0.1.0"
+description = "МАС с суррогатными моделями для управления фондом скважин Модели Z (хакатон AIOS, трек 2)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "vendor/CHDD_PYTHON/tests"]
+pythonpath = [".", "tests", "vendor/CHDD_PYTHON"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+# Эталонный расчётчик организаторов вендорен как есть и под наш линтер не подгоняется.
+extend-exclude = ["vendor", "Lib", "Scripts", "Include"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",  # длинные строки ловит formatter, а не линтер
+]
+
+[tool.ruff.lint.per-file-ignores]
+# В тестах обращение к приватным константам разбора — осознанное: они и есть контракт.
+"tests/*" = ["SLF001"]

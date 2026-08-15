@@ -1,0 +1,49 @@
+# --- виртуальное окружение (лежит прямо в корне проекта) ---
+/Scripts/
+/Lib/
+/Include/
+/pyvenv.cfg
+/CACHEDIR.TAG
+.venv/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- IDE ---
+.idea/
+.vscode/
+
+# --- исходные материалы организаторов (лежат в облаке, см. docs/materials.md) ---
+*.webm
+*.pptx
+*.pdf
+Model_Z.zip
+CHDD_PYTHON.zip
+/vendor/Model_Z/
+/data/raw/
+
+# --- результаты прогонов и веса ---
+/runs/
+/artifacts/
+*.UNSMRY
+*.UNRST
+*.SMSPEC
+*.EGRID
+*.INIT
+*.RSM
+*.DBG
+*.PRT
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# --- временное ---
+*.log
+~$*
+.DS_Store
