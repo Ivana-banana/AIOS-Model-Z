@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Цикл · {{ run.name }} · AIOS{% endblock %}
+{% block content %}
+
+<section>
+  <h2>Цикл управления · прогон «{{ run.name }}»</h2>
+  <div class="grid">
+    <div class="tile">
+      <div class="label">ЧДД базового сценария</div>
+      <div class="value">{{ '%.1f'|format(result.base_chdd_m) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">ЧДД после решений</div>
+      <div class="value">{{ '%.1f'|format(result.chdd_m) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Прирост, млн руб.</div>
+      <div class="value {{ 'good' if result.gain_m > 0 else 'bad' }}">
+        {{ '%+.1f'|format(result.gain_m) }}
+      </div>
+    </div>
+    <div class="tile">
+      <div class="label">Статус</div>
+      <div class="value {{ 'good' if result.confirmed else 'bad' }}" style="font-size:16px">
+        {{ 'подтверждено' if result.confirmed else 'прогноз' }}
+      </div>
+    </div>
+  </div>
+
+  {% if not result.confirmed %}
+  <div class="warn" style="margin-top:12px">
+    <p>
+      Прирост получен на суррогатной модели. Оптимизатор целенаправленно ищет
+      максимум, то есть тянет решение туда, где суррогат ошибается в нашу пользу.
+      Пока это не подтверждено полным расчётом ГГДМ, число нельзя ни заявлять
+      организаторам, ни ставить в отчёт как результат.
+    </p>
+  </div>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Принятые решения</h2>
+  {% if result.actions %}
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Дата</th><th>Скважина</th><th>Действие</th><th>Цена, млн руб.</th><th>Основание</th></tr></thead>
+      <tbody>
+      {% for action in result.actions %}
+        <tr>
+          <td>{{ action.date }}</td>
+          <td>{{ action.well }}</td>
+          <td>{{ action.kind }}</td>
+          <td>{{ '%.1f'|format(action.cost_m) }}</td>
+          <td style="text-align:left; white-space:normal">{{ action.reason }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted" style="margin-top:12px">
+    Основание записано тем же кодом, который принял решение, и в момент принятия —
+    объяснение, дописанное задним числом, не отвечает требованию интерпретируемости.
+    Решение на дату <em>t</em> принимается только по данным до <em>t</em>.
+  </p>
+  {% else %}
+  <p class="muted">Действий нет: убыточных скважин, окупающих остановку, не найдено.</p>
+  {% endif %}
+</section>
+
+{% if result.warnings %}
+<section>
+  <h2>Границы применимости суррогата</h2>
+  <div class="warn">
+    {% for warning in result.warnings %}<p>{{ warning }}</p>{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if result.problems %}
+<section>
+  <h2>Нарушения ограничений</h2>
+  <p class="muted">Расписание с нарушениями организаторам не отправляется.</p>
+  <div class="warn">
+    {% for problem in result.problems %}<p>{{ problem }}</p>{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section>
+  <h2>Отчёт целиком</h2>
+  <pre>{{ result.summary() }}</pre>
+  <p style="margin-top:14px"><a href="/run/{{ run.name }}">← назад к прогону</a></p>
+</section>
+
+{% endblock %}

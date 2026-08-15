@@ -1,0 +1,212 @@
+"""Веб-платформа: состояние фонда, экономика прогона, запуск цикла МАС.
+
+Обязательный по регламенту артефакт — без UI решение к валидации не допускают.
+Устроена так, чтобы у проверяющего она поднялась без интернета и без сборки
+фронтенда: сервер отдаёт готовый HTML, графики рисуются inline-SVG
+(`aios/web/charts.py`), внешних скриптов и шрифтов нет ни одного.
+
+Данные берутся из каталога прогона (`runs/<имя>`): сначала `rows.csv` — выгрузка
+в контракте расчётчика, которой можно обменяться без 200-мегабайтных бинарников;
+если его нет, читается `.UNSMRY` симулятора.
+
+Запуск:
+
+    uvicorn aios.web.app:app --reload
+"""
+
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+
+from aios import config as config_module
+from aios import economics, loop, summary
+from aios.deck import ScheduleStep, parse_schedule
+from aios.margin import Norms, screen
+from aios.surrogate import DeclineSurrogate
+from aios.web.charts import Series, bar_chart, line_chart
+
+TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+NUMERIC_COLUMNS = tuple(column for column in economics.REQUIRED_COLUMNS if column not in ("DATA", "well"))
+
+
+@dataclass(frozen=True)
+class Run:
+    """Каталог прогона и то, что в нём удалось найти."""
+
+    name: str
+    path: Path
+
+    @property
+    def rows_csv(self) -> Path:
+        return self.path / "rows.csv"
+
+    @property
+    def summary_case(self) -> Path | None:
+        for candidate in sorted(self.path.glob("*.UNSMRY")):
+            return candidate.with_suffix("")
+        return None
+
+    @property
+    def schedule(self) -> Path:
+        return self.path / "wells_schedule.inc"
+
+    @property
+    def has_results(self) -> bool:
+        return self.rows_csv.is_file() or self.summary_case is not None
+
+    @property
+    def status(self) -> str:
+        if self.rows_csv.is_file():
+            return "выгрузка готова"
+        if self.summary_case is not None:
+            return "есть расчёт симулятора"
+        if self.schedule.is_file():
+            return "кейс собран, расчёта нет"
+        return "пусто"
+
+
+def create_app(root: Path | None = None) -> FastAPI:
+    """Собрать приложение. `root` — корень проекта (для `runs/` и `config.toml`)."""
+    project_root = root or Path(__file__).resolve().parent.parent.parent
+    application = FastAPI(title="AIOS · трек 2 · Модель Z")
+
+    def runs() -> list[Run]:
+        directory = project_root / "runs"
+        if not directory.is_dir():
+            return []
+        return [Run(item.name, item) for item in sorted(directory.iterdir()) if item.is_dir()]
+
+    def settings():
+        return config_module.load(project_root / "config.toml")
+
+    @application.get("/", response_class=HTMLResponse)
+    def index(request: Request) -> HTMLResponse:
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={"runs": runs(), "settings": settings()},
+        )
+
+    @application.get("/run/{name}", response_class=HTMLResponse)
+    def run_page(request: Request, name: str) -> HTMLResponse:
+        run = _find(runs(), name)
+        rows = load_rows(run, settings().fluids)
+        if not rows:
+            raise HTTPException(404, f"В прогоне «{name}» нет результатов расчёта")
+
+        configuration = settings()
+        result = economics.compute_npv(
+            rows,
+            headers=economics.REQUIRED_COLUMNS,
+            start_date=configuration.economics.start_date.isoformat(),
+        )
+        assumptions, _ = economics.load_norms(configuration.economics.norms_file)
+        verdicts = screen(rows, Norms.from_assumptions(assumptions))
+        years = [str(year["year"]) for year in result.annual]
+
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="run.html",
+            context={
+                "run": run,
+                "result": result,
+                "verdicts": verdicts[:25],
+                "problems": summary.sanity_problems(rows)[:25],
+                "settings": configuration,
+                "chart_production": line_chart(
+                    years,
+                    [
+                        Series("нефть, тыс. т", [year["oilKt"] for year in result.annual]),
+                        Series("жидкость, тыс. т", [year["liquidKt"] for year in result.annual]),
+                        Series("закачка, тыс. м³", [year["injectionKm3"] for year in result.annual]),
+                    ],
+                ),
+                "chart_chdd": bar_chart(
+                    years, [year["chddM"] for year in result.annual], unit=""
+                ),
+                "chart_wells": bar_chart(
+                    [verdict.well for verdict in verdicts[:25]],
+                    [verdict.total_margin_m for verdict in verdicts[:25]],
+                ),
+            },
+        )
+
+    @application.post("/run/{name}/cycle", response_class=HTMLResponse)
+    def cycle_page(request: Request, name: str) -> HTMLResponse:
+        run = _find(runs(), name)
+        configuration = settings()
+        rows = load_rows(run, configuration.fluids)
+        if not rows:
+            raise HTTPException(404, f"В прогоне «{name}» нет результатов расчёта")
+        if not run.schedule.is_file():
+            raise HTTPException(404, f"В прогоне «{name}» нет wells_schedule.inc")
+
+        assumptions, _ = economics.load_norms(configuration.economics.norms_file)
+        surrogate = DeclineSurrogate.fit(rows, configuration.fluids)
+        base_steps = _steps_from(run.schedule, configuration)
+
+        result = loop.run_cycle(
+            surrogate,
+            base_steps,
+            Norms.from_assumptions(assumptions),
+            control_start=configuration.case.control_start,
+            start_date=configuration.economics.start_date,
+            lookback_months=configuration.policy.lookback_months,
+        )
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="cycle.html",
+            context={"run": run, "result": result, "settings": configuration},
+        )
+
+    return application
+
+
+def load_rows(run: Run, fluids: summary.Fluids) -> list[dict[str, Any]]:
+    """Строки прогона: сначала `rows.csv`, иначе `.UNSMRY` симулятора."""
+    if run.rows_csv.is_file():
+        return read_rows_csv(run.rows_csv)
+    case = run.summary_case
+    if case is not None:
+        return summary.monthly_rows(case, fluids=fluids)
+    return []
+
+
+def read_rows_csv(path: Path) -> list[dict[str, Any]]:
+    """Прочитать выгрузку, приведя числовые колонки к float.
+
+    Расчётчик и сам разбирает строки, но диагностика и графики считают
+    арифметику, и строка «0.0» в сравнении с нулём ведёт себя не как число.
+    """
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = []
+        for raw in csv.DictReader(handle):
+            row = dict(raw)
+            for column in NUMERIC_COLUMNS:
+                row[column] = float(row.get(column) or 0.0)
+            rows.append(row)
+    return rows
+
+
+def _steps_from(schedule_file: Path, configuration) -> list[ScheduleStep]:
+    """Шаги управления начиная с даты, с которой мы управляем фондом."""
+    parsed = parse_schedule(schedule_file)
+    return [step for step in parsed.steps if step.date >= configuration.case.control_start]
+
+
+def _find(items: list[Run], name: str) -> Run:
+    for item in items:
+        if item.name == name:
+            return item
+    raise HTTPException(404, f"Прогон «{name}» не найден")
+
+
+app = create_app()

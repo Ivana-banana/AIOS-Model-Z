@@ -44,8 +44,8 @@ def test_runtime_stays_lean():
     который считает сценарии, делать нечего.
     """
     names = {re.split(r"[=<>\[]", line)[0].lower() for line in _packages(REQUIREMENTS)}
-    assert names == {"openpyxl", "resdata"}
-    assert not names & {"pytest", "ruff", "pymupdf", "faster-whisper", "av"}
+    assert names == {"openpyxl", "resdata", "fastapi", "uvicorn", "jinja2"}
+    assert not names & {"pytest", "ruff", "pymupdf", "faster-whisper", "av", "httpx"}
 
 
 def test_dockerfile_never_installs_a_named_package_without_a_version_source():

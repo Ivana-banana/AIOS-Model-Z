@@ -47,6 +47,9 @@ RUN chmod +x /opt/aios/scripts/*.sh
 ENV PYTHONPATH=/opt/aios
 WORKDIR /work
 
+# Веб-платформа: docker run -p 8000:8000 aios uvicorn aios.web.app:app --host 0.0.0.0
+EXPOSE 8000
+
 # Сборка обязана падать здесь, а не на первом прогоне в облаке.
 RUN flow --version && python -c "import resdata, openpyxl; print('resdata ok')"
 

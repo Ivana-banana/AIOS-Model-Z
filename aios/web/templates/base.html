@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}AIOS · Модель Z{% endblock %}</title>
+<style>
+  /* Ни одного внешнего ресурса: регламент требует, чтобы решение поднималось
+     без интернета. Светлая и тёмная тема — через prefers-color-scheme. */
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --text: #14181f; --muted: #5b6472;
+    --border: #e2e6ec; --grid: #eceff4;
+    --accent: #1f6feb; --accent-2: #0f9d6a; --accent-3: #a855f7; --danger: #d1414a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1319; --panel: #161b23; --text: #e6eaf0; --muted: #98a2b3;
+      --border: #262d38; --grid: #212936;
+      --accent: #4c8dff; --accent-2: #35c88f; --accent-3: #c084fc; --danger: #ff6b74;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 18px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
+  header a { color: var(--muted); text-decoration: none; font-size: 14px; }
+  header a:hover { color: var(--accent); }
+  main { max-width: 1080px; margin: 0 auto; padding: 24px; }
+  section {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; margin-bottom: 18px;
+  }
+  h2 { font-size: 15px; margin: 0 0 14px; letter-spacing: -0.01em; }
+  p { margin: 0 0 10px; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+  .tile { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .tile .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .tile .value { font-size: 22px; font-variant-numeric: tabular-nums; margin-top: 4px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .bad { color: var(--danger); }
+  .good { color: var(--accent-2); }
+  .chart { display: block; }
+  .tick { fill: var(--muted); font-size: 11px; }
+  button {
+    font: inherit; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  pre {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; font-size: 13px; margin: 0;
+  }
+  .warn { border-left: 3px solid var(--danger); padding-left: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/" style="color:inherit">AIOS · трек 2 · Модель Z</a></h1>
+  <span class="muted">максимизация ЧДД при соблюдении технологических ограничений</span>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

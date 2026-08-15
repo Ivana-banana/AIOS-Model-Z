@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section>
+  <h2>Конфигурация</h2>
+  <div class="grid">
+    <div class="tile">
+      <div class="label">Начало управления</div>
+      <div class="value">{{ settings.case.control_start }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Год дисконтирования</div>
+      <div class="value">{{ settings.economics.start_date }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Плотность нефти, кг/м³</div>
+      <div class="value">{{ '%.1f'|format(settings.fluids.oil_density) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Seed</div>
+      <div class="value">{{ settings.run.seed }}</div>
+    </div>
+  </div>
+  <p class="muted" style="margin-top:12px">
+    Источник — <code>{{ settings.source.name }}</code>. Всё, что влияет на ЧДД, задаётся
+    только оттуда: регламент требует воспроизводимости результата из файла конфигурации.
+  </p>
+</section>
+
+<section>
+  <h2>Прогоны</h2>
+  {% if runs %}
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Прогон</th><th>Состояние</th><th></th></tr></thead>
+      <tbody>
+      {% for run in runs %}
+        <tr>
+          <td>{{ run.name }}</td>
+          <td class="muted">{{ run.status }}</td>
+          <td>
+            {% if run.has_results %}
+              <a href="/run/{{ run.name }}">открыть</a>
+            {% else %}
+              <span class="muted">результатов нет</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">Каталог <code>runs/</code> пуст.</p>
+  {% endif %}
+
+  <p class="muted" style="margin-top:14px">
+    Собрать кейс: <code>python scripts/build_case.py</code>, посчитать:
+    <code>scripts/run_flow.sh runs/base/RUN.DATA</code>. Платформа читает
+    <code>rows.csv</code>, а если его нет — <code>.UNSMRY</code> симулятора.
+  </p>
+</section>
+
+{% endblock %}

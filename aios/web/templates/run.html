@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}{{ run.name }} · AIOS{% endblock %}
+{% block content %}
+
+<section>
+  <h2>Прогон «{{ run.name }}»</h2>
+  <div class="grid">
+    <div class="tile">
+      <div class="label">ЧДД, млн руб.</div>
+      <div class="value {{ 'good' if result.chdd_m > 0 else 'bad' }}">
+        {{ '%.1f'|format(result.chdd_m) }}
+      </div>
+    </div>
+    <div class="tile">
+      <div class="label">Нефть, тыс. т</div>
+      <div class="value">{{ '%.1f'|format(result.oil_kt) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Жидкость, тыс. т</div>
+      <div class="value">{{ '%.1f'|format(result.liquid_kt) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Закачка, тыс. м³</div>
+      <div class="value">{{ '%.1f'|format(result.injection_km3) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Событий: пуск/останов</div>
+      <div class="value">{{ result.start_stop_count }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Переводов под закачку</div>
+      <div class="value">{{ result.conversion_count }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Смен ЭЦН</div>
+      <div class="value">{{ '%.0f'|format(result.pump_changes) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Исключено строк</div>
+      <div class="value">{{ result.excluded_negative_rows }}</div>
+    </div>
+  </div>
+  <p class="muted" style="margin-top:12px">
+    Число посчитано эталонным расчётчиком организаторов
+    (<code>{{ result.raw.version }}</code>) от {{ settings.economics.start_date }}.
+    Своей формулы ЧДД в проекте нет.
+  </p>
+  {% if result.warnings %}
+    <div class="warn" style="margin-top:12px">
+      {% for warning in result.warnings %}<p>{{ warning }}</p>{% endfor %}
+    </div>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Добыча и закачка по годам</h2>
+  {{ chart_production|safe }}
+</section>
+
+<section>
+  <h2>ЧДД по годам, млн руб.</h2>
+  {{ chart_chdd|safe }}
+</section>
+
+<section>
+  <h2>Экономический предел скважин</h2>
+  <p class="muted">
+    Маржа за весь горизонт по нормативам методики. Сумма месячных марж совпадает
+    с EBITDA эталонного расчётчика — это проверено тестом, поэтому скважины
+    отбираются по тем же деньгам, по каким нас будут оценивать.
+  </p>
+  {{ chart_wells|safe }}
+  <div class="scroll" style="margin-top:12px">
+    <table>
+      <thead>
+        <tr>
+          <th>Скважина</th><th>Маржа, млн руб.</th><th>Обводнённость</th>
+          <th>Убыточных мес.</th><th>Подряд в конце</th><th>Нефть, т</th><th>Мес. в работе</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for verdict in verdicts %}
+        <tr>
+          <td>{{ verdict.well }}</td>
+          <td class="{{ 'bad' if verdict.total_margin_m < 0 else 'good' }}">
+            {{ '%.2f'|format(verdict.total_margin_m) }}
+          </td>
+          <td>{{ '%.1f%%'|format(verdict.watercut * 100) }}</td>
+          <td>{{ verdict.negative_months }}</td>
+          <td>{{ verdict.trailing_negative_months }}</td>
+          <td>{{ '%.0f'|format(verdict.oil_t) }}</td>
+          <td>{{ verdict.active_months }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% if problems %}
+<section>
+  <h2>Санити-чеки выгрузки</h2>
+  <p class="muted">
+    Симулятор не падает на том, чего не понял, — он это пропускает. Поэтому
+    физический диапазон проверяется явно, до того как числа попадут в ЧДД.
+  </p>
+  <div class="warn">
+    {% for problem in problems %}<p>{{ problem }}</p>{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section>
+  <h2>Цикл управления</h2>
+  <p class="muted">
+    Состояние → диагноз → решения → прогноз → ЧДД. Прогноз считается суррогатной
+    моделью и результатом не является, пока не подтверждён полным расчётом ГГДМ.
+  </p>
+  <form method="post" action="/run/{{ run.name }}/cycle">
+    <button type="submit">Запустить цикл</button>
+  </form>
+</section>
+
+{% endblock %}
