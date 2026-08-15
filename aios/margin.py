@@ -1,0 +1,194 @@
+"""Экономический предел скважины — тупой бейзлайн перед любым умным решением.
+
+Маржа скважины за месяц считается точно и в один проход по нормативам методики.
+Это не ЧДД: налог на прибыль и дисконтирование живут на уровне года и объекта, а
+здесь — скрининг, который отвечает на вопрос «эта скважина приносит деньги или
+проедает их». Итоговое число сценария всегда даёт эталонный расчётчик
+(`aios.economics`), и никогда — этот модуль.
+
+Зачем он нужен. Прежде чем учить сеть, надо знать, сколько даёт правило. Отключение
+скважин с устойчиво отрицательной маржой — самое дешёвое улучшение ЧДД, какое
+вообще существует в этой задаче, и любая нейросеть обязана его превзойти числом.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+MILLION = 1_000_000.0
+
+
+@dataclass(frozen=True)
+class Norms:
+    """Нормативы, приведённые к млн руб. на единицу. Берутся из файла организаторов."""
+
+    oil_price_m_per_t: float
+    deductions_m_per_t: float
+    oil_opex_m_per_t: float
+    liquid_opex_m_per_t: float
+    injection_opex_m_per_m3: float
+    fund_m_per_well_year: float
+    stop_start_m: float
+    conversion_m: float
+
+    @classmethod
+    def from_assumptions(cls, assumptions: dict[str, Any]) -> Norms:
+        return cls(
+            oil_price_m_per_t=assumptions["oilPriceRubT"] / MILLION,
+            deductions_m_per_t=assumptions["deductionsRubT"] / MILLION,
+            oil_opex_m_per_t=assumptions["oilOpexRubT"] / MILLION,
+            liquid_opex_m_per_t=assumptions["liquidOpexRubT"] / MILLION,
+            injection_opex_m_per_m3=assumptions["injectionOpexRubM3"] / MILLION,
+            fund_m_per_well_year=assumptions["fundAnnualRubWell"] / MILLION,
+            stop_start_m=assumptions["stopStartCostM"],
+            conversion_m=assumptions["conversionBaseCostM"],
+        )
+
+    @classmethod
+    def from_file(cls) -> Norms:
+        from aios.economics import load_norms
+
+        assumptions, _ = load_norms()
+        return cls.from_assumptions(assumptions)
+
+    @property
+    def oil_netback_m_per_t(self) -> float:
+        """Сколько остаётся с тонны нефти после отчислений и переменных затрат."""
+        return self.oil_price_m_per_t - self.deductions_m_per_t - self.oil_opex_m_per_t
+
+    @property
+    def fund_m_per_well_month(self) -> float:
+        return self.fund_m_per_well_year / 12.0
+
+
+def month_margin(row: dict[str, Any], norms: Norms) -> float:
+    """Маржа скважины за месяц, млн руб. (до налога на прибыль и дисконтирования).
+
+    Учитывает всё, что зависит от режима: нефть, жидкость, закачку и содержание
+    действующего фонда. Событийные затраты (пуск/остановка, ВНС, смена ЭЦН) сюда
+    не входят — они разовые и учитываются при решении, а не в оценке месяца.
+    """
+    oil_t = row["WOMT_Diff"]
+    liquid_t = row["WLPT_Diff"]
+    injection_m3 = row["WWIT_Diff"]
+
+    revenue = oil_t * norms.oil_price_m_per_t
+    variable = (
+        oil_t * norms.deductions_m_per_t
+        + oil_t * norms.oil_opex_m_per_t
+        + liquid_t * norms.liquid_opex_m_per_t
+        + injection_m3 * norms.injection_opex_m_per_m3
+    )
+    fund = norms.fund_m_per_well_month if is_active(row) else 0.0
+    return revenue - variable - fund
+
+
+def is_active(row: dict[str, Any]) -> bool:
+    """Действующий фонд по методике: WLPR > 0 или WWIR > 0."""
+    return row["WLPR"] > 0 or row["WWIR"] > 0
+
+
+def breakeven_oil_t(liquid_t: float, norms: Norms) -> float:
+    """Сколько тонн нефти в месяц нужно, чтобы скважина вышла в ноль."""
+    cost = liquid_t * norms.liquid_opex_m_per_t + norms.fund_m_per_well_month
+    return cost / norms.oil_netback_m_per_t
+
+
+def breakeven_watercut(liquid_t: float, norms: Norms) -> float:
+    """Предельная обводнённость по массе при данном отборе жидкости, доля.
+
+    Ниже неё скважина зарабатывает, выше — проедает. Возвращает 0.0, если отбор
+    настолько мал, что скважина убыточна при любой обводнённости.
+    """
+    if liquid_t <= 0:
+        return 0.0
+    return max(0.0, 1.0 - breakeven_oil_t(liquid_t, norms) / liquid_t)
+
+
+@dataclass(frozen=True)
+class WellVerdict:
+    """Итог скрининга по одной скважине."""
+
+    well: str
+    months: int
+    active_months: int
+    total_margin_m: float
+    negative_months: int
+    trailing_negative_months: int
+    """Сколько последних месяцев подряд маржа отрицательна."""
+
+    trailing_margin_m: float
+    """Суммарная маржа за эти последние убыточные месяцы (отрицательная)."""
+
+    oil_t: float
+    liquid_t: float
+    injection_m3: float
+
+    @property
+    def watercut(self) -> float:
+        return 1.0 - self.oil_t / self.liquid_t if self.liquid_t > 0 else 0.0
+
+    @property
+    def average_margin_m(self) -> float:
+        return self.total_margin_m / self.months if self.months else 0.0
+
+
+def screen(rows: list[dict[str, Any]], norms: Norms) -> list[WellVerdict]:
+    """Пройти по выгрузке и оценить каждую скважину. Сортировка — худшие первыми."""
+    by_well: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_well.setdefault(row["well"], []).append(row)
+
+    verdicts: list[WellVerdict] = []
+    for well, well_rows in by_well.items():
+        well_rows.sort(key=lambda item: item["DATA"])
+        margins = [month_margin(row, norms) for row in well_rows]
+
+        trailing = 0
+        for margin in reversed(margins):
+            if margin < 0:
+                trailing += 1
+            else:
+                break
+
+        verdicts.append(
+            WellVerdict(
+                well=well,
+                months=len(well_rows),
+                active_months=sum(1 for row in well_rows if is_active(row)),
+                total_margin_m=sum(margins),
+                negative_months=sum(1 for margin in margins if margin < 0),
+                trailing_negative_months=trailing,
+                trailing_margin_m=sum(margins[len(margins) - trailing:]) if trailing else 0.0,
+                oil_t=sum(row["WOMT_Diff"] for row in well_rows),
+                liquid_t=sum(row["WLPT_Diff"] for row in well_rows),
+                injection_m3=sum(row["WWIT_Diff"] for row in well_rows),
+            )
+        )
+
+    verdicts.sort(key=lambda verdict: verdict.total_margin_m)
+    return verdicts
+
+
+def shutdown_candidates(rows: list[dict[str, Any]],
+                        norms: Norms,
+                        min_trailing_months: int = 6) -> list[WellVerdict]:
+    """Скважины, которые стоит остановить: устойчиво убыточны и остановка окупается.
+
+    Два условия, и оба обязательны:
+
+    1. маржа отрицательна `min_trailing_months` месяцев подряд — единичный плохой
+       месяц не повод дёргать фонд;
+    2. накопленный убыток за эти месяцы перекрывает стоимость самой остановки.
+       Остановка и пуск — два платных события по 1,0 млн руб., то есть решение
+       «остановить и потом вернуть» стоит 2 млн; экономия обязана это окупить.
+    """
+    candidates: list[WellVerdict] = []
+    for verdict in screen(rows, norms):
+        if verdict.trailing_negative_months < min_trailing_months:
+            continue
+        if -verdict.trailing_margin_m < norms.stop_start_m:
+            continue
+        candidates.append(verdict)
+    return candidates

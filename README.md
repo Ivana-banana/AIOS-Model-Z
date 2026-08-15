@@ -56,15 +56,41 @@ aios/
   economics.py   ЧДД: тонкая обвязка над эталонным расчётчиком организаторов
   deck.py        разбор SCHEDULE-секции дека (DATES / WCONPROD / WCONINJE)
   schedule.py    генерация и валидация wells_schedule.inc
+  summary.py     SUMMARY-секция и выгрузка результата в 14 колонок расчётчика
+  run.py         сборка расчётного кейса поверх дека без его правки
+  margin.py      экономический предел скважины — бейзлайн для отбора решений
+scripts/
+  build_case.py  собрать кейс:  python scripts/build_case.py runs/base
+  run_flow.sh    запустить OPM Flow (Linux)
 docs/
-  task.md        постановка задачи и критерии
-  method/        методики ЧДД, выжимки лекций, разбор отличий
-  decisions.md   инженерные решения
-  experiments.md журнал прогонов
+  task.md            постановка задачи и критерии
+  architecture.md    архитектура МАС
+  setup-simulator.md установка симулятора и первый прогон
+  method/            методики ЧДД, выжимки лекций, разбор отличий
+  decisions.md       инженерные решения
+  experiments.md     журнал прогонов
 tests/           наши тесты, включая пограничные случаи методики
 vendor/
   CHDD_PYTHON/   эталонный расчётчик ЧДД организаторов — вендорен побайтово
   Model_Z/       дек Модели Z (в репозиторий не коммитится)
+```
+
+## Сквозной прогон
+
+```powershell
+python scripts/build_case.py runs/base          # собрать кейс из дека
+```
+```bash
+scripts/run_flow.sh runs/base/RUN.DATA          # посчитать (Linux, OPM Flow)
+```
+```python
+from aios import economics, margin, summary
+
+rows = summary.monthly_rows("runs/base/RUN")
+assert not summary.sanity_problems(rows)
+print(economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                            start_date="2007-01-01").chdd_m)
+print(margin.shutdown_candidates(rows, margin.Norms.from_file())[:5])
 ```
 
 ## Главное правило
