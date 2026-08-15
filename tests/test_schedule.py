@@ -150,3 +150,42 @@ def test_the_organisers_own_schedule_passes_our_validator():
     ]
     assert len(steps) == 225
     assert schedule.validate(steps) == []
+
+
+def test_shut_producer_gets_an_explicit_zero_rate():
+    """Остановка без числа — файл, который симулятор не читает.
+
+    OPM Flow отвергает `WCONPROD` с режимом LRAT и `1*` вместо дебита:
+    «Trying to set CMODE to: LRAT - no value has been specified for this
+    control», и весь прогон падает на разборе входа. Дек организаторов пишет
+    остановку именно с нулём: `'42' 'SHUT' 'LRAT' 1* 1* 1* 0.0 1* 50 1* 1* /`.
+
+    Поймано первым же прогоном сценария с остановками: 7 077 таких записей.
+    """
+    text = schedule.render([
+        ScheduleStep(
+            date=date(2007, 1, 1),
+            producers=(ProducerControl(well="3", status="SHUT", mode="LRAT",
+                                       liquid_rate=None, bhp=50.0),),
+            injectors=(),
+        ),
+    ])
+    record = next(line for line in text.splitlines() if "'3'" in line)
+    assert "1* 1* 1* 1*" not in record, f"дебит остановленной скважины не задан: {record}"
+    assert " 0 " in record or " 0.0 " in record, record
+
+
+def test_shut_injector_gets_an_explicit_zero_rate():
+    """То же для нагнетательной: `WCONINJE` с RATE и `1*` падает так же."""
+    text = schedule.render([
+        ScheduleStep(
+            date=date(2007, 1, 1),
+            producers=(),
+            injectors=(InjectorControl(well="6", fluid="WATER", status="SHUT", mode="RATE",
+                                       rate=None, bhp=300.0),),
+        ),
+    ])
+    record = next(line for line in text.splitlines() if "'6'" in line)
+    rate_field = record.split("'RATE'", 1)[1].split()[0]
+    assert rate_field != "1*", f"закачка остановленной скважины не задана: {record}"
+    assert float(rate_field) == 0.0, record

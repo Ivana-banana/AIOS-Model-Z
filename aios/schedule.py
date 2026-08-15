@@ -134,7 +134,7 @@ def write(path: str | Path,
 
 
 def _producer_record(control: ProducerControl) -> str:
-    rate = _value(control.liquid_rate)
+    rate = _rate_value(control.liquid_rate, control.status)
     bhp = _value(control.bhp)
     return (
         f" '{control.well}' '{control.status}' '{control.mode}'"
@@ -143,7 +143,7 @@ def _producer_record(control: ProducerControl) -> str:
 
 
 def _injector_record(control: InjectorControl) -> str:
-    rate = _value(control.rate)
+    rate = _rate_value(control.rate, control.status)
     bhp = _value(control.bhp)
     return (
         f" '{control.well}' '{control.fluid}' '{control.status}' '{control.mode}'"
@@ -153,6 +153,20 @@ def _injector_record(control: InjectorControl) -> str:
 
 def _value(number: float | None) -> str:
     return "1*" if number is None else f"{number:g}"
+
+
+def _rate_value(number: float | None, status: str) -> str:
+    """Дебит (или закачка) в записи режима.
+
+    У остановленной скважины значения обычно нет, но пропуск `1*` здесь — не
+    «значение по умолчанию», а отсутствие уставки: OPM Flow отвергает такую
+    запись целиком («Trying to set CMODE to: LRAT - no value has been specified
+    for this control») и валит прогон на разборе входа. Дек организаторов пишет
+    остановку с явным нулём, и мы пишем так же.
+    """
+    if number is None and status != "OPEN":
+        return "0.0"
+    return _value(number)
 
 
 def _check_producer(step_date: date, control: ProducerControl,
