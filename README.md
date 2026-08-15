@@ -35,16 +35,17 @@ pip install -r requirements-dev.txt
 `requirements.txt` — рантайм решения (то, что попадает в Docker-образ),
 `requirements-dev.txt` — плюс тесты, линтер и инструменты разбора материалов.
 
-Материалы организаторов (дек Модели Z, эталонный расчётчик) распаковываются в
-`vendor/` — см. `docs/materials.md`:
+Материалы организаторов лежат в репозитории (`materials/`), искать их по каналу
+не нужно. Распаковать дек:
 
 ```powershell
-Expand-Archive CHDD_PYTHON.zip       -DestinationPath vendor
-Expand-Archive Model_Z_final_OPM.zip -DestinationPath vendor
+Expand-Archive materials\Model_Z_final_OPM.zip -DestinationPath vendor
 Rename-Item vendor\Model_Z vendor\Model_Z_OPM
 ```
 
-`Model_Z_final_OPM.zip` — действующая OPM-совместимая поставка дека от 14.08.2026.
+Опись материалов и что из них извлечено — `materials/README.md`. Записей встреч
+там нет: они по 500-800 МБ и в GitHub не помещаются, вместо них — расшифровки в
+`docs/method/transcripts/`.
 
 ## Расчёт в Docker
 
@@ -111,6 +112,7 @@ docs/
   method/            методики ЧДД, выжимки лекций, разбор отличий
   decisions.md       инженерные решения
   experiments.md     журнал прогонов
+materials/       всё, что выдали организаторы: деки, расчётчик, лекции, методики
 tests/           наши тесты, включая пограничные случаи методики
 vendor/
   CHDD_PYTHON/   эталонный расчётчик ЧДД организаторов — вендорен побайтово

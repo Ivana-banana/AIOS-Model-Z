@@ -39,10 +39,13 @@
 
 ## Развернуться
 
-1. **Материалы организаторов.** В репозитории их нет (дек — 78 МБ). Скачать из
-   канала `Model_Z_final_OPM.zip` и `CHDD_PYTHON.zip`, распаковать по
-   `docs/materials.md`. Проверка: на месте `vendor/Model_Z_OPM/Model_Z.data` и
-   `vendor/CHDD_PYTHON/chdd_model.py`.
+1. **Дек.** Материалы организаторов уже в репозитории (`materials/`), искать
+   ничего не надо — только распаковать дек:
+   ```bash
+   unzip materials/Model_Z_final_OPM.zip -d vendor && mv vendor/Model_Z vendor/Model_Z_OPM
+   ```
+   Проверка: на месте `vendor/Model_Z_OPM/Model_Z.data` и
+   `vendor/CHDD_PYTHON/chdd_model.py` (второй уже распакован и закоммичен).
 
 2. **Окружение.**
    ```bash

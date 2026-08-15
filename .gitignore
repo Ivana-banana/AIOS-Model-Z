@@ -18,13 +18,14 @@ __pycache__/
 .idea/
 .vscode/
 
-# --- исходные материалы организаторов (лежат в облаке, см. docs/materials.md) ---
+# --- материалы организаторов ---
+# Архивы, презентации и методики лежат в materials/ и коммитятся: 47 МБ на всю
+# команду дешевле, чем каждому искать их по каналу.
+# Записи встреч — нет: 458, 526 и 801 МБ при жёстком пределе GitHub 100 МБ на файл.
+# Их содержимое живёт в docs/method/transcripts/, ссылки — в docs/materials.md.
 *.webm
-*.pptx
-*.pdf
-Model_Z.zip
-Model_Z_final_OPM.zip
-CHDD_PYTHON.zip
+
+# Распакованные деки: в materials/ лежат исходные архивы, распаковка локальная.
 /vendor/Model_Z/
 /vendor/Model_Z_OPM/
 /data/raw/
