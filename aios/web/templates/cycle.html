@@ -39,6 +39,43 @@
   {% endif %}
 </section>
 
+{% if result.rate_choices %}
+<section>
+  <h2>Подбор режимов</h2>
+  <p class="muted">
+    По каждой скважине перебраны варианты дебита и выбран лучший по
+    дисконтированной марже — той самой величине, которая складывается в EBITDA
+    методики. Вверх режимы не идут: тривиальный суррогат не знает пластового
+    давления, форсаж в нём выгоден всегда и обоснован никогда.
+  </p>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Скважина</th><th>Режим</th><th>Было, млн руб.</th>
+          <th>Стало, млн руб.</th><th>Прирост</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for choice in result.rate_choices if choice.changed %}
+        <tr>
+          <td>{{ choice.well }}</td>
+          <td>{{ 'остановка' if choice.multiplier == 0 else 'дебит ×%g'|format(choice.multiplier) }}</td>
+          <td class="{{ 'bad' if choice.baseline_margin_m < 0 else '' }}">
+            {{ '%+.2f'|format(choice.baseline_margin_m) }}
+          </td>
+          <td>{{ '%+.2f'|format(choice.chosen_margin_m) }}</td>
+          <td class="good">{{ '%+.2f'|format(choice.gain_m) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">Лучше исходного режима не нашлось.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 <section>
   <h2>Принятые решения</h2>
   {% if result.actions %}

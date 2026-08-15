@@ -66,13 +66,38 @@ def plan(months: int = 18):
     return steps
 
 
-def test_cycle_finds_and_shuts_the_watered_out_well(surrogate, norms):
+def test_cycle_stops_the_watered_out_well_and_keeps_the_good_one(surrogate, norms):
     result = loop.run_cycle(surrogate, plan(), norms,
                             control_start=CONTROL_START, start_date=CONTROL_START)
 
-    assert [action.well for action in result.actions] == ["bad"]
+    chosen = {choice.well: choice.multiplier for choice in result.rate_choices}
+    assert chosen["bad"] == 0.0
+    assert chosen["good"] > 0.0
     assert result.gain_m > 0
     assert result.is_improvement
+
+
+def test_the_causal_policy_catches_what_rate_tuning_missed(surrogate, norms):
+    """Подбор смотрит на горизонт целиком, политика — только назад.
+
+    Скважина, которая становится убыточной по ходу горизонта уже на выбранном
+    режиме, ловится именно политикой, и её решение датировано.
+    """
+    result = loop.run_cycle(surrogate, plan(), norms, control_start=CONTROL_START,
+                            start_date=CONTROL_START, tune_rates=False)
+
+    assert [action.well for action in result.actions] == ["bad"]
+    assert result.actions[0].date > CONTROL_START
+    assert result.rate_choices == ()
+
+
+def test_cycle_does_not_force_wells_beyond_their_history(surrogate, norms):
+    """Форсаж бейзлайн подтвердить не может, поэтому вверх режимы не идут."""
+    result = loop.run_cycle(surrogate, plan(), norms,
+                            control_start=CONTROL_START, start_date=CONTROL_START)
+
+    assert all(choice.multiplier <= 1.0 for choice in result.rate_choices)
+    assert result.warnings == ()
 
 
 def test_cycle_leaves_a_profitable_fund_alone(norms):
@@ -94,6 +119,7 @@ def test_cycle_leaves_a_profitable_fund_alone(norms):
                             control_start=CONTROL_START, start_date=CONTROL_START)
 
     assert result.actions == ()
+    assert all(choice.multiplier == 1.0 for choice in result.rate_choices)
     assert result.gain_m == pytest.approx(0.0)
 
 

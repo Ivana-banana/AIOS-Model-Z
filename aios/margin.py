@@ -31,6 +31,8 @@ class Norms:
     fund_m_per_well_year: float
     stop_start_m: float
     conversion_m: float
+    wacc_rate: float
+    """Ставка дисконтирования, доля (0.10 при 10 %)."""
 
     @classmethod
     def from_assumptions(cls, assumptions: dict[str, Any]) -> Norms:
@@ -43,6 +45,7 @@ class Norms:
             fund_m_per_well_year=assumptions["fundAnnualRubWell"] / MILLION,
             stop_start_m=assumptions["stopStartCostM"],
             conversion_m=assumptions["conversionBaseCostM"],
+            wacc_rate=assumptions["waccRate"] / 100.0,
         )
 
     @classmethod

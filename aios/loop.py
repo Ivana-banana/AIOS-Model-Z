@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from aios import economics
+from aios import economics, optimise
 from aios.deck import ScheduleStep
 from aios.margin import Norms
 from aios.policy import Action, apply, explain, plan_shutdowns
@@ -40,6 +40,10 @@ class CycleResult:
     """ЧДД после применения действий."""
 
     actions: tuple[Action, ...]
+
+    rate_choices: tuple[optimise.RateChoice, ...]
+    """Подбор режимов по скважинам. Пусто, если подбор был выключен."""
+
     steps: tuple[ScheduleStep, ...]
     warnings: tuple[str, ...]
     """Выход за обучающий диапазон суррогата и прочее, что делает прогноз шатким."""
@@ -68,8 +72,10 @@ class CycleResult:
             f"ЧДД после решений:     {self.chdd_m:,.1f} млн руб.",
             f"Прирост:               {self.gain_m:+,.1f} млн руб. ({status})",
             "",
-            explain(list(self.actions)),
         ]
+        if self.rate_choices:
+            lines += [optimise.explain(list(self.rate_choices)), ""]
+        lines.append(explain(list(self.actions)))
         if self.warnings:
             lines += ["", f"Предупреждения ({len(self.warnings)}):"]
             lines += [f"  ! {warning}" for warning in self.warnings[:10]]
@@ -86,20 +92,36 @@ def run_cycle(surrogate: Surrogate,
               control_start: date,
               start_date: date,
               lookback_months: int = 6,
-              known_wells: frozenset[str] | None = None) -> CycleResult:
+              known_wells: frozenset[str] | None = None,
+              tune_rates: bool = True) -> CycleResult:
     """Пройти цикл один раз: спрогнозировать, продиагностировать, решить, оценить.
 
     Порядок именно такой и не иначе: диагноз ставится по прогнозу базового
     сценария, то есть по тому, что произойдёт, если ничего не делать. Решать по
     факту прошлого нельзя — управляем-то будущим.
+
+    Два разных решения, и разница между ними существенна для отчёта:
+
+    * **подбор режимов** (`aios.optimise`) смотрит на весь горизонт сразу. Это
+      законно: мы формируем расписание на весь период вперёд, и «будущее» здесь —
+      прогноз суррогата, обученного только на истории, а не подсмотренный факт;
+    * **остановка убыточных** (`aios.policy`) причинная: решение на дату `t`
+      принимается по данным до `t`. Она ловит скважины, которые становятся
+      убыточными по ходу горизонта даже на лучшем из режимов.
     """
     base_rows = surrogate.predict(base_steps)
     base = _npv(base_rows, start_date)
 
+    choices: list[optimise.RateChoice] = []
+    tuned = list(base_steps)
+    if tune_rates:
+        choices = optimise.choose_rates(surrogate, base_steps, norms, start_date=start_date)
+        tuned = optimise.apply_choices(base_steps, choices)
+
     actions = plan_shutdowns(
-        base_rows, norms, control_start=control_start, lookback=lookback_months
+        surrogate.predict(tuned), norms, control_start=control_start, lookback=lookback_months
     )
-    steps = apply(base_steps, actions)
+    steps = apply(tuned, actions)
 
     rows = surrogate.predict(steps)
     result = _npv(rows, start_date)
@@ -111,6 +133,7 @@ def run_cycle(surrogate: Surrogate,
         base_chdd_m=base.chdd_m,
         chdd_m=result.chdd_m,
         actions=tuple(actions),
+        rate_choices=tuple(choices),
         steps=tuple(steps),
         warnings=tuple(warnings),
         problems=tuple(problems),
@@ -130,6 +153,7 @@ def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date) -
         base_chdd_m=result.base_chdd_m,
         chdd_m=confirmed.chdd_m,
         actions=result.actions,
+        rate_choices=result.rate_choices,
         steps=result.steps,
         warnings=result.warnings,
         problems=result.problems,

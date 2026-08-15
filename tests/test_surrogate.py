@@ -167,15 +167,27 @@ def test_shutting_a_watered_out_well_raises_the_forecast_npv():
     assert after.chdd_m > as_is.chdd_m
 
 
-def test_extrapolation_beyond_the_history_is_flagged():
-    """Форсаж вдвое выше исторического — не прогноз, и решение обязано это знать."""
+def test_rate_within_the_history_is_not_flagged():
+    """Дебит на историческом уровне и ниже — то, на чём подгонка честна."""
     model = DeclineSurrogate.fit(history(rate=30.0), FLUIDS)
 
-    assert model.in_training_range([producing(date(2014, 1, 1), 40.0)]) == []
+    assert model.in_training_range([producing(date(2014, 1, 1), 30.0)]) == []
+    assert model.in_training_range([producing(date(2014, 1, 1), 15.0)]) == []
 
-    warnings = model.in_training_range([producing(date(2014, 1, 1), 90.0)])
+
+def test_any_rate_above_the_history_is_flagged_as_forcing():
+    """Скважина никогда так не работала — значит, это не прогноз, а догадка.
+
+    Порог именно в исторический максимум, а не «в полтора раза выше»: бейзлайн не
+    знает пластового давления, поэтому форсаж в нём выгоден всегда и обоснован
+    никогда.
+    """
+    model = DeclineSurrogate.fit(history(rate=30.0), FLUIDS)
+
+    warnings = model.in_training_range([producing(date(2014, 1, 1), 37.5)])
     assert len(warnings) == 1
-    assert "исторического максимума" in warnings[0]
+    assert "форсаж" in warnings[0]
+    assert "30" in warnings[0]
 
 
 def test_a_well_without_history_is_flagged_rather_than_guessed():
