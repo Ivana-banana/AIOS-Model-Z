@@ -1,0 +1,17 @@
+# Контекст сборки: дек, записи, окружение и результаты в образ не идут.
+Lib/
+Scripts/
+Include/
+.git/
+.idea/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+runs/
+vendor/Model_Z/
+vendor/Model_Z_OPM/
+*.webm
+*.zip
+*.pptx
+*.pdf
+docs/method/transcripts/

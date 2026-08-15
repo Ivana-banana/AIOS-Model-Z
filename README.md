@@ -12,6 +12,7 @@
 
 | Документ | О чём |
 |---|---|
+| `docs/onboarding-team.md` | **если ты в проекте первый раз — начни отсюда** |
 | `docs/task.md` | постановка задачи, критерии оценки, регламент сдачи, календарь |
 | `docs/method/diff.md` | две методики ЧДД: что изменилось и чем считаем |
 | `PLAN.md` | план работ, вехи, риски |
@@ -28,8 +29,11 @@
 ```powershell
 py -3.11 -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
+
+`requirements.txt` — рантайм решения (то, что попадает в Docker-образ),
+`requirements-dev.txt` — плюс тесты, линтер и инструменты разбора материалов.
 
 Материалы организаторов (дек Модели Z, эталонный расчётчик) распаковываются в
 `vendor/` — см. `docs/materials.md`:
@@ -41,6 +45,20 @@ Rename-Item vendor\Model_Z vendor\Model_Z_OPM
 ```
 
 `Model_Z_final_OPM.zip` — действующая OPM-совместимая поставка дека от 14.08.2026.
+
+## Расчёт в Docker
+
+Симулятор и рантайм одной командой — так же поднимается облачная машина под
+пакетные прогоны:
+
+```bash
+docker build -t aios -f docker/Dockerfile .
+docker run --rm -v "$PWD:/work" -w /work aios python scripts/build_case.py
+docker run --rm -v "$PWD:/work" -w /work aios scripts/run_flow.sh runs/base/RUN.DATA 8
+```
+
+Дек организаторов в образ не кладётся — монтируется томом. Про железо и оценку
+времени счёта — `docs/setup-simulator.md`.
 
 ## Проверка
 
@@ -62,10 +80,16 @@ aios/
   summary.py     SUMMARY-секция и выгрузка результата в 14 колонок расчётчика
   run.py         сборка расчётного кейса поверх дека без его правки
   margin.py      экономический предел скважины — бейзлайн для отбора решений
+  policy.py      политика: от диагноза к управляющим действиям с объяснением
+  config.py      чтение config.toml
+config.toml      всё, что влияет на число ЧДД
+docker/          образ с OPM Flow и рантаймом
 scripts/
-  build_case.py  собрать кейс:  python scripts/build_case.py runs/base
+  build_case.py  собрать кейс:  python scripts/build_case.py
   run_flow.sh    запустить OPM Flow (Linux)
+  transcribe.py  расшифровка записей встреч организаторов
 docs/
+  onboarding-team.md подключение нового участника
   task.md            постановка задачи и критерии
   architecture.md    архитектура МАС
   setup-simulator.md установка симулятора и первый прогон
@@ -87,12 +111,13 @@ python scripts/build_case.py runs/base          # собрать кейс из �
 scripts/run_flow.sh runs/base/RUN.DATA          # посчитать (Linux, OPM Flow)
 ```
 ```python
-from aios import economics, margin, summary
+from aios import config, economics, margin, summary
 
-rows = summary.monthly_rows("runs/base/RUN")
+settings = config.load()
+rows = summary.monthly_rows("runs/base/RUN", fluids=settings.fluids)
 assert not summary.sanity_problems(rows)
 print(economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
-                            start_date="2007-01-01").chdd_m)
+                            start_date=settings.economics.start_date.isoformat()).chdd_m)
 print(margin.shutdown_candidates(rows, margin.Norms.from_file())[:5])
 ```
 
