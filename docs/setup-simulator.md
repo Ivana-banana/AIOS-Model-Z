@@ -67,8 +67,7 @@ flow --version
 
 ## Подготовка кейса
 
-Материалы организаторов распаковываются в `vendor/Model_Z_OPM/` (см.
-`docs/materials.md`). Дальше:
+Дек распаковывается из `materials/` (опись — `materials/README.md`). Дальше:
 
 ```bash
 python scripts/build_case.py runs/base

@@ -42,7 +42,8 @@
 1. **Дек.** Материалы организаторов уже в репозитории (`materials/`), искать
    ничего не надо — только распаковать дек:
    ```bash
-   unzip materials/Model_Z_final_OPM.zip -d vendor && mv vendor/Model_Z vendor/Model_Z_OPM
+   unzip -q materials/Model_Z_final_OPM.zip -d vendor -x "__MACOSX/*"
+   mv vendor/Model_Z vendor/Model_Z_OPM
    ```
    Проверка: на месте `vendor/Model_Z_OPM/Model_Z.data` и
    `vendor/CHDD_PYTHON/chdd_model.py` (второй уже распакован и закоммичен).
