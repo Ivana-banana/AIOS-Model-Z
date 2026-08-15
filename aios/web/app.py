@@ -25,6 +25,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from aios import balance as balance_module
 from aios import config as config_module
 from aios import economics, loop, summary
 from aios.deck import ScheduleStep, parse_schedule
@@ -111,6 +112,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         assumptions, _ = economics.load_norms(configuration.economics.norms_file)
         verdicts = screen(rows, Norms.from_assumptions(assumptions))
         years = [str(year["year"]) for year in result.annual]
+        water = balance_module.by_year(rows, configuration.fluids)
 
         return TEMPLATES.TemplateResponse(
             request=request,
@@ -120,6 +122,15 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "result": result,
                 "verdicts": verdicts[:25],
                 "problems": summary.sanity_problems(rows)[:25],
+                "water": water,
+                "water_problems": balance_module.problems(rows, configuration.fluids)[:10],
+                "chart_wor": line_chart(
+                    [str(year.year) for year in water],
+                    [
+                        Series("ВНФ, м³/м³", [year.water_oil_ratio for year in water]),
+                        Series("компенсация", [year.compensation for year in water]),
+                    ],
+                ),
                 "settings": configuration,
                 "chart_production": line_chart(
                     years,
