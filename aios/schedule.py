@@ -69,13 +69,23 @@ def validate(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             )
         previous_date = step.date
 
-        seen: dict[str, str] = {}
+        records: dict[tuple[str, str], int] = {}
+        working: dict[str, set[str]] = {}
+
         for control in step.producers:
             problems.extend(_check_producer(step.date, control, known_wells))
-            _note_role(problems, seen, step.date, control.well, "добыча")
+            _note_role(problems, records, working, step.date, control.well, "добыча",
+                       control.status == "OPEN")
         for control in step.injectors:
             problems.extend(_check_injector(step.date, control, known_wells))
-            _note_role(problems, seen, step.date, control.well, "закачка")
+            _note_role(problems, records, working, step.date, control.well, "закачка",
+                       control.status == "OPEN")
+
+        for well, roles in working.items():
+            if len(roles) > 1:
+                problems.append(
+                    ScheduleProblem(step.date, well, "одновременно открыта на добычу и на закачку")
+                )
 
     return problems
 
@@ -211,14 +221,22 @@ def _check_injector(step_date: date, control: InjectorControl,
     return problems
 
 
-def _note_role(problems: list[ScheduleProblem], seen: dict[str, str],
-               step_date: date, well: str, role: str) -> None:
-    previous = seen.get(well)
-    if previous is None:
-        seen[well] = role
-    elif previous != role:
-        problems.append(
-            ScheduleProblem(step_date, well, "на одном шаге назначены и добыча, и закачка")
-        )
-    else:
+def _note_role(problems: list[ScheduleProblem],
+               records: dict[tuple[str, str], int],
+               working: dict[str, set[str]],
+               step_date: date, well: str, role: str, is_open: bool) -> None:
+    """Учесть запись режима на шаге.
+
+    Скважина может законно иметь на одном шаге запись и в `WCONPROD`, и в
+    `WCONINJE` — именно так в Eclipse записывается перевод под закачку: старый
+    режим закрывается `SHUT`, новый открывается. Ровно эту пару делает и дек
+    организаторов (например, скважина 102 на 01.01.2007). Нарушение — не сам
+    факт двух записей, а две **открытые**: добывать и закачивать одновременно
+    скважина не может.
+    """
+    key = (well, role)
+    records[key] = records.get(key, 0) + 1
+    if records[key] > 1:
         problems.append(ScheduleProblem(step_date, well, f"дублируется на шаге ({role})"))
+    if is_open:
+        working.setdefault(well, set()).add(role)

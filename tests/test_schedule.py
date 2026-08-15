@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from conftest import MODEL_Z_SCHEDULE
 
 from aios import deck, schedule
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
@@ -87,9 +88,30 @@ def test_dates_must_increase():
     assert any("не возрастает" in problem.message for problem in problems)
 
 
-def test_well_cannot_produce_and_inject_on_the_same_step():
+def test_well_cannot_be_open_for_production_and_injection_at_once():
     problems = schedule.validate([step(producers=[producer(well="7")], injectors=[injector(well="7")])])
-    assert any("и добыча, и закачка" in problem.message for problem in problems)
+    assert any("одновременно открыта" in problem.message for problem in problems)
+
+
+def test_conversion_to_injection_is_written_as_shut_plus_open():
+    """Так перевод под закачку записан в деке организаторов, и это законно.
+
+    Скважина 102 на 01.01.2007: `WCONPROD` со `SHUT` закрывает добычу,
+    `WCONINJE` с `OPEN` открывает закачку — обе записи на одном шаге. Запрет на
+    такую пару сделал бы невозможной операцию, без которой трек 2 не решается.
+    """
+    steps = [
+        step(
+            producers=[producer(well="102", status="SHUT", rate=None)],
+            injectors=[injector(well="102", rate=90.0)],
+        )
+    ]
+    assert schedule.validate(steps) == []
+
+
+def test_duplicate_records_for_the_same_role_are_still_rejected():
+    problems = schedule.validate([step(producers=[producer(well="7"), producer(well="7")])])
+    assert any("дублируется" in problem.message for problem in problems)
 
 
 def test_unknown_well_is_rejected_when_the_fund_is_given():
@@ -112,3 +134,19 @@ def test_written_file_is_readable_by_the_parser(tmp_path):
     text = target.read_text(encoding="utf-8")
     assert "DATES" in text and "WCONPROD" in text and "WCONINJE" in text
     assert deck.parse_schedule(target).steps[0].producers == steps[0].producers
+
+
+@pytest.mark.skipif(not MODEL_Z_SCHEDULE.is_file(), reason="дек Модели Z не распакован")
+def test_the_organisers_own_schedule_passes_our_validator():
+    """Историческое управление организаторов не нарушает ни одного нашего правила.
+
+    Проверка в обе стороны: если наш валидатор забракует их же дек, значит,
+    неправ валидатор, а не дек. Так и вскрылось, что перевод под закачку
+    записывается парой SHUT + OPEN на одном шаге.
+    """
+    steps = [
+        step for step in deck.parse_schedule(MODEL_Z_SCHEDULE).steps
+        if step.date >= date(2007, 1, 1)
+    ]
+    assert len(steps) == 225
+    assert schedule.validate(steps) == []
