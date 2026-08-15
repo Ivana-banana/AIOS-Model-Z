@@ -61,6 +61,22 @@ def test_open_producer_with_zero_rate_is_rejected():
     assert "нулевой дебит" in problems[0].message
 
 
+def test_injection_pressure_above_300_atm_is_rejected():
+    """Организаторы на разборе: выше 300 атм в жизни раскрываются трещины.
+
+    Модель такой режим воспроизведёт и покажет красивую добычу — но решение
+    оценивается ещё и по физической реализуемости.
+    """
+    problems = schedule.validate([step(injectors=[injector(bhp=350.0)])])
+    assert len(problems) == 1
+    assert "раскрытие трещин" in problems[0].message
+
+
+def test_injection_pressure_at_the_limit_is_allowed():
+    """300 атм стоит во всей истории дека — это рабочее значение, а не нарушение."""
+    assert schedule.validate([step(injectors=[injector(bhp=300.0)])]) == []
+
+
 def test_shut_producer_may_have_no_rate():
     assert schedule.validate([step(producers=[producer(status="SHUT", rate=None)])]) == []
 

@@ -20,6 +20,13 @@ from aios.deck import InjectorControl, ProducerControl, ScheduleStep, format_dat
 #: Дебит жидкости добывающей скважины выше этого значения методикой не допускается.
 MAX_LIQUID_RATE_M3_PER_DAY = 500.0
 
+#: Предельное давление нагнетания, атм. Ровно это значение стоит во всей истории
+#: дека, и организаторы на разборе объяснили почему: выше него в жизни раскрываются
+#: трещины (в некоторых коллекторах уже со 180–190 атм), то есть закачка идёт мимо
+#: пласта. Модель такой режим воспроизведёт «отлично» и покажет красивую добычу —
+#: но это физически нереализуемое решение, а их проверяют отдельным критерием.
+MAX_INJECTION_BHP_ATM = 300.0
+
 PRODUCER_STATUSES = frozenset({"OPEN", "SHUT", "STOP"})
 INJECTOR_STATUSES = frozenset({"OPEN", "SHUT", "STOP"})
 PRODUCER_MODES = frozenset({"LRAT", "ORAT", "WRAT", "GRAT", "RESV", "BHP", "THP", "GRUP"})
@@ -193,8 +200,14 @@ def _check_injector(step_date: date, control: InjectorControl,
     elif rate is not None and rate < 0:
         add(f"отрицательная приёмистость {rate:g}")
 
-    if control.bhp is not None and control.bhp <= 0:
-        add(f"давление нагнетания {control.bhp:g} должно быть положительным")
+    if control.bhp is not None:
+        if control.bhp <= 0:
+            add(f"давление нагнетания {control.bhp:g} должно быть положительным")
+        elif control.bhp > MAX_INJECTION_BHP_ATM:
+            add(
+                f"давление нагнетания {control.bhp:g} > {MAX_INJECTION_BHP_ATM:g} атм — "
+                f"физически нереализуемо, раскрытие трещин"
+            )
     return problems
 
 
