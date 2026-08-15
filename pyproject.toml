@@ -8,6 +8,10 @@ requires-python = ">=3.11"
 testpaths = ["tests", "vendor/CHDD_PYTHON/tests"]
 pythonpath = [".", "tests", "vendor/CHDD_PYTHON"]
 addopts = "-q"
+filterwarnings = [
+    # resdata предупреждает о своих же векторах на каждом вызове — шум в выводе тестов
+    "ignore::DeprecationWarning:resdata.*",
+]
 
 [tool.ruff]
 line-length = 110
