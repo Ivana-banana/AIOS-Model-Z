@@ -55,12 +55,25 @@ Rename-Item vendor\Model_Z vendor\Model_Z_OPM
 
 ```bash
 docker build -t aios -f docker/Dockerfile .
-docker run --rm -v "$PWD:/work" -w /work aios python scripts/build_case.py
-docker run --rm -v "$PWD:/work" -w /work aios scripts/run_flow.sh runs/base/RUN.DATA 8
+python scripts/build_case.py
+docker run --rm -v "$PWD:$PWD" -w "$PWD" aios \
+    scripts/run_flow.sh runs/base/RUN.DATA 4 --parsing-strictness=low
+python scripts/export_rows.py runs/base
 ```
 
-Дек организаторов в образ не кладётся — монтируется томом. Про железо и оценку
-времени счёта — `docs/setup-simulator.md`.
+Дек организаторов в образ не кладётся — монтируется томом.
+
+Две детали, без которых прогон не пойдёт (обе выяснены на первом расчёте 16.08):
+
+- **том монтируется по тому же пути, что и на хосте** (`-v "$PWD:$PWD"`, а не
+  `/work`) — собранный `RUN.DATA` ссылается на файлы дека абсолютными путями;
+- **`--parsing-strictness=low` обязателен** — дек содержит `PINCHREG`, которого
+  OPM Flow не поддерживает, и со строгим разбором отказывается считать. Что это
+  меняет в физике и почему число из такого прогона нельзя заявлять организаторам
+  — `docs/experiments.md`.
+
+Полный расчёт истории занимает около 11 минут на 8-ядерной машине (4 процесса
+MPI). Про железо и оценку для слабых машин — `docs/setup-simulator.md`.
 
 ## Веб-платформа
 
@@ -130,7 +143,7 @@ vendor/
 python scripts/build_case.py runs/base          # собрать кейс из дека
 ```
 ```bash
-scripts/run_flow.sh runs/base/RUN.DATA          # посчитать (Linux, OPM Flow)
+scripts/run_flow.sh runs/base/RUN.DATA 4 --parsing-strictness=low   # посчитать (Linux, OPM Flow)
 ```
 ```python
 from aios import config, economics, margin, summary
