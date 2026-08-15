@@ -69,7 +69,13 @@ def build_case(run_dir: str | Path,
     if steps is not None:
         if control_start is None:
             raise ValueError("Для своих шагов нужна дата начала управления (control_start).")
-        schedule_text = history_prefix(schedule_text, control_start) + "\n" + render_steps(steps)
+        schedule_text = (
+            history_prefix(schedule_text, control_start)
+            + "\n"
+            + render_steps(steps, carried=carried_keywords(
+                source_schedule.read_text(encoding="utf-8", errors="replace"), control_start
+            ))
+        )
 
     if wells is None:
         wells = parse_schedule(source_schedule).wells
@@ -87,6 +93,69 @@ def build_case(run_dir: str | Path,
         _render_data(model_path, schedule_file, summary_file), encoding="utf-8", newline="\n"
     )
     return Case(data_file=data_file, schedule_file=schedule_file, summary_file=summary_file)
+
+
+#: Ключевые слова, которые мы генерируем сами. Всё остальное внутри шага —
+#: события модели (вскрытия, множители проводимости), и они обязаны пережить
+#: пересборку расписания.
+CONTROL_KEYWORDS = frozenset({"DATES", "WCONPROD", "WCONINJE"})
+
+_KEYWORD_LINE_RE = re.compile(r"^([A-Z][A-Z0-9]{1,7})\s*$")
+
+
+def carried_keywords(schedule_text: str, control_start: date) -> dict[date, str]:
+    """Неуправляющие блоки SCHEDULE начиная с `control_start`, по датам.
+
+    После даты начала управления в деке остаются не только режимы: там бурятся
+    новые скважины, и их `COMPDAT` лежит ровно там же, между `DATES`. Наш
+    генератор пишет только режимы, поэтому при пересборке расписания эти блоки
+    надо перенести дословно — иначе скважина получит режим, но не получит ни
+    одного соединения с пластом.
+
+    Обнаружено 16.08: в Модели Z после 2007 года бурится 22 скважины, и без
+    переноса они дают ноль за весь горизонт, а симулятор сообщает об этом лишь
+    предупреждением (`docs/experiments.md`).
+    """
+    carried: dict[date, list[str]] = {}
+    current: date | None = None
+    lines = schedule_text.splitlines()
+    index = 0
+
+    while index < len(lines):
+        match = _KEYWORD_LINE_RE.match(lines[index].split("--", 1)[0].strip())
+        if match is None:
+            index += 1
+            continue
+
+        name = match.group(1)
+        block, index = _read_block(lines, index)
+
+        if name == "DATES":
+            for line in block[1:]:
+                record = _RECORD_RE.match(line.split("--", 1)[0])
+                if record:
+                    current = parse_date_record(record.groups())
+            continue
+
+        if name in CONTROL_KEYWORDS or current is None or current < control_start:
+            continue
+
+        carried.setdefault(current, []).append("\n".join(block))
+
+    return {step_date: "\n\n".join(blocks) for step_date, blocks in carried.items()}
+
+
+def _read_block(lines: list[str], start: int) -> tuple[list[str], int]:
+    """Ключевое слово со всеми его записями до терминатора `/`."""
+    block = [lines[start]]
+    index = start + 1
+    while index < len(lines):
+        stripped = lines[index].split("--", 1)[0].strip()
+        block.append(lines[index])
+        index += 1
+        if stripped == "/":
+            break
+    return block, index
 
 
 def history_prefix(schedule_text: str, cut_date: date) -> str:

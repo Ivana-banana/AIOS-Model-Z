@@ -8,7 +8,13 @@ import pytest
 from conftest import MODEL_Z_SCHEDULE
 
 from aios import run
-from aios.deck import InjectorControl, ProducerControl, ScheduleStep, parse_schedule_text
+from aios.deck import (
+    InjectorControl,
+    ProducerControl,
+    ScheduleStep,
+    parse_schedule,
+    parse_schedule_text,
+)
 
 SCHEDULE = """\
 RPTSCHED
@@ -146,3 +152,78 @@ def test_cutting_the_real_deck_at_the_track_2_control_date():
     assert len(kept.steps) == 146
     assert len(kept.wells) > 80  # фонд к 2007 году уже разбурен
     assert "COMPDAT" in prefix  # вскрытия фонда сохранены
+
+
+def test_carried_keywords_survive_a_rebuilt_schedule():
+    """Вскрытия после начала управления обязаны пережить пересборку расписания.
+
+    В деке Модели Z после 2007 года бурится 22 скважины, и их `COMPDAT` лежит
+    между `DATES` вместе с режимами. Генератор пишет только режимы, поэтому без
+    явного переноса такая скважина получает `WCONPROD`, но ни одного соединения
+    с пластом — и даёт ноль весь горизонт. Симулятор об этом только
+    предупреждает («has no connections to grid and will remain SHUT»), а прогон
+    считается успешным.
+
+    Стоило это 1106 млн руб. мнимой «цены решений» в первом же сравнении
+    сценариев (`docs/experiments.md`, 16.08).
+    """
+    text = """\
+DATES
+ 01 JAN 2007 /
+/
+
+COMPDAT
+ '12' 18 67 3 6 OPEN 1* 1* 0.146 1* 0 1* Z /
+/
+
+WCONPROD
+ '12' 'OPEN' 'LRAT' 1* 1* 1* 20.0 1* 50 1* 1* /
+/
+
+DATES
+ 01 FEB 2007 /
+/
+
+WPIMULT
+ '12' 1.5 /
+/
+"""
+    carried = run.carried_keywords(text, date(2007, 1, 1))
+
+    assert set(carried) == {date(2007, 1, 1), date(2007, 2, 1)}
+    assert "COMPDAT" in carried[date(2007, 1, 1)]
+    assert "'12' 18 67 3 6 OPEN" in carried[date(2007, 1, 1)]
+    assert "WPIMULT" in carried[date(2007, 2, 1)]
+    # режимы генерируем сами — они не должны дублироваться переносом
+    assert "WCONPROD" not in carried[date(2007, 1, 1)]
+
+
+def test_history_before_control_start_is_not_carried_twice():
+    """До начала управления история и так сохраняется дословно префиксом."""
+    text = """\
+DATES
+ 01 JAN 2006 /
+/
+
+COMPDAT
+ '1' 23 17 1 2 OPEN 1* 1* 0.146 1* 0 1* Z /
+/
+"""
+    assert run.carried_keywords(text, date(2007, 1, 1)) == {}
+
+
+@pytest.mark.skipif(not MODEL_Z_SCHEDULE.is_file(), reason="дек не распакован")
+def test_rebuilt_case_keeps_every_completion_of_the_real_deck(tmp_path):
+    """На реальном деке: пересобранное расписание не теряет ни одного COMPDAT."""
+    original = MODEL_Z_SCHEDULE.read_text(encoding="utf-8", errors="replace")
+    schedule = parse_schedule(MODEL_Z_SCHEDULE)
+    control_start = date(2007, 1, 1)
+    steps = [step for step in schedule.steps if step.date >= control_start]
+
+    case = run.build_case(tmp_path / "case", MODEL_Z_SCHEDULE.parent,
+                          steps=steps, control_start=control_start)
+    rebuilt = case.schedule_file.read_text(encoding="utf-8")
+
+    assert rebuilt.count("COMPDAT") == original.count("COMPDAT"), (
+        "потеряны вскрытия: скважины останутся без соединений с пластом"
+    )

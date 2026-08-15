@@ -100,14 +100,31 @@ def assert_valid(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         raise ScheduleError(f"Расписание некорректно ({len(problems)} нарушений):\n{listed}{more}")
 
 
-def render(steps: list[ScheduleStep] | tuple[ScheduleStep, ...], header: str = HEADER) -> str:
-    """Собрать текст `wells_schedule.inc`."""
+def render(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+           header: str = HEADER,
+           carried: dict[date, str] | None = None) -> str:
+    """Собрать текст `wells_schedule.inc`.
+
+    `carried` — блоки исходного дека, которые не являются режимами и потому не
+    разбираются в `ScheduleStep`: вскрытия `COMPDAT`, `WPIMULT` и подобное. Они
+    переносятся дословно на свою дату.
+
+    Забыть их — значит получить скважину, объявленную в `WELSPECS` и получающую
+    режим, но не имеющую ни одного соединения с сеткой. Симулятор на этом не
+    падает: он пишет `has no connections to grid and will remain SHUT` и считает
+    дальше, а скважина молча даёт ноль весь горизонт.
+    """
+    carried = carried or {}
     lines: list[str] = [header.rstrip("\n"), ""]
     for step in steps:
         lines.append("DATES")
         lines.append(f" {format_date_record(step.date)} /")
         lines.append("/")
         lines.append("")
+        extra = carried.get(step.date)
+        if extra:
+            lines.append(extra.rstrip("\n"))
+            lines.append("")
         if step.producers:
             lines.append("WCONPROD")
             lines.extend(_producer_record(control) for control in step.producers)
