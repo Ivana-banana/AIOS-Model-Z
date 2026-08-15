@@ -104,3 +104,9 @@ def test_real_model_z_schedule():
     # 30 скважин за историю переведены из добычи под закачку
     converted = set(schedule.producer_wells) & set(schedule.injector_wells)
     assert len(converted) == 30
+
+    # OPM-поставка: вскрытия заданы стандартным COMPDAT, тНавигаторовских
+    # WELLTRACK/COMPDATMD в ней нет — на этом держится совместимость с OPM Flow
+    text = MODEL_Z_SCHEDULE.read_text(encoding="utf-8", errors="replace")
+    assert "COMPDAT" in text
+    assert "WELLTRACK" not in text and "COMPDATMD" not in text

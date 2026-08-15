@@ -35,9 +35,12 @@ pip install -r requirements.txt
 `vendor/` — см. `docs/materials.md`:
 
 ```powershell
-Expand-Archive CHDD_PYTHON.zip -DestinationPath vendor
-Expand-Archive Model_Z.zip     -DestinationPath vendor\Model_Z
+Expand-Archive CHDD_PYTHON.zip       -DestinationPath vendor
+Expand-Archive Model_Z_final_OPM.zip -DestinationPath vendor
+Rename-Item vendor\Model_Z vendor\Model_Z_OPM
 ```
+
+`Model_Z_final_OPM.zip` — действующая OPM-совместимая поставка дека от 14.08.2026.
 
 ## Проверка
 
@@ -72,7 +75,7 @@ docs/
 tests/           наши тесты, включая пограничные случаи методики
 vendor/
   CHDD_PYTHON/   эталонный расчётчик ЧДД организаторов — вендорен побайтово
-  Model_Z/       дек Модели Z (в репозиторий не коммитится)
+  Model_Z_OPM/   действующий дек Модели Z (в репозиторий не коммитится)
 ```
 
 ## Сквозной прогон

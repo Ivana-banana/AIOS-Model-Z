@@ -7,17 +7,28 @@
 2. Прочитать посчитанный `.UNSMRY` и превратить его в строки «скважина × месяц»
    с теми самыми 14 колонками, которые ждёт расчётчик (`aios.economics`).
 
-Единицы. Симулятор считает объёмы в м³ (METRIC), а методика требует массы в тоннах:
-`WOMT_Diff` — нефть, т; `WLPT_Diff` — жидкость, т; `WWIT_Diff` — закачка, м³.
-Перевод объёма в массу — через плотности в поверхностных условиях из `DENSITY`
-дека. Плотность нефти отличается по PVT-регионам (913,08 против 928,16 кг/м³,
-разница 1,6 %), поэтому она параметр, а не константа: ошибка здесь идёт прямо в
-выручку.
+Раскладка строк повторяет экспортёр организаторов из тНавигатора
+(`vendor/Model_Z_OPM/USER/Model_Z/script_1.py`): их набор величин —
+`wlpt, wlpr, womt, womr, wwir, wwit, wbp9, wbhp, weff`, и он ложится в колонки
+`WLPT, WLPR, WOMT, WOMR, WWIR, WWIT, THP, BHP, WEFF` именно в этом порядке.
+То есть `THP` — это **пластовое давление** (`WBP9`), а не устьевое, а `BHP` —
+забойное (`WBHP`); имена колонок здесь вводят в заблуждение, и полагаться надо на
+скрипт, а не на них.
+
+Единицы у организаторов смешанные, и это не опечатка: накопленные величины и
+приращения — в массе (тонны), дебиты — в объёме (м³/сут). `WOMT_Diff` — нефть, т;
+`WLPT_Diff` — жидкость, т; `WWIT_Diff` — закачка, м³; `WLPR`, `WWIR` — м³/сут.
+Симулятор считает объёмы, перевод в массу — через поверхностные плотности из
+`DENSITY` дека. Плотность нефти отличается по PVT-регионам (913,08 против
+928,16 кг/м³, разница 1,6 %), поэтому она параметр, а не константа: ошибка здесь
+идёт прямо в выручку.
+
+`WEFF` (коэффициент эксплуатации) ставим 1.0: в деке нет `WEFAC`, а простои
+выражены самими режимами. На ЧДД колонка не влияет.
 """
 
 from __future__ import annotations
 
-import calendar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -84,10 +95,16 @@ def monthly_rows(case: str | Path,
 
     `case` — путь к расчёту без расширения (или к `.UNSMRY`/`.SMSPEC`).
 
-    Месяц помечается датой своего начала: приращение между отчётными шагами
-    `01 JAN` и `01 FEB` относится к январю. Дебиты берутся как средние за месяц
-    (приращение объёма, делённое на число суток) — именно так их и понимает
-    методика: ЭЦН подбирается под режим месяца, а не под мгновенное значение.
+    Раскладка повторяет экспортёр организаторов
+    (`vendor/Model_Z_OPM/USER/Model_Z/script_1.py`) — это не наша договорённость, а
+    их. Там `df.diff()` и следом `df.shift(-1)`, то есть строка с датой `t` несёт:
+
+    * накопленные и мгновенные величины на конец месяца, то есть на шаге `t+1`;
+    * приращения `*_Diff` за месяц: значение на `t+1` минус значение на `t`.
+
+    Отсюда важное следствие: **дебиты берутся мгновенные на конец месяца**, а не
+    средние за месяц. Разница не косметическая — по `WLPR` методика подбирает
+    типоразмер ЭЦН и определяет действующий фонд.
     """
     from resdata.summary import Summary  # тяжёлый импорт — только когда реально читаем
 
@@ -101,47 +118,45 @@ def monthly_rows(case: str | Path,
     known = set(summary.keys())
     names = list(wells) if wells is not None else _wells_in_summary(summary)
 
+    oil_to_t = fluids.oil_density / 1000.0
+    water_to_t = fluids.water_density / 1000.0
+
     rows: list[dict[str, Any]] = []
     for well in names:
         oil_total = _vector(summary, f"WOPT:{well}", known, steps)
         water_total = _vector(summary, f"WWPT:{well}", known, steps)
         injection_total = _vector(summary, f"WWIT:{well}", known, steps)
+        oil_rate = _vector(summary, f"WOPR:{well}", known, steps)
+        liquid_rate = _vector(summary, f"WLPR:{well}", known, steps)
+        injection_rate = _vector(summary, f"WWIR:{well}", known, steps)
         bhp = _vector(summary, f"WBHP:{well}", known, steps)
         reservoir_pressure = _vector(summary, f"WBP9:{well}", known, steps)
 
+        # накопленные массы: объём симулятора × поверхностная плотность
+        oil_mass = [value * oil_to_t for value in oil_total]
+        liquid_mass = [
+            oil * oil_to_t + water * water_to_t
+            for oil, water in zip(oil_total, water_total, strict=True)
+        ]
+
         for index in range(len(report_dates) - 1):
-            month_start = report_dates[index]
-            days = (report_dates[index + 1] - month_start).days or 1
-
-            oil_m3 = _increment(oil_total, index)
-            water_m3 = _increment(water_total, index)
-            injection_m3 = _increment(injection_total, index)
-
-            oil_t = oil_m3 * fluids.oil_density / 1000.0
-            liquid_t = oil_t + water_m3 * fluids.water_density / 1000.0
-            liquid_m3 = oil_m3 + water_m3
-
-            # накопленные берём у симулятора, а не суммируем сами: так они не разъезжаются
             end = index + 1
-            cumulative_oil_t = oil_total[end] * fluids.oil_density / 1000.0
-            cumulative_liquid_t = cumulative_oil_t + water_total[end] * fluids.water_density / 1000.0
-
             rows.append(
                 {
-                    "DATA": month_start.isoformat(),
+                    "DATA": report_dates[index].isoformat(),
                     "well": well,
-                    "WLPT": cumulative_liquid_t,
-                    "WLPR": liquid_m3 / days,
-                    "WOMT": cumulative_oil_t,
-                    "WOMR": oil_t / days,
-                    "WWIR": injection_m3 / days,
+                    "WLPT": liquid_mass[end],
+                    "WLPR": liquid_rate[end],
+                    "WOMT": oil_mass[end],
+                    "WOMR": oil_rate[end] * oil_to_t,
+                    "WWIR": injection_rate[end],
                     "WWIT": injection_total[end],
-                    "THP": reservoir_pressure[index + 1],
-                    "BHP": bhp[index + 1],
+                    "THP": reservoir_pressure[end],
+                    "BHP": bhp[end],
                     "WEFF": 1.0,
-                    "WLPT_Diff": liquid_t,
-                    "WOMT_Diff": oil_t,
-                    "WWIT_Diff": injection_m3,
+                    "WLPT_Diff": _increment(liquid_mass, index),
+                    "WOMT_Diff": _increment(oil_mass, index),
+                    "WWIT_Diff": _increment(injection_total, index),
                 }
             )
 
@@ -261,7 +276,3 @@ def _as_date(value: Any) -> date:
         return value
     stamp = datetime.fromisoformat(str(value).replace("T", " ").split(".")[0])
     return (stamp + timedelta(hours=12)).date()
-
-
-def days_in_month(value: date) -> int:
-    return calendar.monthrange(value.year, value.month)[1]

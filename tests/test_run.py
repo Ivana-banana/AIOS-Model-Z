@@ -145,4 +145,4 @@ def test_cutting_the_real_deck_at_the_track_2_control_date():
     assert kept.steps[-1].date == date(2006, 12, 1)
     assert len(kept.steps) == 146
     assert len(kept.wells) > 80  # фонд к 2007 году уже разбурен
-    assert "WELLTRACK" in prefix and "COMPDATMD" in prefix
+    assert "COMPDAT" in prefix  # вскрытия фонда сохранены

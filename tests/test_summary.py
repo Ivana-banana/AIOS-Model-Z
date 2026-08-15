@@ -1,7 +1,8 @@
 """Выгрузка симулятора → 14 колонок расчётчика ЧДД.
 
 Настоящего прогона на этой машине нет, поэтому проверяем на синтетическом
-`.UNSMRY`, записанном той же библиотекой, которой читаем.
+`.UNSMRY`, записанном той же библиотекой, которой читаем. Эталон раскладки —
+экспортёр организаторов `vendor/Model_Z_OPM/USER/Model_Z/script_1.py`.
 """
 
 from __future__ import annotations
@@ -14,33 +15,49 @@ from aios import economics, summary
 
 
 def _write_case(tmp_path, monthly_oil_m3, monthly_water_m3, monthly_injection_m3=None,
+                oil_rate=None, liquid_rate=None, injection_rate=None,
                 well="1", start=datetime(2014, 1, 1)):
-    """Синтетический расчёт: 1 скважина, месячные отчётные шаги."""
+    """Синтетический расчёт: одна скважина, месячные отчётные шаги.
+
+    Накопленные задаются приращениями, мгновенные — значениями на шаге.
+    Дебиты по умолчанию согласованы с приращениями (месяц 31 сутки).
+    """
     from resdata.summary import Summary
 
+    count = len(monthly_oil_m3)
+    injections = monthly_injection_m3 or [0.0] * count
+    oil_rate = oil_rate or [value / 31.0 for value in monthly_oil_m3]
+    liquid_rate = liquid_rate or [
+        (oil + water) / 31.0 for oil, water in zip(monthly_oil_m3, monthly_water_m3, strict=True)
+    ]
+    injection_rate = injection_rate or [value / 31.0 for value in injections]
+
     writer = Summary.writer(str(tmp_path / "CASE"), start, 10, 10, 3)
-    writer.add_variable("WOPT", wgname=well, unit="SM3")
-    writer.add_variable("WWPT", wgname=well, unit="SM3")
-    writer.add_variable("WWIT", wgname=well, unit="SM3")
-    writer.add_variable("WBHP", wgname=well, unit="BARSA")
+    for keyword, unit in (
+        ("WOPT", "SM3"), ("WWPT", "SM3"), ("WWIT", "SM3"),
+        ("WOPR", "SM3/DAY"), ("WLPR", "SM3/DAY"), ("WWIR", "SM3/DAY"),
+        ("WBHP", "BARSA"), ("WBP9", "BARSA"),
+    ):
+        writer.add_variable(keyword, wgname=well, unit=unit)
 
     oil = water = injection = 0.0
     days = 0.0
     writer.add_t_step(0, sim_days=0.0)  # старт расчёта: всё по нулям
 
-    injections = monthly_injection_m3 or [0.0] * len(monthly_oil_m3)
-    for step, (delta_oil, delta_water, delta_injection) in enumerate(
-        zip(monthly_oil_m3, monthly_water_m3, injections, strict=True), start=1
-    ):
-        oil += delta_oil
-        water += delta_water
-        injection += delta_injection
+    for step in range(count):
+        oil += monthly_oil_m3[step]
+        water += monthly_water_m3[step]
+        injection += injections[step]
         days += 31.0
-        t_step = writer.add_t_step(step, sim_days=days)
+        t_step = writer.add_t_step(step + 1, sim_days=days)
         t_step[f"WOPT:{well}"] = oil
         t_step[f"WWPT:{well}"] = water
         t_step[f"WWIT:{well}"] = injection
+        t_step[f"WOPR:{well}"] = oil_rate[step]
+        t_step[f"WLPR:{well}"] = liquid_rate[step]
+        t_step[f"WWIR:{well}"] = injection_rate[step]
         t_step[f"WBHP:{well}"] = 80.0
+        t_step[f"WBP9:{well}"] = 120.0
     writer.fwrite()
     return tmp_path / "CASE"
 
@@ -57,8 +74,36 @@ def test_volumes_are_converted_to_mass_by_deck_densities(tmp_path):
     assert row["WLPT_Diff"] == pytest.approx(
         100.0 * 913.0765883224138 / 1000 + 900.0 * 1172.0 / 1000
     )
-    # дебит — объёмный и средний за месяц: методика подбирает ЭЦН под режим месяца
-    assert row["WLPR"] == pytest.approx(1000.0 / 31.0)
+    # накопленные — тоже в массе и на конец месяца
+    assert row["WLPT"] == pytest.approx(row["WLPT_Diff"])
+    assert row["WOMT"] == pytest.approx(row["WOMT_Diff"])
+
+
+def test_rates_are_instantaneous_at_the_end_of_the_month(tmp_path):
+    """Организаторы делают shift(-1): дебит в строке — значение на конец месяца.
+
+    Средний за месяц дал бы здесь 1000/31 ≈ 32,3, а не 7.
+    """
+    case = _write_case(
+        tmp_path,
+        monthly_oil_m3=[100.0, 100.0],
+        monthly_water_m3=[900.0, 900.0],
+        liquid_rate=[7.0, 55.0],
+        oil_rate=[1.0, 3.0],
+    )
+    rows = summary.monthly_rows(case)
+
+    assert rows[0]["WLPR"] == pytest.approx(7.0)
+    assert rows[1]["WLPR"] == pytest.approx(55.0)
+    assert rows[0]["WOMR"] == pytest.approx(1.0 * 913.0765883224138 / 1000)
+
+
+def test_pressures_follow_the_organisers_mapping(tmp_path):
+    """THP — это пластовое давление (WBP9), BHP — забойное (WBHP)."""
+    case = _write_case(tmp_path, monthly_oil_m3=[100.0], monthly_water_m3=[0.0])
+    row = summary.monthly_rows(case)[0]
+    assert row["THP"] == pytest.approx(120.0)
+    assert row["BHP"] == pytest.approx(80.0)
 
 
 def test_month_is_labelled_by_its_start(tmp_path):
@@ -110,7 +155,9 @@ def test_negative_increments_are_not_silently_clamped(tmp_path):
 
 
 def test_sanity_catches_rate_above_the_methodology_limit(tmp_path):
-    case = _write_case(tmp_path, monthly_oil_m3=[20000.0], monthly_water_m3=[0.0])
+    case = _write_case(
+        tmp_path, monthly_oil_m3=[20000.0], monthly_water_m3=[0.0], liquid_rate=[645.0]
+    )
     rows = summary.monthly_rows(case)
     assert any("500" in problem for problem in summary.sanity_problems(rows))
 
@@ -133,6 +180,18 @@ def test_summary_section_lists_every_well_explicitly():
     section = summary.render_summary_section(["1", "2"])
     assert "WOPT\n '1'\n '2'\n/" in section
     assert "WWIT\n '1'\n '2'\n/" in section
+    assert "WBP9\n '1'\n '2'\n/" in section
     assert "FOPT" in section
     # звёздочку не используем: молча недовыгруженный вектор — это потерянный прогон
     assert "*" not in section
+
+
+def test_summary_section_covers_everything_the_organisers_export():
+    """Их скрипт берёт wlpt, wlpr, womt, womr, wwir, wwit, wbp9, wbhp, weff.
+
+    Массовых векторов (womt/womr) у OPM нет — они получаются из объёмных,
+    поэтому в секции обязаны быть WOPT и WOPR.
+    """
+    section = summary.render_summary_section(["1"])
+    for vector in ("WOPT", "WOPR", "WWPT", "WLPR", "WWIR", "WWIT", "WBHP", "WBP9"):
+        assert f"\n{vector}\n" in f"\n{section}"

@@ -23,8 +23,10 @@ __pycache__/
 *.pptx
 *.pdf
 Model_Z.zip
+Model_Z_final_OPM.zip
 CHDD_PYTHON.zip
 /vendor/Model_Z/
+/vendor/Model_Z_OPM/
 /data/raw/
 
 # --- результаты прогонов и веса ---

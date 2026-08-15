@@ -11,7 +11,8 @@ if str(ROOT) not in sys.path:
 
 VENDOR_DIR = ROOT / "vendor" / "CHDD_PYTHON"
 EXAMPLE_INPUT = VENDOR_DIR / "input" / "Пример_исходных_данных.xlsx"
-MODEL_Z_SCHEDULE = ROOT / "vendor" / "Model_Z" / "Model_Z_sch.inc"
+MODEL_Z_DIR = ROOT / "vendor" / "Model_Z_OPM"
+MODEL_Z_SCHEDULE = MODEL_Z_DIR / "Model_Z_sch.inc"
 
 
 def make_row(
