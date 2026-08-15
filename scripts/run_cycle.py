@@ -105,7 +105,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ошибка прогноза:               "
               f"{result.gain_m - (confirmed.chdd_m - base_npv.chdd_m):+12.1f} млн руб.")
         print()
-        print(f"нефть базовая / цикла: {base_npv.oil_kt:.1f} / {confirmed_oil(rows):.1f} тыс. т")
+        # обе величины берутся из эталонного расчётчика и потому заведомо за один
+        # период — тот, что дисконтируется. Сумма по всей выгрузке рядом с ними
+        # выглядит сопоставимой, но охватывает ещё и годы до начала управления,
+        # одинаковые у всех сценариев: сравнение получается заниженным
+        confirmed_npv = economics.compute_npv(
+            rows, headers=economics.REQUIRED_COLUMNS,
+            start_date=config.economics.start_date.isoformat(),
+        )
+        print(f"нефть за период экономики (с {config.economics.start_date}): "
+              f"{base_npv.oil_kt:.1f} → {confirmed_npv.oil_kt:.1f} тыс. т")
+        print(f"жидкость:                  {base_npv.liquid_kt:.1f} → "
+              f"{confirmed_npv.liquid_kt:.1f} тыс. т")
+        print(f"закачка:                   {base_npv.injection_km3:.1f} → "
+              f"{confirmed_npv.injection_km3:.1f} тыс. м3")
         print(f"подтверждено: {confirmed.confirmed}")
         return 0
 
@@ -137,11 +150,6 @@ def main(argv: list[str] | None = None) -> int:
           f"{config.run.processes} --parsing-strictness=low")
     print(f"  python scripts/run_cycle.py --confirm {arguments.out} --from {source}")
     return 0
-
-
-def confirmed_oil(rows: list[dict[str, object]]) -> float:
-    """Накопленная нефть выгрузки, тыс. т — для сравнения сценариев глазами."""
-    return sum(float(row["WOMT_Diff"]) for row in rows) / 1000.0
 
 
 if __name__ == "__main__":
