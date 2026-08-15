@@ -1,0 +1,13 @@
+# По умолчанию — нормализация в LF в репозитории.
+* text=auto eol=lf
+
+# Эталонный расчётчик организаторов вендорен побайтово: никакой нормализации.
+vendor/CHDD_PYTHON/** -text
+
+# Бинарные материалы.
+*.png  binary
+*.xlsx binary
+*.docx binary
+*.pptx binary
+*.pdf  binary
+*.zip  binary
