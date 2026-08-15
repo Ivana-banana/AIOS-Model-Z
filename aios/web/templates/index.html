@@ -54,6 +54,25 @@
   <p class="muted">Каталог <code>runs/</code> пуст.</p>
   {% endif %}
 
+  {% set ready = runs | selectattr('has_results') | list %}
+  {% if ready | length > 1 %}
+  <form method="get" action="/compare" style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap; align-items:center">
+    <label>Сравнить
+      <select name="a">
+        {% for run in ready %}<option value="{{ run.name }}">{{ run.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>с
+      <select name="b">
+        {% for run in ready %}
+        <option value="{{ run.name }}" {{ 'selected' if not loop.first }}>{{ run.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Сравнить</button>
+  </form>
+  {% endif %}
+
   <p class="muted" style="margin-top:14px">
     Собрать кейс: <code>python scripts/build_case.py</code>, посчитать:
     <code>scripts/run_flow.sh runs/base/RUN.DATA</code>. Платформа читает

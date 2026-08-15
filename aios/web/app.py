@@ -150,6 +150,72 @@ def create_app(root: Path | None = None) -> FastAPI:
             },
         )
 
+    @application.get("/compare", response_class=HTMLResponse)
+    def compare_page(request: Request, a: str, b: str) -> HTMLResponse:
+        """Два сценария рядом: где именно разошлись деньги."""
+        configuration = settings()
+        assumptions, _ = economics.load_norms(configuration.economics.norms_file)
+        norms = Norms.from_assumptions(assumptions)
+
+        left, right = _find(runs(), a), _find(runs(), b)
+        left_rows = load_rows(left, configuration.fluids)
+        right_rows = load_rows(right, configuration.fluids)
+        if not left_rows or not right_rows:
+            raise HTTPException(404, "У одного из прогонов нет результатов расчёта")
+
+        start = configuration.economics.start_date.isoformat()
+        left_npv = economics.compute_npv(left_rows, headers=economics.REQUIRED_COLUMNS,
+                                         start_date=start)
+        right_npv = economics.compute_npv(right_rows, headers=economics.REQUIRED_COLUMNS,
+                                          start_date=start)
+
+        left_annual = {year["year"]: year for year in left_npv.annual}
+        right_annual = {year["year"]: year for year in right_npv.annual}
+        years = sorted(set(left_annual) | set(right_annual))
+
+        left_wells = screen(left_rows, norms)
+        right_wells = {verdict.well: verdict for verdict in screen(right_rows, norms)}
+        deltas = sorted(
+            (
+                (
+                    verdict.well,
+                    verdict.total_margin_m,
+                    right_wells[verdict.well].total_margin_m if verdict.well in right_wells else 0.0,
+                )
+                for verdict in left_wells
+            ),
+            key=lambda item: -abs(item[2] - item[1]),
+        )[:20]
+
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="compare.html",
+            context={
+                "left": left, "right": right,
+                "left_npv": left_npv, "right_npv": right_npv,
+                "deltas": deltas,
+                "settings": configuration,
+                "chart_chdd": line_chart(
+                    [str(year) for year in years],
+                    [
+                        Series(left.name, [left_annual.get(y, {}).get("chddM", 0.0) for y in years]),
+                        Series(right.name, [right_annual.get(y, {}).get("chddM", 0.0) for y in years]),
+                    ],
+                ),
+                "chart_oil": line_chart(
+                    [str(year) for year in years],
+                    [
+                        Series(left.name, [left_annual.get(y, {}).get("oilKt", 0.0) for y in years]),
+                        Series(right.name, [right_annual.get(y, {}).get("oilKt", 0.0) for y in years]),
+                    ],
+                ),
+                "chart_delta": bar_chart(
+                    [well for well, _, _ in deltas],
+                    [after - before for _, before, after in deltas],
+                ),
+            },
+        )
+
     @application.post("/run/{name}/cycle", response_class=HTMLResponse)
     def cycle_page(request: Request, name: str) -> HTMLResponse:
         run = _find(runs(), name)

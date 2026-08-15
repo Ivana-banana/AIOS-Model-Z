@@ -177,3 +177,53 @@ def test_rows_csv_round_trips_through_the_writer(tmp_path):
 
     assert len(restored) == len(rows)
     assert restored[0]["WOMT_Diff"] == pytest.approx(rows[0]["WOMT_Diff"])
+
+
+@pytest.fixture
+def two_runs(project):
+    """Второй прогон: тот же фонд, но обводнённая скважина остановлена."""
+    run_dir = project / "runs" / "tuned"
+    run_dir.mkdir(parents=True)
+    (run_dir / "wells_schedule.inc").write_text(SCHEDULE, encoding="utf-8")
+
+    rows = rows_for("good", 0.50, 0.005) + [
+        make_row(row["DATA"], "bad") for row in rows_for("bad", 0.985, 0.0005)
+    ]
+    with (run_dir / "rows.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=economics.REQUIRED_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    return project
+
+
+def test_compare_shows_both_numbers_and_the_difference(two_runs):
+    client = TestClient(create_app(two_runs))
+    response = client.get("/compare", params={"a": "base", "b": "tuned"})
+
+    assert response.status_code == 200
+    assert "base" in response.text and "tuned" in response.text
+    assert "Разница, млн руб." in response.text
+    assert "Кто дал разницу" in response.text
+
+
+def test_compare_attributes_the_difference_to_wells(two_runs):
+    """Разница, собранная на двух-трёх скважинах, — признак хрупкого решения."""
+    client = TestClient(create_app(two_runs))
+    text = client.get("/compare", params={"a": "base", "b": "tuned"}).text
+
+    assert "bad" in text
+    assert "решение хрупкое" in text
+
+
+def test_compare_needs_results_on_both_sides(two_runs):
+    client = TestClient(create_app(two_runs))
+    assert client.get("/compare", params={"a": "base", "b": "empty"}).status_code == 404
+
+
+def test_index_offers_comparison_when_there_are_two_runs(two_runs):
+    client = TestClient(create_app(two_runs))
+    assert 'action="/compare"' in client.get("/").text
+
+
+def test_index_hides_comparison_when_there_is_nothing_to_compare(client):
+    assert 'action="/compare"' not in client.get("/").text

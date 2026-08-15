@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}{{ left.name }} против {{ right.name }} · AIOS{% endblock %}
+{% block content %}
+
+<section>
+  <h2>«{{ left.name }}» против «{{ right.name }}»</h2>
+  <div class="grid">
+    <div class="tile">
+      <div class="label">ЧДД «{{ left.name }}»</div>
+      <div class="value">{{ '%.1f'|format(left_npv.chdd_m) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">ЧДД «{{ right.name }}»</div>
+      <div class="value">{{ '%.1f'|format(right_npv.chdd_m) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Разница, млн руб.</div>
+      <div class="value {{ 'good' if right_npv.chdd_m > left_npv.chdd_m else 'bad' }}">
+        {{ '%+.1f'|format(right_npv.chdd_m - left_npv.chdd_m) }}
+      </div>
+    </div>
+    <div class="tile">
+      <div class="label">Нефть, тыс. т</div>
+      <div class="value">{{ '%+.1f'|format(right_npv.oil_kt - left_npv.oil_kt) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Жидкость, тыс. т</div>
+      <div class="value">{{ '%+.1f'|format(right_npv.liquid_kt - left_npv.liquid_kt) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Закачка, тыс. м³</div>
+      <div class="value">{{ '%+.1f'|format(right_npv.injection_km3 - left_npv.injection_km3) }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Пусков и остановок</div>
+      <div class="value">{{ right_npv.start_stop_count - left_npv.start_stop_count }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Переводов под закачку</div>
+      <div class="value">{{ right_npv.conversion_count - left_npv.conversion_count }}</div>
+    </div>
+  </div>
+  <p class="muted" style="margin-top:12px">
+    Оба числа посчитаны эталонным расчётчиком организаторов от
+    {{ settings.economics.start_date }} — сравнение корректно только потому, что
+    считает их одна и та же программа с одними нормативами.
+  </p>
+</section>
+
+<section>
+  <h2>ЧДД по годам, млн руб.</h2>
+  {{ chart_chdd|safe }}
+  <p class="muted">
+    Здесь видно не только «стало больше», но и когда именно: прирост в первые годы
+    стоит дороже такого же прироста в конце горизонта — на то и дисконтирование.
+  </p>
+</section>
+
+<section>
+  <h2>Добыча нефти по годам, тыс. т</h2>
+  {{ chart_oil|safe }}
+</section>
+
+<section>
+  <h2>Кто дал разницу</h2>
+  <p class="muted">
+    Двадцать скважин с наибольшим изменением маржи за горизонт. Если разница
+    собралась на двух-трёх скважинах, решение хрупкое: на полном расчёте эти
+    скважины поведут себя иначе, и весь прирост уйдёт вместе с ними.
+  </p>
+  {{ chart_delta|safe }}
+  <div class="scroll" style="margin-top:12px">
+    <table>
+      <thead>
+        <tr>
+          <th>Скважина</th><th>«{{ left.name }}», млн руб.</th>
+          <th>«{{ right.name }}», млн руб.</th><th>Разница</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for well, before, after in deltas %}
+        <tr>
+          <td>{{ well }}</td>
+          <td class="{{ 'bad' if before < 0 else '' }}">{{ '%+.2f'|format(before) }}</td>
+          <td class="{{ 'bad' if after < 0 else '' }}">{{ '%+.2f'|format(after) }}</td>
+          <td class="{{ 'good' if after > before else 'bad' }}">
+            {{ '%+.2f'|format(after - before) }}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <p><a href="/">← к списку прогонов</a></p>
+</section>
+
+{% endblock %}
