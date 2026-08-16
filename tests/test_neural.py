@@ -6,7 +6,19 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from aios.neural import TARGET_COLUMNS, split_scenarios, train
+from aios import economics
+from aios.deck import ProducerControl, ScheduleStep
+from aios.neural import (
+    TARGET_COLUMNS,
+    NeuralBundle,
+    NeuralSurrogate,
+    TargetMetric,
+    TrainingReport,
+    assert_quality,
+    split_scenarios,
+    train,
+)
+from aios.surrogate import NumericRange, TrainingEnvelope
 
 
 def dataset() -> pd.DataFrame:
@@ -25,6 +37,8 @@ def dataset() -> pd.DataFrame:
                     "well": well,
                     "multiplier": multiplier,
                     "is_shut": 0,
+                    "WLPR": 100 * multiplier,
+                    "WWIR": 0.0,
                     "WLPT_Diff": liquid,
                     "WOMT_Diff": oil,
                     "WWIT_Diff": 0.0,
@@ -60,3 +74,75 @@ def test_training_rejects_row_level_duplicates():
 
     with pytest.raises(ValueError, match="повторяются строки"):
         train(frame, seed=42)
+
+
+class ConstantModel:
+    def predict(self, features):
+        assert features.shape[1] == 4
+        return np.tile([900.0, 500.0, 0.0, 200.0, 50.0], (len(features), 1))
+
+
+class InvalidModel:
+    def predict(self, features):
+        return np.tile([-1.0, 2.0, 0.0, 200.0, 50.0], (len(features), 1))
+
+
+def report(*, neural: float = 1.0, linear: float = 2.0) -> TrainingReport:
+    return TrainingReport(
+        ("train",), ("test",), 1, 2,
+        {target: TargetMetric(neural, linear) for target in TARGET_COLUMNS},
+    )
+
+
+def bundle(metrics: TrainingReport | None = None) -> NeuralBundle:
+    envelope = TrainingEnvelope(
+        {"1": NumericRange(20.0, 40.0)}, {}, NumericRange(20.0, 40.0), NumericRange(0, 0)
+    )
+    return NeuralBundle(("1",), {"1": ConstantModel()}, pd.Timestamp("2014-01-01"), 1,
+                        envelope, metrics or report())
+
+
+def step(rate: float = 30.0) -> ScheduleStep:
+    return ScheduleStep(
+        pd.Timestamp("2014-01-01").date(),
+        (ProducerControl("1", "OPEN", "LRAT", rate, 50.0),),
+        (),
+    )
+
+
+def test_neural_surrogate_returns_the_reference_calculator_contract():
+    surrogate = NeuralSurrogate.create(bundle(), [step()])
+
+    rows = surrogate.predict([step()])
+
+    assert list(rows[0]) == economics.REQUIRED_COLUMNS
+    assert rows[0]["WLPT"] == pytest.approx(900.0)
+    assert rows[0]["WOMT"] == pytest.approx(500.0)
+    assert surrogate.in_training_range([step()]) == []
+
+
+def test_quality_gate_rejects_a_network_worse_than_linear_baseline():
+    with pytest.raises(ValueError, match="WLPT_Diff"):
+        assert_quality(report(neural=3.0, linear=2.0))
+
+
+def test_physical_prediction_failure_reaches_cycle_warnings():
+    invalid = bundle()
+    invalid.models["1"] = InvalidModel()
+    surrogate = NeuralSurrogate.create(invalid, [step()])
+
+    warnings = surrogate.in_training_range([step()])
+
+    assert any("отрицательное WLPT_Diff" in warning for warning in warnings)
+
+
+def test_date_outside_training_horizon_is_flagged():
+    future = ScheduleStep(
+        pd.Timestamp("2015-01-01").date(),
+        (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),),
+        (),
+    )
+    surrogate = NeuralSurrogate.create(bundle(), [future])
+
+    assert any("вне обучающего горизонта" in warning
+               for warning in surrogate.in_training_range([future]))

@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import calendar
+from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 import numpy as np
@@ -19,8 +21,14 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+from aios.summary import Fluids, sanity_problems
+from aios.surrogate import NumericRange, TrainingEnvelope, expand
+
 TARGET_COLUMNS = ("WLPT_Diff", "WOMT_Diff", "WWIT_Diff", "THP", "BHP")
-REQUIRED_COLUMNS = frozenset({"scenario", "DATA", "well", "multiplier", *TARGET_COLUMNS})
+REQUIRED_COLUMNS = frozenset(
+    {"scenario", "DATA", "well", "multiplier", "WLPR", "WWIR", *TARGET_COLUMNS}
+)
 
 
 @dataclass(frozen=True)
@@ -46,7 +54,97 @@ class NeuralBundle:
     models: dict[str, Any]
     start_month: pd.Timestamp
     month_span: int
+    envelope: TrainingEnvelope
     report: TrainingReport
+
+
+@dataclass(frozen=True)
+class NeuralSurrogate:
+    """Обученный MLP в контракте общего цикла МАС."""
+
+    bundle: NeuralBundle
+    reference_steps: tuple[ScheduleStep, ...]
+    fluids: Fluids = field(default_factory=Fluids)
+
+    @classmethod
+    def create(cls, bundle: NeuralBundle,
+               reference_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+               fluids: Fluids | None = None, *, require_quality: bool = True) -> NeuralSurrogate:
+        if require_quality:
+            assert_quality(bundle.report)
+        return cls(bundle, tuple(reference_steps), fluids or Fluids())
+
+    def predict(self,
+                steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> list[dict[str, Any]]:
+        timeline = expand(steps)
+        if not timeline:
+            return []
+        reference = expand(self.reference_steps)
+        multipliers = _schedule_multipliers(
+            timeline, reference, self.bundle.control_wells
+        )
+        months = list(timeline)
+        feature_matrix = np.vstack([
+            _inference_features(
+                month_start, multipliers[month_start], self.bundle.start_month,
+                self.bundle.month_span
+            )[0]
+            for month_start in months
+        ])
+        predictions = {
+            well: model.predict(feature_matrix)
+            for well, model in self.bundle.models.items()
+        }
+        cumulative: dict[str, list[float]] = {}
+        rows: list[dict[str, Any]] = []
+
+        for month_index, (month_start, controls) in enumerate(timeline.items()):
+            days = month_days(month_start)
+            for well in sorted(self.bundle.models, key=_well_key):
+                predicted = predictions[well][month_index]
+                control = controls.get(well)
+                liquid_rate, injection_rate = _rates(control)
+                liquid, oil, injection, thp, bhp = (float(value) for value in predicted)
+                if liquid_rate <= 0:
+                    liquid = oil = 0.0
+                if injection_rate <= 0:
+                    injection = 0.0
+                if liquid_rate <= 0 and injection_rate <= 0:
+                    thp = bhp = 0.0
+
+                totals = cumulative.setdefault(well, [0.0, 0.0, 0.0])
+                totals[0] += liquid
+                totals[1] += oil
+                totals[2] += injection
+                rows.append(_contract_row(
+                    month_start, well, liquid_rate, injection_rate, totals,
+                    liquid, oil, injection, thp, bhp, days
+                ))
+        return rows
+
+    def in_training_range(self,
+                          steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> list[str]:
+        warnings = self.bundle.envelope.warnings(steps)
+        reference_dates = set(expand(self.reference_steps))
+        warnings.extend(
+            f"{step.date.isoformat()}: даты нет в опорном расписании обучающего датасета"
+            for step in steps if step.date not in reference_dates
+        )
+        for step in steps:
+            month_number = (
+                (step.date.year - self.bundle.start_month.year) * 12
+                + step.date.month - self.bundle.start_month.month
+            )
+            if month_number < 0 or month_number > self.bundle.month_span:
+                warnings.append(
+                    f"{step.date.isoformat()}: дата вне обучающего горизонта "
+                    f"0..{self.bundle.month_span} месяцев"
+                )
+        warnings.extend(
+            f"прогноз нарушает физические проверки: {problem}"
+            for problem in sanity_problems(self.predict(steps))
+        )
+        return warnings
 
 
 def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
@@ -112,7 +210,21 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         rows=len(data),
         metrics=metrics,
     )
-    return NeuralBundle(tuple(controls.columns), models, start_month, int(month_span), report)
+    return NeuralBundle(
+        tuple(controls.columns), models, start_month, int(month_span), _envelope(data), report
+    )
+
+
+def assert_quality(report: TrainingReport) -> None:
+    """Не допустить MLP в цикл, пока он не лучше линейного бейзлайна."""
+    failed = [
+        target for target in ("WLPT_Diff", "WOMT_Diff")
+        if report.metrics[target].neural_mae >= report.metrics[target].linear_mae
+    ]
+    if failed:
+        raise ValueError(
+            "MLP не прошёл порог качества против линейного бейзлайна: " + ", ".join(failed)
+        )
 
 
 def split_scenarios(scenarios: list[str], *, seed: int,
@@ -155,6 +267,24 @@ def _control_matrix(frame: pd.DataFrame) -> pd.DataFrame:
     return controls.astype(float)
 
 
+def _envelope(frame: pd.DataFrame) -> TrainingEnvelope:
+    positive_liquid = frame[frame["WLPR"].astype(float) > 0].groupby("well")["WLPR"]
+    positive_injection = frame[frame["WWIR"].astype(float) > 0].groupby("well")["WWIR"]
+    field = frame.groupby(["scenario", "DATA"])[["WLPR", "WWIR"]].sum()
+    return TrainingEnvelope(
+        producer_rates={
+            str(well): NumericRange(float(values.min()), float(values.max()))
+            for well, values in positive_liquid
+        },
+        injector_rates={
+            str(well): NumericRange(float(values.min()), float(values.max()))
+            for well, values in positive_injection
+        },
+        field_liquid_rate=NumericRange(float(field["WLPR"].min()), float(field["WLPR"].max())),
+        field_injection_rate=NumericRange(float(field["WWIR"].min()), float(field["WWIR"].max())),
+    )
+
+
 def _features(rows: pd.DataFrame, controls: pd.DataFrame, start: pd.Timestamp,
               month_span: int) -> np.ndarray:
     dates = rows["DATA"]
@@ -175,3 +305,77 @@ def _regressor(model: Any) -> TransformedTargetRegressor:
         regressor=make_pipeline(StandardScaler(), model),
         transformer=StandardScaler(),
     )
+
+
+def _schedule_multipliers(
+    timeline: dict[date, dict[str, ProducerControl | InjectorControl]],
+    reference: dict[date, dict[str, ProducerControl | InjectorControl]],
+    wells: tuple[str, ...],
+) -> dict[date, np.ndarray]:
+    result: dict[date, np.ndarray] = {}
+    last = dict.fromkeys(wells, 1.0)
+    for month_start, controls in timeline.items():
+        reference_controls = reference.get(month_start, {})
+        values = []
+        for well in wells:
+            planned, _ = _rates(controls.get(well))
+            base, _ = _rates(reference_controls.get(well))
+            if base > 0:
+                last[well] = planned / base
+            elif planned > 0:
+                # Диапазонный детектор пометит запуск без опорного режима. В MLP
+                # передаём конечное значение: sklearn справедливо отвергает inf.
+                last[well] = 0.0
+            values.append(last[well])
+        result[month_start] = np.asarray(values, dtype=float)
+    return result
+
+
+def _inference_features(month_start: date, multipliers: np.ndarray,
+                        start: pd.Timestamp, month_span: int) -> np.ndarray:
+    month_number = (month_start.year - start.year) * 12 + month_start.month - start.month
+    season = month_start.month
+    time = np.array([
+        month_number / month_span,
+        np.sin(2 * np.pi * season / 12),
+        np.cos(2 * np.pi * season / 12),
+    ])
+    return np.concatenate((time, multipliers)).reshape(1, -1)
+
+
+def _rates(control: ProducerControl | InjectorControl | None) -> tuple[float, float]:
+    if control is None or control.status != "OPEN":
+        return 0.0, 0.0
+    if isinstance(control, ProducerControl):
+        return float(control.liquid_rate or 0.0), 0.0
+    return 0.0, float(control.rate or 0.0)
+
+
+def _contract_row(month_start: date, well: str, liquid_rate: float,
+                  injection_rate: float, totals: list[float], liquid: float,
+                  oil: float, injection: float, thp: float, bhp: float,
+                  days: int) -> dict[str, Any]:
+    return {
+        "DATA": month_start.isoformat(),
+        "well": well,
+        "WLPT": totals[0],
+        "WLPR": liquid_rate,
+        "WOMT": totals[1],
+        "WOMR": oil / days,
+        "WWIR": injection_rate,
+        "WWIT": totals[2],
+        "THP": thp,
+        "BHP": bhp,
+        "WEFF": 1.0,
+        "WLPT_Diff": liquid,
+        "WOMT_Diff": oil,
+        "WWIT_Diff": injection,
+    }
+
+
+def month_days(value: date) -> int:
+    return calendar.monthrange(value.year, value.month)[1]
+
+
+def _well_key(name: str) -> tuple[int, int, str]:
+    return (0, int(name), "") if name.isdigit() else (1, 0, name)
