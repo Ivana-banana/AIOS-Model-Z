@@ -51,7 +51,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"train/test сценариев: {len(bundle.report.train_scenarios)}/"
           f"{len(bundle.report.test_scenarios)}")
     for target, metric in bundle.report.metrics.items():
-        print(f"{target}: MLP MAE={metric.neural_mae:.4g}, linear MAE={metric.linear_mae:.4g}")
+        print(
+            f"{target}: MLP MAE={metric.neural_mae:.4g}, "
+            f"RMSE={metric.neural_rmse:.4g}, R²={metric.neural_r2:.4g}; "
+            f"linear MAE={metric.linear_mae:.4g}, RMSE={metric.linear_rmse:.4g}, "
+            f"R²={metric.linear_r2:.4g}"
+        )
     return 0
 
 

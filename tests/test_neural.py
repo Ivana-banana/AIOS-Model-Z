@@ -70,6 +70,8 @@ def test_training_produces_models_and_finite_held_out_metrics():
     assert set(bundle.report.train_scenarios).isdisjoint(bundle.report.test_scenarios)
     assert set(bundle.report.metrics) == set(TARGET_COLUMNS)
     assert all(np.isfinite(metric.neural_mae) for metric in bundle.report.metrics.values())
+    assert all(np.isfinite(metric.neural_rmse) for metric in bundle.report.metrics.values())
+    assert all(np.isfinite(metric.neural_r2) for metric in bundle.report.metrics.values())
 
 
 def test_training_rejects_row_level_duplicates():

@@ -50,13 +50,22 @@
   </div>
   <div class="scroll" style="margin-top:12px">
     <table>
-      <thead><tr><th>Выход</th><th>MAE MLP</th><th>MAE linear</th><th>Результат</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Выход</th><th>MAE MLP</th><th>MAE linear</th>
+          <th>RMSE MLP</th><th>RMSE linear</th><th>R² MLP</th><th>R² linear</th><th>Результат</th>
+        </tr>
+      </thead>
       <tbody>
-      {% for target, neural, linear in surrogate.metrics %}
+      {% for target, neural, linear, neural_rmse, linear_rmse, neural_r2, linear_r2 in surrogate.metrics %}
         <tr>
           <td><code>{{ target }}</code></td>
           <td>{{ '%.4g'|format(neural) }}</td>
           <td>{{ '%.4g'|format(linear) }}</td>
+          <td>{{ '%.4g'|format(neural_rmse) if neural_rmse is not none else 'нет' }}</td>
+          <td>{{ '%.4g'|format(linear_rmse) if linear_rmse is not none else 'нет' }}</td>
+          <td>{{ '%.4g'|format(neural_r2) if neural_r2 is not none else 'нет' }}</td>
+          <td>{{ '%.4g'|format(linear_r2) if linear_r2 is not none else 'нет' }}</td>
           <td>{{ 'лучше' if neural < linear else 'хуже' }}</td>
         </tr>
       {% endfor %}

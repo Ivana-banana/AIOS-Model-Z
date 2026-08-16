@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.linear_model import Ridge
+from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -35,6 +36,10 @@ REQUIRED_COLUMNS = frozenset(
 class TargetMetric:
     neural_mae: float
     linear_mae: float
+    neural_rmse: float | None = None
+    linear_rmse: float | None = None
+    neural_r2: float | None = None
+    linear_r2: float | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +171,9 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     models: dict[str, Any] = {}
     neural_errors: list[np.ndarray] = []
     linear_errors: list[np.ndarray] = []
+    neural_predictions: list[np.ndarray] = []
+    linear_predictions: list[np.ndarray] = []
+    test_targets: list[np.ndarray] = []
     for well, rows in data.groupby("well", sort=True):
         train_rows = rows[rows["scenario"].isin(train_scenarios)]
         test_rows = rows[rows["scenario"].isin(test_scenarios)]
@@ -190,8 +198,13 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         neural.fit(x_train, y_train)
         baseline.fit(x_train, y_train)
 
-        neural_errors.append(np.abs(neural.predict(x_test) - y_test))
-        linear_errors.append(np.abs(baseline.predict(x_test) - y_test))
+        neural_prediction = neural.predict(x_test)
+        linear_prediction = baseline.predict(x_test)
+        neural_errors.append(np.abs(neural_prediction - y_test))
+        linear_errors.append(np.abs(linear_prediction - y_test))
+        neural_predictions.append(neural_prediction)
+        linear_predictions.append(linear_prediction)
+        test_targets.append(y_test)
         models[well] = neural
 
     if not models:
@@ -199,8 +212,18 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
 
     neural_mae = np.concatenate(neural_errors).mean(axis=0)
     linear_mae = np.concatenate(linear_errors).mean(axis=0)
+    actual = np.concatenate(test_targets)
+    neural_predicted = np.concatenate(neural_predictions)
+    linear_predicted = np.concatenate(linear_predictions)
     metrics = {
-        target: TargetMetric(float(neural_mae[index]), float(linear_mae[index]))
+        target: TargetMetric(
+            neural_mae=float(neural_mae[index]),
+            linear_mae=float(linear_mae[index]),
+            neural_rmse=float(mean_squared_error(actual[:, index], neural_predicted[:, index]) ** 0.5),
+            linear_rmse=float(mean_squared_error(actual[:, index], linear_predicted[:, index]) ** 0.5),
+            neural_r2=float(r2_score(actual[:, index], neural_predicted[:, index])),
+            linear_r2=float(r2_score(actual[:, index], linear_predicted[:, index])),
+        )
         for index, target in enumerate(TARGET_COLUMNS)
     }
     report = TrainingReport(

@@ -121,7 +121,11 @@ def test_index_shows_surrogate_metrics(project):
         "wells": 103,
         "rows": 914640,
         "metrics": {
-            "WLPT_Diff": {"neural_mae": 1.5, "linear_mae": 2.5},
+            "WLPT_Diff": {
+                "neural_mae": 1.5, "linear_mae": 2.5,
+                "neural_rmse": 1.8, "linear_rmse": 2.9,
+                "neural_r2": 0.91, "linear_r2": 0.72,
+            },
             "WOMT_Diff": {"neural_mae": 0.8, "linear_mae": 1.1},
         },
     }
@@ -139,6 +143,7 @@ def test_index_shows_surrogate_metrics(project):
     assert "порог качества" in text.lower()
     assert "пройден" in text
     assert "WLPT_Diff" in text
+    assert "0.91" in text
     assert "Запустить MLP" in TestClient(create_app(project)).get("/run/base").text
 
 

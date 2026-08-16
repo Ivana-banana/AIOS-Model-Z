@@ -86,7 +86,9 @@ class SurrogateStatus:
     test_scenarios: int = 0
     wells: int = 0
     rows: int = 0
-    metrics: tuple[tuple[str, float, float], ...] = ()
+    metrics: tuple[
+        tuple[str, float, float, float | None, float | None, float | None, float | None], ...
+    ] = ()
     quality_passed: bool = False
 
 
@@ -96,14 +98,25 @@ def load_surrogate_status(path: Path) -> SurrogateStatus:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         metrics = tuple(
-            (target, float(values["neural_mae"]), float(values["linear_mae"]))
+            (
+                target,
+                float(values["neural_mae"]),
+                float(values["linear_mae"]),
+                _optional_float(values.get("neural_rmse")),
+                _optional_float(values.get("linear_rmse")),
+                _optional_float(values.get("neural_r2")),
+                _optional_float(values.get("linear_r2")),
+            )
             for target, values in raw["metrics"].items()
         )
         if not metrics or not all(
-            math.isfinite(value) for _, neural, linear in metrics for value in (neural, linear)
+            math.isfinite(value)
+            for metric in metrics
+            for value in metric[1:]
+            if value is not None
         ):
             raise ValueError("метрики должны быть конечными числами")
-        by_target = {target: (neural, linear) for target, neural, linear in metrics}
+        by_target = {metric[0]: metric[1:3] for metric in metrics}
         quality_passed = all(
             by_target[target][0] < by_target[target][1] for target in QUALITY_TARGETS
         )
@@ -372,6 +385,10 @@ def _neural_available(project_root: Path) -> bool:
         and status.quality_passed
         and (project_root / "artifacts" / "surrogate.joblib").is_file()
     )
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
 
 
 app = create_app()
