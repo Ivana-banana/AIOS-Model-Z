@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 
 #: Скрипты, на которые ссылаются документация и Dockerfile.
-REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_cycle.py",
+REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_doe.py", "run_cycle.py",
             "transcribe.py", "build_dataset.py", "train_surrogate.py")
 
 

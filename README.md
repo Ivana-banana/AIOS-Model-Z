@@ -108,6 +108,7 @@ python scripts/train_surrogate.py --dataset data/dataset.csv data/dataset-levels
 
 ```powershell
 python scripts/build_doe.py --control-kind injectors --samples 12 --low 0.5 --high 2.0 --run-root runs/doe-injection
+python scripts/run_doe.py runs/doe-injection 4 -- --parsing-strictness=low
 python scripts/build_dataset.py --run-root runs/doe-injection --out data/dataset-injection.csv
 python scripts/train_surrogate.py --dataset data/dataset.csv data/dataset-levels.csv data/dataset-injection.csv
 ```
@@ -144,6 +145,7 @@ scripts/
   run_flow.sh    запустить OPM Flow (Linux)
   export_rows.py проверить прогон и собрать rows.csv для команды
   build_doe.py   сгенерировать сценарии DoE и собрать под них кейсы
+  run_doe.py     возобновляемо посчитать пакет DoE и записать статус
   train_surrogate.py обучить MLP на целых сценариях и записать held-out метрики
   transcribe.py  расшифровка записей встреч организаторов
 docs/

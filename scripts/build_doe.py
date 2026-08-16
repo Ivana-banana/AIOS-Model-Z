@@ -124,8 +124,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nманифест:       {manifest}")
     print(f"собрано кейсов: {len(written)} в {arguments.run_root}")
     print("прогон пакетом:")
-    print(f"  for d in {arguments.run_root}/doe-*; do scripts/run_flow.sh "
-          f"\"$d/{config.case.case_name}.DATA\" {config.run.processes}; done")
+    print(f"  python scripts/run_doe.py {arguments.run_root} {config.run.processes} -- "
+          "--parsing-strictness=low")
     return 0
 
 
