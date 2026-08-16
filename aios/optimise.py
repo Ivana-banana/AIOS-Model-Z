@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from aios import economics
 from aios.deck import ProducerControl, ScheduleStep
 from aios.margin import Norms, month_margin
 from aios.schedule import MAX_LIQUID_RATE_M3_PER_DAY
@@ -74,6 +75,18 @@ class RateChoice:
     def changed(self) -> bool:
         return self.multiplier != 1.0
 
+    @property
+    def before_m(self) -> float:
+        return self.baseline_margin_m
+
+    @property
+    def after_m(self) -> float:
+        return self.chosen_margin_m
+
+    @property
+    def joint(self) -> bool:
+        return False
+
     def __str__(self) -> str:
         if not self.changed:
             return f"скв. {self.well}: режим без изменений"
@@ -81,6 +94,45 @@ class RateChoice:
         return (
             f"скв. {self.well}: {what}, дисконтированная маржа "
             f"{self.baseline_margin_m:+.2f} → {self.chosen_margin_m:+.2f} млн руб."
+        )
+
+
+@dataclass(frozen=True)
+class JointRateChoice:
+    """Изменение режима, принятое по ЧДД всего взаимодействующего фонда."""
+
+    well: str
+    multiplier: float
+    baseline_chdd_m: float
+    chosen_chdd_m: float
+
+    @property
+    def gain_m(self) -> float:
+        return self.chosen_chdd_m - self.baseline_chdd_m
+
+    @property
+    def changed(self) -> bool:
+        return self.multiplier != 1.0
+
+    @property
+    def before_m(self) -> float:
+        return self.baseline_chdd_m
+
+    @property
+    def after_m(self) -> float:
+        return self.chosen_chdd_m
+
+    @property
+    def joint(self) -> bool:
+        return True
+
+    def __str__(self) -> str:
+        what = "без изменений" if not self.changed else (
+            "остановка" if self.multiplier == 0 else f"дебит ×{self.multiplier:g}"
+        )
+        return (
+            f"скв. {self.well}: {what}, ЧДД фонда "
+            f"{self.baseline_chdd_m:+.2f} → {self.chosen_chdd_m:+.2f} млн руб."
         )
 
 
@@ -144,6 +196,52 @@ def choose_rates(surrogate: Surrogate,
     return choices
 
 
+def choose_joint_rates(
+    surrogate: Surrogate,
+    base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+    *,
+    start_date: date,
+    multipliers: tuple[float, ...] = DEFAULT_MULTIPLIERS,
+) -> list[JointRateChoice]:
+    """Координатный поиск для суррогата с межскважинными связями.
+
+    Скважины рассматриваются последовательно. Каждый режим проверяется при уже
+    принятых режимах остальных скважин и оценивается полным эталонным ЧДД фонда.
+    Это не гарантирует глобальный оптимум, но не использует неверное допущение о
+    независимости скважин и ни одним шагом не ухудшает текущего кандидата.
+    """
+    if 1.0 not in multipliers:
+        raise ValueError("в наборе множителей обязан быть 1.0 — режим «как есть» это база")
+
+    wells = sorted(
+        {control.well for step in base_steps for control in step.producers}, key=_well_key
+    )
+    selected = dict.fromkeys(wells, 1.0)
+    current_steps = _scale_individually(base_steps, selected)
+    current_chdd = _chdd(surrogate.predict(current_steps), start_date)
+    choices: list[JointRateChoice] = []
+
+    for well in wells:
+        before = current_chdd
+        best_multiplier = selected[well]
+        best_steps = current_steps
+        best_chdd = current_chdd
+        for multiplier in multipliers:
+            candidate_multipliers = selected | {well: multiplier}
+            candidate = _scale_individually(base_steps, candidate_multipliers)
+            candidate_chdd = _chdd(surrogate.predict(candidate), start_date)
+            if candidate_chdd > best_chdd + 1e-9:
+                best_multiplier = multiplier
+                best_steps = candidate
+                best_chdd = candidate_chdd
+
+        selected[well] = best_multiplier
+        current_steps = best_steps
+        current_chdd = best_chdd
+        choices.append(JointRateChoice(well, best_multiplier, before, best_chdd))
+    return choices
+
+
 def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
           multiplier: float,
           wells: set[str] | None = None) -> list[ScheduleStep]:
@@ -167,7 +265,7 @@ def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
 
 
 def apply_choices(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-                  choices: list[RateChoice]) -> list[ScheduleStep]:
+                  choices: list[RateChoice] | list[JointRateChoice]) -> list[ScheduleStep]:
     """Собрать расписание из выбранных по скважинам режимов."""
     by_well = {choice.well: choice.multiplier for choice in choices}
     result: list[ScheduleStep] = []
@@ -179,7 +277,7 @@ def apply_choices(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     return result
 
 
-def explain(choices: list[RateChoice]) -> str:
+def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
     """Отчёт о подборе — в лог, UI и презентацию."""
     changed = [choice for choice in choices if choice.changed]
     if not changed:
@@ -187,13 +285,37 @@ def explain(choices: list[RateChoice]) -> str:
 
     gain = sum(choice.gain_m for choice in changed)
     stopped = sum(1 for choice in changed if choice.multiplier == 0)
+    objective = (
+        "прирост ЧДД фонда"
+        if isinstance(choices[0], JointRateChoice)
+        else "прирост дисконтированной маржи"
+    )
     lines = [
         f"Изменено режимов: {len(changed)} из {len(choices)} "
-        f"(из них остановок {stopped}); прирост дисконтированной маржи {gain:+.1f} млн руб.",
+        f"(из них остановок {stopped}); {objective} {gain:+.1f} млн руб.",
         "",
     ]
     lines.extend(f"  {choice}" for choice in sorted(changed, key=lambda item: -item.gain_m))
     return "\n".join(lines)
+
+
+def _scale_individually(
+    steps: list[ScheduleStep] | tuple[ScheduleStep, ...], multipliers: dict[str, float]
+) -> list[ScheduleStep]:
+    result: list[ScheduleStep] = []
+    for step in steps:
+        producers = tuple(
+            _scaled(control, multipliers.get(control.well, 1.0))
+            for control in step.producers
+        )
+        result.append(ScheduleStep(step.date, producers, step.injectors))
+    return result
+
+
+def _chdd(rows: list[dict[str, Any]], start_date: date) -> float:
+    return economics.compute_npv(
+        rows, headers=economics.REQUIRED_COLUMNS, start_date=start_date.isoformat()
+    ).chdd_m
 
 
 def _scaled(control: ProducerControl, multiplier: float) -> ProducerControl:

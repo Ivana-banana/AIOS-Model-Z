@@ -42,7 +42,7 @@ class CycleResult:
 
     actions: tuple[Action, ...]
 
-    rate_choices: tuple[optimise.RateChoice, ...]
+    rate_choices: tuple[optimise.RateChoice | optimise.JointRateChoice, ...]
     """Подбор режимов по скважинам. Пусто, если подбор был выключен."""
 
     allocations: tuple[planner.Allocation, ...]
@@ -100,6 +100,7 @@ def run_cycle(surrogate: Surrogate,
               lookback_months: int = 6,
               known_wells: frozenset[str] | None = None,
               tune_rates: bool = True,
+              joint_rate_search: bool = False,
               limits: planner.Limits | None = None,
               fluids: Fluids | None = None) -> CycleResult:
     """Пройти цикл один раз: спрогнозировать, продиагностировать, решить, оценить.
@@ -113,6 +114,8 @@ def run_cycle(surrogate: Surrogate,
     * **подбор режимов** (`aios.optimise`) смотрит на весь горизонт сразу. Это
       законно: мы формируем расписание на весь период вперёд, и «будущее» здесь —
       прогноз суррогата, обученного только на истории, а не подсмотренный факт;
+      для модели с межскважинными связями `joint_rate_search` обязан быть True,
+      чтобы каждый кандидат оценивался по ЧДД всего фонда;
     * **остановка убыточных** (`aios.policy`) причинная: решение на дату `t`
       принимается по данным до `t`. Она ловит скважины, которые становятся
       убыточными по ходу горизонта даже на лучшем из режимов.
@@ -120,10 +123,13 @@ def run_cycle(surrogate: Surrogate,
     base_rows = surrogate.predict(base_steps)
     base = _npv(base_rows, start_date)
 
-    choices: list[optimise.RateChoice] = []
+    choices: list[optimise.RateChoice] | list[optimise.JointRateChoice] = []
     tuned = list(base_steps)
     if tune_rates:
-        choices = optimise.choose_rates(surrogate, base_steps, norms, start_date=start_date)
+        if joint_rate_search:
+            choices = optimise.choose_joint_rates(surrogate, base_steps, start_date=start_date)
+        else:
+            choices = optimise.choose_rates(surrogate, base_steps, norms, start_date=start_date)
         tuned = optimise.apply_choices(base_steps, choices)
 
     actions = plan_shutdowns(

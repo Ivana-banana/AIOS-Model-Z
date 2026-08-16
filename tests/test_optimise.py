@@ -170,3 +170,36 @@ def test_explain_reports_what_changed_and_what_did_not(norms):
 def test_explain_says_so_when_nothing_beats_the_baseline():
     choices = [optimise.RateChoice("1", 1.0, 5.0, 5.0)]
     assert "Режимы не менялись" in optimise.explain(choices)
+
+
+class InteractingSurrogate:
+    """Синтетический отклик, в котором результат A зависит от режима B."""
+
+    def predict(self, steps):
+        rates = {control.well: control.liquid_rate or 0.0 for control in steps[0].producers}
+        a, b = rates["a"], rates["b"]
+        oil = max(100.0 + b - (a - 15.0) ** 2 / 10.0 + 0.02 * a * b, 0.0)
+        return [make_row("2014-01-01", "field", wlpr=oil, womr=oil, liquid=oil, oil=oil)]
+
+    def in_training_range(self, steps):
+        return []
+
+
+def test_joint_search_never_reduces_field_npv():
+    model = InteractingSurrogate()
+    base = plan(["a", "b"], months=1)
+    choices = optimise.choose_joint_rates(
+        model, base, start_date=START, multipliers=(0.0, 0.5, 1.0)
+    )
+    tuned = optimise.apply_choices(base, choices)
+
+    before = economics.compute_npv(
+        model.predict(base), headers=economics.REQUIRED_COLUMNS, start_date=START.isoformat()
+    )
+    after = economics.compute_npv(
+        model.predict(tuned), headers=economics.REQUIRED_COLUMNS, start_date=START.isoformat()
+    )
+
+    assert after.chdd_m >= before.chdd_m
+    assert all(choice.chosen_chdd_m >= choice.baseline_chdd_m for choice in choices)
+    assert any(choice.changed for choice in choices)

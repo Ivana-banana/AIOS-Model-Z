@@ -42,18 +42,27 @@
 {% if result.rate_choices %}
 <section>
   <h2>Подбор режимов</h2>
+  {% set joint = result.rate_choices[0].joint %}
   <p class="muted">
+    {% if joint %}
+    Режимы меняются последовательно, и каждый кандидат оценивается по ЧДД всего
+    фонда при уже принятых решениях остальных скважин. Принятое изменение не
+    ухудшает текущий совместный сценарий.
+    {% else %}
     По каждой скважине перебраны варианты дебита и выбран лучший по
     дисконтированной марже — той самой величине, которая складывается в EBITDA
     методики. Вверх режимы не идут: тривиальный суррогат не знает пластового
     давления, форсаж в нём выгоден всегда и обоснован никогда.
+    {% endif %}
   </p>
   <div class="scroll">
     <table>
       <thead>
         <tr>
-          <th>Скважина</th><th>Режим</th><th>Было, млн руб.</th>
-          <th>Стало, млн руб.</th><th>Прирост</th>
+          <th>Скважина</th><th>Режим</th>
+          <th>{{ 'ЧДД фонда до' if joint else 'Маржа до' }}, млн руб.</th>
+          <th>{{ 'ЧДД фонда после' if joint else 'Маржа после' }}, млн руб.</th>
+          <th>Прирост</th>
         </tr>
       </thead>
       <tbody>
@@ -61,10 +70,10 @@
         <tr>
           <td>{{ choice.well }}</td>
           <td>{{ 'остановка' if choice.multiplier == 0 else 'дебит ×%g'|format(choice.multiplier) }}</td>
-          <td class="{{ 'bad' if choice.baseline_margin_m < 0 else '' }}">
-            {{ '%+.2f'|format(choice.baseline_margin_m) }}
+          <td class="{{ 'bad' if choice.before_m < 0 else '' }}">
+            {{ '%+.2f'|format(choice.before_m) }}
           </td>
-          <td>{{ '%+.2f'|format(choice.chosen_margin_m) }}</td>
+          <td>{{ '%+.2f'|format(choice.after_m) }}</td>
           <td class="good">{{ '%+.2f'|format(choice.gain_m) }}</td>
         </tr>
       {% else %}
