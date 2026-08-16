@@ -63,3 +63,6 @@ __pycache__/
 # --- служебное автономной сессии (AFK) ---
 .afk/
 .afk-critic-*.md
+
+# Датасеты прогонов: воспроизводятся из runs/ командой scripts/build_dataset.py
+/data/
