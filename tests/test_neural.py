@@ -22,7 +22,7 @@ from aios.neural import (
 )
 from aios.summary import Fluids
 from aios.surrogate import NumericRange, TrainingEnvelope
-from scripts.train_surrogate import load_datasets
+from scripts.train_surrogate import dataset_fingerprints, load_datasets
 
 
 def dataset() -> pd.DataFrame:
@@ -249,6 +249,16 @@ def test_multiple_doe_packages_keep_scenarios_distinct(tmp_path):
     combined = load_datasets([str(first), str(second)])
 
     assert set(combined["scenario"]) == {"dataset:doe-000", "dataset-levels:doe-000"}
+
+
+def test_dataset_fingerprint_records_exact_bytes(tmp_path):
+    path = tmp_path / "dataset.csv"
+    path.write_bytes(b"scenario,value\na,1\n")
+
+    fingerprint = dataset_fingerprints([str(path)])[0]
+
+    assert fingerprint["bytes"] == 19
+    assert fingerprint["sha256"] == "a4c2b058680c4344c89636c9b268f6b8a90845ce36dfdc393643c1fe7d8a8956"
 
 
 def test_cycle_loader_enables_joint_search_for_a_valid_neural_bundle(tmp_path):

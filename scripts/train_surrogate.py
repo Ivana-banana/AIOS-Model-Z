@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import asdict
@@ -17,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 import joblib  # noqa: E402
 import pandas as pd  # noqa: E402
+import sklearn  # noqa: E402
 
 from aios import config as config_module  # noqa: E402
 from aios.neural import train  # noqa: E402
@@ -36,20 +38,28 @@ def main(argv: list[str] | None = None) -> int:
     settings = config_module.load(arguments.config)
     frame = load_datasets(arguments.dataset)
     bundle = train(frame, seed=settings.run.seed)
+    metadata = {
+        "seed": settings.run.seed,
+        "datasets": dataset_fingerprints(arguments.dataset),
+        "sklearn_version": sklearn.__version__,
+        "pandas_version": pd.__version__,
+    }
+    bundle.metadata.update(metadata)
 
     output = Path(arguments.out)
     report_path = Path(arguments.report)
     output.parent.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, output)
-    report_path.write_text(
-        json.dumps(asdict(bundle.report), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    report = {**asdict(bundle.report), "training": metadata}
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"модель: {output}")
     print(f"отчёт:  {report_path}")
     print(f"train/test сценариев: {len(bundle.report.train_scenarios)}/"
           f"{len(bundle.report.test_scenarios)}")
+    for dataset in metadata["datasets"]:
+        print(f"данные: {dataset['path']} ({dataset['bytes']} байт), sha256={dataset['sha256']}")
     for target, metric in bundle.report.metrics.items():
         print(
             f"{target}: MLP MAE={metric.neural_mae:.4g}, "
@@ -76,6 +86,21 @@ def load_datasets(paths: list[str]) -> pd.DataFrame:
     if not frames:
         raise ValueError("не передан ни один датасет")
     return pd.concat(frames, ignore_index=True)
+
+
+def dataset_fingerprints(paths: list[str]) -> list[dict[str, str | int]]:
+    """Хэши исходных CSV для связи модели и отчёта с точной версией данных."""
+    fingerprints = []
+    for value in paths:
+        path = Path(value)
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        fingerprints.append(
+            {"path": path.as_posix(), "bytes": path.stat().st_size, "sha256": digest.hexdigest()}
+        )
+    return fingerprints
 
 
 if __name__ == "__main__":

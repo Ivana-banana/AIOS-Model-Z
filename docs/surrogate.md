@@ -79,6 +79,10 @@ python scripts/train_surrogate.py --dataset data/dataset.csv data/dataset-levels
 - `artifacts/surrogate.joblib` — обученная модель;
 - `artifacts/surrogate-metrics.json` — переносимый отчёт с составом split и MAE.
 
+Оба артефакта содержат seed, версии sklearn/pandas и SHA-256 каждого исходного
+CSV. Метрики без совпадающих хэшей датасета не считаются воспроизводимым
+результатом обучения.
+
 Веб-платформа читает JSON и показывает результат порога на главной странице.
 Бинарная модель в UI не загружается.
 

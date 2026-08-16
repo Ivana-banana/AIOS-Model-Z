@@ -61,6 +61,7 @@ class NeuralBundle:
     month_span: int
     envelope: TrainingEnvelope
     report: TrainingReport
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
