@@ -145,3 +145,45 @@ def test_scenario_summary_is_readable():
 
     assert "doe-000" in text
     assert "скважин 2" in text
+
+
+def test_levels_spread_scenarios_apart_not_just_wells():
+    """Без общего уровня все сценарии садятся на один уровень отбора.
+
+    Латинский гиперкуб разыгрывает каждую скважину независимо, поэтому средний
+    множитель по сценарию — это среднее десятков независимых величин, и по закону
+    больших чисел оно почти одинаково у всех точек выборки. Разнообразие
+    получается внутри сценария, но не между сценариями, а суррогату нужно именно
+    второе: он должен предсказывать отклик объекта на изменение уровня отбора.
+
+    Поймано на реальных расчётах 16.08: шесть сценариев дали разброс ЧДД 5,9 %
+    при множителях по скважинам от 0 до 1.25 (`docs/experiments.md`).
+    """
+    steps = [
+        ScheduleStep(
+            date=date(2007, 1, 1),
+            producers=tuple(
+                ProducerControl(well=str(number), status="OPEN", mode="LRAT",
+                                     liquid_rate=100.0, bhp=50.0)
+                for number in range(1, 41)
+            ),
+            injectors=(),
+        ),
+    ]
+
+    def spread(scenarios):
+        averages = [
+            sum(s.multipliers.values()) / len(s.multipliers) for s in scenarios
+        ]
+        return max(averages) - min(averages)
+
+    flat = doe.design(steps, samples=12, seed=1, bounds=(0.0, 1.25))
+    layered = doe.design(steps, samples=12, seed=1, bounds=(0.8, 1.2), levels=(0.5, 1.5))
+
+    # сравнение относительное, а не по абсолютному порогу: разброс средних падает
+    # с ростом числа скважин (на 72 скважинах Модели Z он вдвое у́же, чем здесь),
+    # и абсолютный порог означал бы разные требования на разных фондах
+    assert spread(layered) > 2 * spread(flat), (
+        f"уровни не развели сценарии: без уровней {spread(flat):.3f}, "
+        f"с уровнями {spread(layered):.3f}"
+    )

@@ -31,6 +31,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-root", default="runs/doe", help="куда собирать кейсы")
     parser.add_argument("--low", type=float, default=doe.DEFAULT_RANGE[0])
     parser.add_argument("--high", type=float, default=doe.DEFAULT_RANGE[1])
+    parser.add_argument("--level-low", type=float, default=None,
+                        help="нижняя граница общего уровня отбора сценария")
+    parser.add_argument("--level-high", type=float, default=None,
+                        help="верхняя граница общего уровня отбора сценария")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     parser.add_argument("--dry-run", action="store_true",
                         help="только покрытие, без сборки кейсов на диск")
@@ -43,11 +47,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"в расписании нет шагов с {config.case.control_start}", file=sys.stderr)
         return 1
 
+    levels = None
+    if (arguments.level_low is None) != (arguments.level_high is None):
+        print("--level-low и --level-high задаются вместе", file=sys.stderr)
+        return 1
+    if arguments.level_low is not None:
+        levels = (arguments.level_low, arguments.level_high)
+
     scenarios = doe.design(
         control_steps,
         samples=arguments.samples,
         seed=config.run.seed,
         bounds=(arguments.low, arguments.high),
+        levels=levels,
     )
     report = doe.coverage(scenarios)
 

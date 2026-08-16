@@ -89,13 +89,22 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
            samples: int,
            seed: int,
            bounds: tuple[float, float] = DEFAULT_RANGE,
-           snap_to_zero: float = 0.05) -> list[Scenario]:
+           snap_to_zero: float = 0.05,
+           levels: tuple[float, float] | None = None) -> list[Scenario]:
     """Собрать `samples` сценариев управления вокруг базового.
 
     `snap_to_zero` — множители ниже этого порога округляются до нуля: дебит в
     полпроцента от исторического физически неотличим от остановки, а вот
     экономически различие огромно (остановленная скважина не тянет содержание
     фонда), и датасет не должен размазывать эту границу.
+
+    `levels` — диапазон **общего уровня отбора** сценария. Без него гиперкуб
+    разыгрывает скважины независимо, и средний множитель по сценарию по закону
+    больших чисел садится в середину `bounds` у всех точек сразу: выборка
+    получается разнообразной внутри сценария и однообразной между сценариями.
+    Измерено 16.08 на первых шести расчётах — разброс ЧДД вышел 5,9 % при
+    множителях от 0 до 1.25 (`docs/experiments.md`). С `levels` уровень
+    разыгрывается отдельной осью, а раскладка по скважинам ложится вокруг него.
 
     Про покрытие остановок. При диапазоне по умолчанию на ноль приходится всего
     `snap_to_zero / (high − low)` — около 4 % сценариев на скважину. Для обучения
@@ -115,13 +124,27 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     if not 0.0 <= low < high:
         raise ValueError(f"некорректный диапазон множителей: {bounds}")
 
-    points = latin_hypercube(samples, len(wells), seed)
+    if levels is not None:
+        level_low, level_high = levels
+        if not 0.0 <= level_low < level_high:
+            raise ValueError(f"некорректный диапазон уровней: {levels}")
+
+    # +1 ось под общий уровень сценария: без неё гиперкуб независимо разыгрывает
+    # каждую скважину, среднее по 70+ осям садится в середину диапазона, и все
+    # сценарии оказываются на одном уровне отбора. Разнообразие получается внутри
+    # сценария, но не между ними — а суррогату нужно именно второе.
+    points = latin_hypercube(samples, len(wells) + 1, seed)
     scenarios: list[Scenario] = []
 
     for index, point in enumerate(points):
+        level = 1.0
+        if levels is not None:
+            level_low, level_high = levels
+            level = level_low + point[-1] * (level_high - level_low)
+
         multipliers = {}
-        for well, value in zip(wells, point, strict=True):
-            multiplier = low + value * (high - low)
+        for well, value in zip(wells, point[:-1], strict=True):
+            multiplier = (low + value * (high - low)) * level
             multipliers[well] = 0.0 if multiplier < snap_to_zero else round(multiplier, 4)
 
         steps = _apply(base_steps, multipliers)
