@@ -108,6 +108,44 @@ def test_injectors_are_not_touched_by_the_design():
         assert scenario.steps[0].injectors[0].rate == 30.0
 
 
+def test_injector_design_varies_injection_and_keeps_production_fixed():
+    scenarios = doe.design(
+        plan(["1", "2"]), samples=8, seed=SEED, bounds=(0.5, 1.5),
+        control_kind="injectors",
+    )
+
+    rates = {scenario.steps[0].injectors[0].rate for scenario in scenarios}
+
+    assert len(rates) == 8
+    assert all(scenario.steps[0].producers[0].liquid_rate == 40.0 for scenario in scenarios)
+    assert all(scenario.multipliers == {} for scenario in scenarios)
+    assert all(set(scenario.injector_multipliers) == {"9"} for scenario in scenarios)
+    assert all(validate(list(scenario.steps)) == [] for scenario in scenarios)
+
+
+def test_all_control_design_keeps_roles_separate_for_a_converted_well():
+    steps = [
+        ScheduleStep(
+            date(2007, 1, 1),
+            (ProducerControl("9", "OPEN", "LRAT", 40.0, 50.0),),
+            (InjectorControl("9", "WATER", "SHUT", "RATE", None, 300.0),),
+        ),
+        ScheduleStep(
+            date(2007, 2, 1),
+            (ProducerControl("9", "SHUT", "LRAT", None, 50.0),),
+            (InjectorControl("9", "WATER", "OPEN", "RATE", 30.0, 300.0),),
+        ),
+    ]
+
+    scenario = doe.design(
+        steps, samples=2, seed=SEED, bounds=(0.5, 1.5), control_kind="all"
+    )[0]
+
+    assert set(scenario.multipliers) == {"9"}
+    assert set(scenario.injector_multipliers) == {"9"}
+    assert validate(list(scenario.steps)) == []
+
+
 def test_scenarios_actually_differ():
     scenarios = doe.design(plan(["1", "2", "3"]), samples=8, seed=SEED)
     signatures = {tuple(sorted(s.multipliers.items())) for s in scenarios}

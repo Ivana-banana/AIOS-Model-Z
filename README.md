@@ -104,6 +104,14 @@ python -m pytest -q
 python scripts/train_surrogate.py --dataset data/dataset.csv data/dataset-levels.csv
 ```
 
+Отдельный пакет по ППД, необходимый для обучения эффекта закачки:
+
+```powershell
+python scripts/build_doe.py --control-kind injectors --samples 12 --low 0.5 --high 2.0 --run-root runs/doe-injection
+python scripts/build_dataset.py --run-root runs/doe-injection --out data/dataset-injection.csv
+python scripts/train_surrogate.py --dataset data/dataset.csv data/dataset-levels.csv data/dataset-injection.csv
+```
+
 После прохождения порога качества запустить цикл на обученной модели:
 
 ```powershell

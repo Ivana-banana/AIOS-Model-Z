@@ -278,6 +278,24 @@ def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     return result
 
 
+def scale_injection(
+    steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+    multiplier: float,
+    wells: set[str] | None = None,
+) -> list[ScheduleStep]:
+    """Умножить приёмистость выбранных нагнетательных скважин."""
+    result: list[ScheduleStep] = []
+    for step in steps:
+        injectors = tuple(
+            control
+            if wells is not None and control.well not in wells
+            else _scaled_injector(control, multiplier)
+            for control in step.injectors
+        )
+        result.append(ScheduleStep(step.date, step.producers, injectors))
+    return result
+
+
 def apply_choices(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                   choices: list[RateChoice] | list[JointRateChoice]) -> list[ScheduleStep]:
     """Собрать расписание из выбранных по скважинам режимов."""

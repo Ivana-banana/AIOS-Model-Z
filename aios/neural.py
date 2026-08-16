@@ -86,7 +86,11 @@ class NeuralSurrogate:
             return []
         reference = expand(self.reference_steps)
         multipliers = _schedule_multipliers(
-            timeline, reference, self.bundle.control_wells
+            timeline,
+            reference,
+            self.bundle.control_wells,
+            _expand_role_controls(steps),
+            _expand_role_controls(self.reference_steps),
         )
         months = list(timeline)
         feature_matrix = np.vstack([
@@ -278,16 +282,49 @@ def _validate(frame: pd.DataFrame, test_fraction: float) -> None:
 
 
 def _control_matrix(frame: pd.DataFrame) -> pd.DataFrame:
-    controls = (
-        frame.dropna(subset=["multiplier"])
-        .groupby(["scenario", "well"], sort=True)["multiplier"]
-        .first()
-        .unstack("well")
-        .sort_index(axis=1)
-    )
-    if controls.empty or controls.isna().any().any():
+    index = ["scenario", "DATA"]
+    full_index = pd.MultiIndex.from_frame(frame.loc[:, index].drop_duplicates().sort_values(index))
+
+    if "production_multiplier" not in frame and "injection_multiplier" not in frame:
+        controls = _pivot_controls(frame, frame["multiplier"], "", full_index)
+    else:
+        production = frame.get(
+            "production_multiplier", pd.Series(np.nan, index=frame.index, dtype=float)
+        ).copy()
+        injection = frame.get(
+            "injection_multiplier", pd.Series(np.nan, index=frame.index, dtype=float)
+        )
+        legacy = frame["multiplier"]
+        production = production.where(~(production.isna() & injection.isna()), legacy)
+        controls = pd.concat(
+            (
+                _pivot_controls(frame, production, "prod:", full_index),
+                _pivot_controls(frame, injection, "inj:", full_index),
+            ),
+            axis=1,
+        ).sort_index(axis=1)
+
+    if controls.empty:
         raise ValueError("матрица управляющих множителей неполна")
     return controls.astype(float)
+
+
+def _pivot_controls(
+    frame: pd.DataFrame,
+    values: pd.Series,
+    prefix: str,
+    full_index: pd.MultiIndex,
+) -> pd.DataFrame:
+    source = frame.loc[:, ["scenario", "DATA", "well"]].copy()
+    source["value"] = pd.to_numeric(values, errors="coerce")
+    pivoted = (
+        source.dropna(subset=["value"])
+        .groupby(["scenario", "DATA", "well"], sort=True)["value"]
+        .first()
+        .unstack("well")
+    )
+    pivoted.columns = [f"{prefix}{well}" for well in pivoted.columns]
+    return pivoted.reindex(full_index).fillna(1.0)
 
 
 def _envelope(frame: pd.DataFrame) -> TrainingEnvelope:
@@ -315,7 +352,10 @@ def _features(rows: pd.DataFrame, controls: pd.DataFrame, start: pd.Timestamp,
     season = dates.dt.month.to_numpy(dtype=float)
     time = np.column_stack((month, np.sin(2 * np.pi * season / 12),
                             np.cos(2 * np.pi * season / 12)))
-    scenario_controls = controls.loc[rows["scenario"]].to_numpy(dtype=float)
+    keys = pd.MultiIndex.from_arrays(
+        [rows["scenario"].to_numpy(), rows["DATA"].to_numpy()], names=controls.index.names
+    )
+    scenario_controls = controls.reindex(keys).to_numpy(dtype=float)
     return np.column_stack((time, scenario_controls))
 
 
@@ -334,39 +374,75 @@ def _schedule_multipliers(
     timeline: dict[date, dict[str, ProducerControl | InjectorControl]],
     reference: dict[date, dict[str, ProducerControl | InjectorControl]],
     wells: tuple[str, ...],
+    role_timeline: dict[date, dict[tuple[str, str], ProducerControl | InjectorControl]],
+    role_reference: dict[date, dict[tuple[str, str], ProducerControl | InjectorControl]],
 ) -> dict[date, np.ndarray]:
     result: dict[date, np.ndarray] = {}
     last = dict.fromkeys(wells, 1.0)
     for month_start, controls in timeline.items():
         reference_controls = reference.get(month_start, {})
         values = []
-        for well in wells:
+        for control_key in wells:
+            role, well = _control_key(control_key)
+            planned_control = (
+                role_timeline.get(month_start, {}).get((role, well))
+                if role is not None else controls.get(well)
+            )
+            reference_control = (
+                role_reference.get(month_start, {}).get((role, well))
+                if role is not None else reference_controls.get(well)
+            )
             planned, base = _relative_rate(
-                controls.get(well), reference_controls.get(well)
+                planned_control, reference_control, role
             )
             if base > 0:
-                last[well] = planned / base
+                last[control_key] = planned / base
             elif planned > 0:
                 # Диапазонный детектор пометит запуск без опорного режима. В MLP
                 # передаём конечное значение: sklearn справедливо отвергает inf.
-                last[well] = 0.0
-            values.append(last[well])
+                last[control_key] = 0.0
+            values.append(last[control_key])
         result[month_start] = np.asarray(values, dtype=float)
     return result
+
+
+def _expand_role_controls(
+    steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+) -> dict[date, dict[tuple[str, str], ProducerControl | InjectorControl]]:
+    effective: dict[tuple[str, str], ProducerControl | InjectorControl] = {}
+    timeline = {}
+    for step in steps:
+        effective.update({("production", control.well): control for control in step.producers})
+        effective.update({("injection", control.well): control for control in step.injectors})
+        timeline[step.date] = dict(effective)
+    return timeline
 
 
 def _relative_rate(
     planned: ProducerControl | InjectorControl | None,
     reference: ProducerControl | InjectorControl | None,
+    role: str | None = None,
 ) -> tuple[float, float]:
     """Сопоставимый режим: добыча с добычей, закачка с закачкой."""
     planned_liquid, planned_injection = _rates(planned)
     base_liquid, base_injection = _rates(reference)
+    if role == "production":
+        return planned_liquid, base_liquid
+    if role == "injection":
+        return planned_injection, base_injection
     if base_liquid > 0:
         return planned_liquid, base_liquid
     if base_injection > 0:
         return planned_injection, base_injection
     return max(planned_liquid, planned_injection), 0.0
+
+
+def _control_key(value: str) -> tuple[str | None, str]:
+    if value.startswith("prod:"):
+        return "production", value[5:]
+    if value.startswith("inj:"):
+        return "injection", value[4:]
+    return None, value
 
 
 def _inference_features(month_start: date, multipliers: np.ndarray,

@@ -35,6 +35,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="нижняя граница общего уровня отбора сценария")
     parser.add_argument("--level-high", type=float, default=None,
                         help="верхняя граница общего уровня отбора сценария")
+    parser.add_argument(
+        "--control-kind", choices=("producers", "injectors", "all"), default="producers",
+        help="какие режимы варьировать (по умолчанию только добывающие)",
+    )
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     parser.add_argument("--dry-run", action="store_true",
                         help="только покрытие, без сборки кейсов на диск")
@@ -60,11 +64,13 @@ def main(argv: list[str] | None = None) -> int:
         seed=config.run.seed,
         bounds=(arguments.low, arguments.high),
         levels=levels,
+        control_kind=arguments.control_kind,
     )
     report = doe.coverage(scenarios)
 
     print(f"seed:            {config.run.seed} (из {config.source})")
     print(f"диапазон:        {arguments.low} — {arguments.high}")
+    print(f"управление:      {arguments.control_kind}")
     print(f"сценариев:       {report['scenarios']}")
     print(f"скважин:         {report['wells']}")
     print(f"размах, мин:     {report['min_span']:.3f}")
@@ -96,10 +102,17 @@ def main(argv: list[str] | None = None) -> int:
                 "seed": config.run.seed,
                 "samples": arguments.samples,
                 "bounds": [arguments.low, arguments.high],
+                "control_kind": arguments.control_kind,
                 "control_start": config.case.control_start.isoformat(),
                 "coverage": report,
                 "scenarios": [
-                    {"name": s.name, "multipliers": s.multipliers, "shut_wells": list(s.shut_wells)}
+                    {
+                        "name": s.name,
+                        "multipliers": s.multipliers,
+                        "injector_multipliers": s.injector_multipliers,
+                        "shut_wells": list(s.shut_wells),
+                        "shut_injectors": list(s.shut_injectors),
+                    }
                     for s in scenarios
                 ],
             },

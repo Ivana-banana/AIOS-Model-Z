@@ -15,7 +15,8 @@
 неконтролируемые случайные параметры, и это ровно тот случай, когда «у нас
 получилось 96 %» через неделю невоспроизводимо.
 
-Что здесь **не** варьируется и почему: режим каждой скважины постоянен на всём
+Роль управления выбирается явно: добывающие, нагнетательные или оба типа.
+Режим каждой скважины остаётся постоянным на всём
 горизонте. Это сознательное упрощение первого датасета — оно даёт чистую связь
 «уровень отбора → отклик», на которой суррогат учится базовой физике. Временны́е
 профили (циклическое заводнение, переводы под закачку) — следующий датасет, и
@@ -24,13 +25,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from aios.deck import ScheduleStep
-from aios.optimise import scale
+from aios.optimise import scale, scale_injection
 from aios.schedule import assert_valid
 
 #: Диапазон множителей к дебиту базового сценария.
@@ -50,17 +51,26 @@ class Scenario:
     seed: int
     multipliers: dict[str, float]
     steps: tuple[ScheduleStep, ...]
+    injector_multipliers: dict[str, float] = field(default_factory=dict)
 
     @property
     def shut_wells(self) -> tuple[str, ...]:
         return tuple(sorted(well for well, value in self.multipliers.items() if value == 0.0))
 
+    @property
+    def shut_injectors(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(well for well, value in self.injector_multipliers.items() if value == 0.0)
+        )
+
     def summary(self) -> str:
-        values = list(self.multipliers.values())
+        values = [*self.multipliers.values(), *self.injector_multipliers.values()]
+        wells = set(self.multipliers) | set(self.injector_multipliers)
         average = sum(values) / len(values) if values else 0.0
         return (
-            f"{self.name}: скважин {len(self.multipliers)}, "
-            f"средний множитель {average:.2f}, остановлено {len(self.shut_wells)}"
+            f"{self.name}: скважин {len(wells)}, "
+            f"средний множитель {average:.2f}, остановлено {len(self.shut_wells)}, "
+            f"нагнетателей {len(self.injector_multipliers)}"
         )
 
 
@@ -90,7 +100,8 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
            seed: int,
            bounds: tuple[float, float] = DEFAULT_RANGE,
            snap_to_zero: float = 0.05,
-           levels: tuple[float, float] | None = None) -> list[Scenario]:
+           levels: tuple[float, float] | None = None,
+           control_kind: str = "producers") -> list[Scenario]:
     """Собрать `samples` сценариев управления вокруг базового.
 
     `snap_to_zero` — множители ниже этого порога округляются до нуля: дебит в
@@ -114,11 +125,22 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     прогонов, а не после: сотня расчётов по несколько часов — слишком дорогая
     цена за дыру в датасете.
     """
-    wells = sorted(
+    producer_wells = sorted(
         {control.well for step in base_steps for control in step.producers}, key=_well_key
     )
-    if not wells:
-        raise ValueError("в базовом расписании нет добывающих скважин")
+    injector_wells = sorted(
+        {control.well for step in base_steps for control in step.injectors}, key=_well_key
+    )
+    if control_kind not in {"producers", "injectors", "all"}:
+        raise ValueError(f"неизвестный тип управления: {control_kind}")
+    coordinates = []
+    if control_kind in {"producers", "all"}:
+        coordinates.extend(("production", well) for well in producer_wells)
+    if control_kind in {"injectors", "all"}:
+        coordinates.extend(("injection", well) for well in injector_wells)
+    if not coordinates:
+        role = "добывающих" if control_kind == "producers" else "нагнетательных"
+        raise ValueError(f"в базовом расписании нет {role} скважин")
 
     low, high = bounds
     if not 0.0 <= low < high:
@@ -133,7 +155,7 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # каждую скважину, среднее по 70+ осям садится в середину диапазона, и все
     # сценарии оказываются на одном уровне отбора. Разнообразие получается внутри
     # сценария, но не между ними — а суррогату нужно именно второе.
-    points = latin_hypercube(samples, len(wells) + 1, seed)
+    points = latin_hypercube(samples, len(coordinates) + 1, seed)
     scenarios: list[Scenario] = []
 
     for index, point in enumerate(points):
@@ -142,12 +164,14 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             level_low, level_high = levels
             level = level_low + point[-1] * (level_high - level_low)
 
-        multipliers = {}
-        for well, value in zip(wells, point[:-1], strict=True):
+        multipliers: dict[str, float] = {}
+        injector_multipliers: dict[str, float] = {}
+        for (kind, well), value in zip(coordinates, point[:-1], strict=True):
             multiplier = (low + value * (high - low)) * level
-            multipliers[well] = 0.0 if multiplier < snap_to_zero else round(multiplier, 4)
+            target = multipliers if kind == "production" else injector_multipliers
+            target[well] = 0.0 if multiplier < snap_to_zero else round(multiplier, 4)
 
-        steps = _apply(base_steps, multipliers)
+        steps = _apply(base_steps, multipliers, injector_multipliers)
         assert_valid(steps)
         scenarios.append(
             Scenario(
@@ -155,6 +179,7 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                 seed=seed,
                 multipliers=multipliers,
                 steps=tuple(steps),
+                injector_multipliers=injector_multipliers,
             )
         )
     return scenarios
@@ -193,7 +218,9 @@ def coverage(scenarios: list[Scenario]) -> dict[str, Any]:
     per_well: dict[str, list[float]] = {}
     for scenario in scenarios:
         for well, multiplier in scenario.multipliers.items():
-            per_well.setdefault(well, []).append(multiplier)
+            per_well.setdefault(f"prod:{well}", []).append(multiplier)
+        for well, multiplier in scenario.injector_multipliers.items():
+            per_well.setdefault(f"inj:{well}", []).append(multiplier)
 
     spans = [max(values) - min(values) for values in per_well.values()]
     shut_share = [
@@ -210,11 +237,15 @@ def coverage(scenarios: list[Scenario]) -> dict[str, Any]:
 
 
 def _apply(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-           multipliers: dict[str, float]) -> list[ScheduleStep]:
+           multipliers: dict[str, float],
+           injector_multipliers: dict[str, float]) -> list[ScheduleStep]:
     steps = list(base_steps)
     for well, multiplier in multipliers.items():
         if multiplier != 1.0:
             steps = scale(steps, multiplier, wells={well})
+    for well, multiplier in injector_multipliers.items():
+        if multiplier != 1.0:
+            steps = scale_injection(steps, multiplier, wells={well})
     return steps
 
 

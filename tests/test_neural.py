@@ -185,6 +185,61 @@ def test_injector_multiplier_reaches_the_neural_features():
     assert recorder.features[0, -2:].tolist() == pytest.approx([1.0, 2.0])
 
 
+def test_monthly_control_matrix_keeps_production_and_injection_roles_separate():
+    frame = pd.DataFrame(
+        [
+            {
+                "scenario": scenario,
+                "DATA": pd.Timestamp(f"2014-{month:02d}-01"),
+                "well": well,
+                "multiplier": value,
+                "production_multiplier": value if well == "p" else np.nan,
+                "injection_multiplier": value if well == "i" else np.nan,
+            }
+            for scenario, month, well, value in (
+                ("a", 1, "p", 0.8), ("a", 1, "i", 1.2),
+                ("a", 2, "p", 0.9), ("a", 2, "i", 1.4),
+                ("b", 1, "p", 1.0), ("b", 1, "i", 0.7),
+            )
+        ]
+    )
+
+    controls = __import__("aios.neural", fromlist=["_control_matrix"])._control_matrix(frame)
+
+    assert list(controls.columns) == ["inj:i", "prod:p"]
+    assert controls.loc[("a", pd.Timestamp("2014-02-01")), "inj:i"] == pytest.approx(1.4)
+    assert controls.loc[("b", pd.Timestamp("2014-01-01")), "prod:p"] == pytest.approx(1.0)
+
+
+def test_role_features_follow_a_well_converted_to_injection():
+    recorder = RecordingModel()
+    trained = bundle()
+    trained.control_wells = ("prod:9", "inj:9")
+    trained.models = {"9": recorder}
+    january = ScheduleStep(
+        pd.Timestamp("2014-01-01").date(),
+        (ProducerControl("9", "OPEN", "LRAT", 30.0, 50.0),),
+        (InjectorControl("9", "WATER", "SHUT", "RATE", None, 300.0),),
+    )
+    february = ScheduleStep(
+        pd.Timestamp("2014-02-01").date(),
+        (ProducerControl("9", "SHUT", "LRAT", None, 50.0),),
+        (InjectorControl("9", "WATER", "OPEN", "RATE", 40.0, 300.0),),
+    )
+    candidate = [
+        january,
+        ScheduleStep(
+            february.date,
+            february.producers,
+            (InjectorControl("9", "WATER", "OPEN", "RATE", 80.0, 300.0),),
+        ),
+    ]
+
+    NeuralSurrogate.create(trained, [january, february]).predict(candidate)
+
+    np.testing.assert_allclose(recorder.features[:, -2:], [[1.0, 1.0], [1.0, 2.0]])
+
+
 def test_multiple_doe_packages_keep_scenarios_distinct(tmp_path):
     first = tmp_path / "dataset.csv"
     second = tmp_path / "dataset-levels.csv"
