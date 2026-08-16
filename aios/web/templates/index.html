@@ -28,6 +28,49 @@
 </section>
 
 <section>
+  <h2>Нейросетевой суррогат</h2>
+  {% if surrogate.state == 'ready' %}
+  <div class="grid">
+    <div class="tile">
+      <div class="label">Сценарии train / test</div>
+      <div class="value">{{ surrogate.train_scenarios }} / {{ surrogate.test_scenarios }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Скважины</div>
+      <div class="value">{{ surrogate.wells }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Строки датасета</div>
+      <div class="value">{{ surrogate.rows }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Порог качества</div>
+      <div class="value">{{ 'пройден' if surrogate.quality_passed else 'не пройден' }}</div>
+    </div>
+  </div>
+  <div class="scroll" style="margin-top:12px">
+    <table>
+      <thead><tr><th>Выход</th><th>MAE MLP</th><th>MAE linear</th><th>Результат</th></tr></thead>
+      <tbody>
+      {% for target, neural, linear in surrogate.metrics %}
+        <tr>
+          <td><code>{{ target }}</code></td>
+          <td>{{ '%.4g'|format(neural) }}</td>
+          <td>{{ '%.4g'|format(linear) }}</td>
+          <td>{{ 'лучше' if neural < linear else 'хуже' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% elif surrogate.state == 'invalid' %}
+  <p class="muted">Отчёт <code>artifacts/surrogate-metrics.json</code> повреждён или имеет неизвестный формат.</p>
+  {% else %}
+  <p class="muted">Модель ещё не обучена: отчёт <code>artifacts/surrogate-metrics.json</code> отсутствует.</p>
+  {% endif %}
+</section>
+
+<section>
   <h2>Прогоны</h2>
   {% if runs %}
   <div class="scroll">

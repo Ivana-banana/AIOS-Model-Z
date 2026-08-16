@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from datetime import date
 from pathlib import Path
 
@@ -107,6 +108,62 @@ def test_index_lists_runs_and_configuration(client):
 
 def test_index_marks_a_run_without_results(client):
     assert "результатов нет" in client.get("/").text
+
+
+def test_index_reports_missing_surrogate(client):
+    assert "Модель ещё не обучена" in client.get("/").text
+
+
+def test_index_shows_surrogate_metrics(project):
+    report = {
+        "train_scenarios": ["doe:1", "doe:2", "doe:3"],
+        "test_scenarios": ["doe:4"],
+        "wells": 103,
+        "rows": 914640,
+        "metrics": {
+            "WLPT_Diff": {"neural_mae": 1.5, "linear_mae": 2.5},
+            "WOMT_Diff": {"neural_mae": 0.8, "linear_mae": 1.1},
+        },
+    }
+    artifacts = project / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "surrogate-metrics.json").write_text(
+        json.dumps(report), encoding="utf-8"
+    )
+
+    text = TestClient(create_app(project)).get("/").text
+
+    assert "3 / 1" in text
+    assert "914640" in text
+    assert "порог качества" in text.lower()
+    assert "пройден" in text
+    assert "WLPT_Diff" in text
+
+
+def test_index_survives_invalid_surrogate_report(project):
+    artifacts = project / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "surrogate-metrics.json").write_text("{nope", encoding="utf-8")
+
+    response = TestClient(create_app(project)).get("/")
+
+    assert response.status_code == 200
+    assert "повреждён" in response.text
+
+
+def test_index_rejects_non_finite_surrogate_metrics(project):
+    artifacts = project / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "surrogate-metrics.json").write_text(
+        '{"train_scenarios": ["a"], "test_scenarios": ["b"], "wells": 1, '
+        '"rows": 2, "metrics": {"WLPT_Diff": {"neural_mae": NaN, '
+        '"linear_mae": 1}, "WOMT_Diff": {"neural_mae": 1, "linear_mae": 2}}}',
+        encoding="utf-8",
+    )
+
+    text = TestClient(create_app(project)).get("/").text
+
+    assert "повреждён" in text
 
 
 def test_run_page_shows_the_reference_calculator_number(client, project):

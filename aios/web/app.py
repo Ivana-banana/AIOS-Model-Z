@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import csv
+import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,7 @@ from aios.web.charts import Series, bar_chart, line_chart
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
 NUMERIC_COLUMNS = tuple(column for column in economics.REQUIRED_COLUMNS if column not in ("DATA", "well"))
+QUALITY_TARGETS = ("WLPT_Diff", "WOMT_Diff")
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,49 @@ class Run:
         return "пусто"
 
 
+@dataclass(frozen=True)
+class SurrogateStatus:
+    """Краткий и безопасный для UI срез отчёта об обучении."""
+
+    state: str
+    train_scenarios: int = 0
+    test_scenarios: int = 0
+    wells: int = 0
+    rows: int = 0
+    metrics: tuple[tuple[str, float, float], ...] = ()
+    quality_passed: bool = False
+
+
+def load_surrogate_status(path: Path) -> SurrogateStatus:
+    if not path.is_file():
+        return SurrogateStatus("missing")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        metrics = tuple(
+            (target, float(values["neural_mae"]), float(values["linear_mae"]))
+            for target, values in raw["metrics"].items()
+        )
+        if not metrics or not all(
+            math.isfinite(value) for _, neural, linear in metrics for value in (neural, linear)
+        ):
+            raise ValueError("метрики должны быть конечными числами")
+        by_target = {target: (neural, linear) for target, neural, linear in metrics}
+        quality_passed = all(
+            by_target[target][0] < by_target[target][1] for target in QUALITY_TARGETS
+        )
+        return SurrogateStatus(
+            state="ready",
+            train_scenarios=len(raw["train_scenarios"]),
+            test_scenarios=len(raw["test_scenarios"]),
+            wells=int(raw["wells"]),
+            rows=int(raw["rows"]),
+            metrics=metrics,
+            quality_passed=quality_passed,
+        )
+    except (KeyError, OSError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return SurrogateStatus("invalid")
+
+
 def create_app(root: Path | None = None) -> FastAPI:
     """Собрать приложение. `root` — корень проекта (для `runs/` и `config.toml`)."""
     project_root = root or Path(__file__).resolve().parent.parent.parent
@@ -93,7 +139,13 @@ def create_app(root: Path | None = None) -> FastAPI:
         return TEMPLATES.TemplateResponse(
             request=request,
             name="index.html",
-            context={"runs": runs(), "settings": settings()},
+            context={
+                "runs": runs(),
+                "settings": settings(),
+                "surrogate": load_surrogate_status(
+                    project_root / "artifacts" / "surrogate-metrics.json"
+                ),
+            },
         )
 
     @application.get("/run/{name}", response_class=HTMLResponse)
