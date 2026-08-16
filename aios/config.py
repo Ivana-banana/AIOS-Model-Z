@@ -92,6 +92,9 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
             max_field_liquid_m3_per_day=(
                 float(_value(limits, "max_field_liquid_m3_per_day", "limits", source)) or None
             ),
+            max_field_injection_m3_per_day=(
+                float(_value(limits, "max_field_injection_m3_per_day", "limits", source)) or None
+            ),
             enforce_water_balance=bool(
                 _value(limits, "enforce_water_balance", "limits", source)
             ),

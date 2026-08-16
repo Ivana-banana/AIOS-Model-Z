@@ -15,6 +15,9 @@
   есть, вопрос «кого резать» — экономический, и решается он одинаково для всех:
   первой режется скважина, которая приносит меньше всех денег на кубометр
   дефицитного ресурса.
+* **мощность ППД.** Когда известен общий предел КНС и водоводов, закачка каждого
+  шага пропорционально укладывается в него. Ноль в конфиге означает, что число
+  организаторами пока не задано, а не что закачка запрещена.
 
 Чего планировщик **не** делает и почему. Он не решает, где закачка полезнее: для
 этого надо знать, чья закачка кому поднимает давление, а тривиальный суррогат
@@ -44,6 +47,9 @@ class Limits:
 
     max_field_liquid_m3_per_day: float | None = None
     """Предел системы сбора по жидкости. None — предела нет."""
+
+    max_field_injection_m3_per_day: float | None = None
+    """Предел поверхностной системы ППД по закачке. None — число неизвестно."""
 
     enforce_water_balance: bool = True
     """Ограничивать закачку добытой водой."""
@@ -97,6 +103,60 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                                                  limits.max_field_liquid_m3_per_day)
         decisions.extend(liquid)
 
+    if limits.max_field_injection_m3_per_day is not None:
+        result, injection = _fit_injection_to_capacity(
+            result, limits.max_field_injection_m3_per_day
+        )
+        decisions.extend(injection)
+
+    return result, decisions
+
+
+def _fit_injection_to_capacity(
+    steps: list[ScheduleStep], capacity: float
+) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Пропорционально уложить каждый шаг в мощность КНС/водоводов."""
+    decisions: list[Allocation] = []
+    reported: set[str] = set()
+    result: list[ScheduleStep] = []
+    for step in steps:
+        total = sum(
+            control.rate or 0.0
+            for control in step.injectors
+            if control.status == "OPEN"
+        )
+        if total <= capacity or total <= 0:
+            result.append(step)
+            continue
+
+        factor = capacity / total
+        injectors = []
+        for control in step.injectors:
+            if control.status != "OPEN" or control.rate is None:
+                injectors.append(control)
+                continue
+            reduced = control.rate * factor
+            if control.well not in reported:
+                reported.add(control.well)
+                decisions.append(
+                    Allocation(
+                        well=control.well,
+                        resource="мощность ППД",
+                        before=control.rate,
+                        after=reduced,
+                        reason=(
+                            f"закачка по объекту {total:,.0f} > предела "
+                            f"{capacity:,.0f} м³/сут"
+                        ),
+                    )
+                )
+            injectors.append(
+                InjectorControl(
+                    control.well, control.fluid, control.status, control.mode,
+                    reduced, control.bhp,
+                )
+            )
+        result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
     return result, decisions
 
 

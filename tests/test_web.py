@@ -31,6 +31,7 @@ water_density = 1172.0
 
 [limits]
 max_field_liquid_m3_per_day = 0
+max_field_injection_m3_per_day = 0
 enforce_water_balance = true
 water_tolerance = 1.0
 
@@ -104,6 +105,8 @@ def test_index_lists_runs_and_configuration(client):
     assert "base" in response.text
     assert "2014-01-01" in response.text          # дата начала управления из конфига
     assert "20260817" in response.text            # seed — регламент про воспроизводимость
+    assert "Мощность ППД" in response.text
+    assert "не задана" in response.text
 
 
 def test_index_marks_a_run_without_results(client):

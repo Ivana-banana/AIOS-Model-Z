@@ -114,6 +114,28 @@ def test_shut_injectors_are_not_touched(norms):
     assert result[0].injectors[0].status == "SHUT"
 
 
+def test_surface_injection_capacity_is_respected_on_each_step(norms):
+    steps = [
+        step(injectors=[inj("8", 80.0), inj("9", 40.0)], month=1),
+        step(injectors=[inj("8", 30.0), inj("9", 20.0)], month=2),
+    ]
+
+    result, decisions = planner.enforce(
+        steps,
+        forecast=[],
+        norms=norms,
+        limits=planner.Limits(
+            max_field_injection_m3_per_day=60.0, enforce_water_balance=False
+        ),
+        fluids=FLUIDS,
+    )
+
+    assert sum(control.rate or 0.0 for control in result[0].injectors) == pytest.approx(60.0)
+    assert sum(control.rate or 0.0 for control in result[1].injectors) == pytest.approx(50.0)
+    assert {decision.resource for decision in decisions} == {"мощность ППД"}
+    assert validate(result) == []
+
+
 # ── мощность по жидкости ─────────────────────────────────────────────────────
 
 def test_liquid_within_capacity_is_left_alone(norms):

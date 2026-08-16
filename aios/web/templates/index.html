@@ -20,6 +20,14 @@
       <div class="label">Seed</div>
       <div class="value">{{ settings.run.seed }}</div>
     </div>
+    <div class="tile">
+      <div class="label">Предел жидкости, м³/сут</div>
+      <div class="value">{{ settings.limits.max_field_liquid_m3_per_day or 'не задан' }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Мощность ППД, м³/сут</div>
+      <div class="value">{{ settings.limits.max_field_injection_m3_per_day or 'не задана' }}</div>
+    </div>
   </div>
   <p class="muted" style="margin-top:12px">
     Источник — <code>{{ settings.source.name }}</code>. Всё, что влияет на ЧДД, задаётся
