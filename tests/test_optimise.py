@@ -203,3 +203,34 @@ def test_joint_search_never_reduces_field_npv():
     assert after.chdd_m >= before.chdd_m
     assert all(choice.chosen_chdd_m >= choice.baseline_chdd_m for choice in choices)
     assert any(choice.changed for choice in choices)
+
+
+class InjectionSurrogate:
+    def predict(self, steps):
+        production = steps[0].producers[0].liquid_rate or 0.0
+        injection = steps[0].injectors[0].rate or 0.0
+        oil = max(100.0 + production + injection - (injection - 60.0) ** 2 / 20.0, 0.0)
+        return [make_row("2014-01-01", "field", wlpr=oil, womr=oil, liquid=oil, oil=oil)]
+
+    def in_training_range(self, steps):
+        return []
+
+
+def test_joint_search_can_change_injection_and_apply_the_choice():
+    base = [
+        ScheduleStep(
+            START,
+            (ProducerControl("p", "OPEN", "LRAT", 30.0, 50.0),),
+            (InjectorControl("i", "WATER", "OPEN", "RATE", 40.0, 300.0),),
+        )
+    ]
+
+    choices = optimise.choose_joint_rates(
+        InjectionSurrogate(), base, start_date=START, multipliers=(0.5, 1.0, 1.5)
+    )
+    tuned = optimise.apply_choices(base, choices)
+    injection = next(choice for choice in choices if choice.kind == "injection")
+
+    assert injection.multiplier == 1.5
+    assert tuned[0].injectors[0].rate == pytest.approx(60.0)
+    assert validate(tuned) == []

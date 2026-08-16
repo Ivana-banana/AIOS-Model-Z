@@ -36,7 +36,7 @@ from datetime import date
 from typing import Any
 
 from aios import economics
-from aios.deck import ProducerControl, ScheduleStep
+from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.margin import Norms, month_margin
 from aios.schedule import MAX_LIQUID_RATE_M3_PER_DAY
 from aios.surrogate import Surrogate
@@ -56,6 +56,7 @@ DEFAULT_MULTIPLIERS = (0.0, 0.5, 0.75, 1.0)
 #: Форсирование — только осознанно и только когда появится суррогат, обученный
 #: на прогонах ГГДМ: `choose_rates(..., multipliers=DEFAULT_MULTIPLIERS + FORCING)`.
 FORCING_MULTIPLIERS = (1.25, 1.5)
+JOINT_MULTIPLIERS = DEFAULT_MULTIPLIERS + FORCING_MULTIPLIERS
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,10 @@ class RateChoice:
     def joint(self) -> bool:
         return False
 
+    @property
+    def kind(self) -> str:
+        return "production"
+
     def __str__(self) -> str:
         if not self.changed:
             return f"скв. {self.well}: режим без изменений"
@@ -105,6 +110,7 @@ class JointRateChoice:
     multiplier: float
     baseline_chdd_m: float
     chosen_chdd_m: float
+    kind: str = "production"
 
     @property
     def gain_m(self) -> float:
@@ -127,8 +133,9 @@ class JointRateChoice:
         return True
 
     def __str__(self) -> str:
+        control = "закачка" if self.kind == "injection" else "дебит"
         what = "без изменений" if not self.changed else (
-            "остановка" if self.multiplier == 0 else f"дебит ×{self.multiplier:g}"
+            "остановка" if self.multiplier == 0 else f"{control} ×{self.multiplier:g}"
         )
         return (
             f"скв. {self.well}: {what}, ЧДД фонда "
@@ -201,7 +208,7 @@ def choose_joint_rates(
     base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     *,
     start_date: date,
-    multipliers: tuple[float, ...] = DEFAULT_MULTIPLIERS,
+    multipliers: tuple[float, ...] = JOINT_MULTIPLIERS,
 ) -> list[JointRateChoice]:
     """Координатный поиск для суррогата с межскважинными связями.
 
@@ -213,21 +220,28 @@ def choose_joint_rates(
     if 1.0 not in multipliers:
         raise ValueError("в наборе множителей обязан быть 1.0 — режим «как есть» это база")
 
-    wells = sorted(
+    producer_wells = sorted(
         {control.well for step in base_steps for control in step.producers}, key=_well_key
     )
-    selected = dict.fromkeys(wells, 1.0)
+    injector_wells = sorted(
+        {control.well for step in base_steps for control in step.injectors}, key=_well_key
+    )
+    controls = [
+        *(("injection", well) for well in injector_wells),
+        *(("production", well) for well in producer_wells),
+    ]
+    selected = dict.fromkeys(controls, 1.0)
     current_steps = _scale_individually(base_steps, selected)
     current_chdd = _chdd(surrogate.predict(current_steps), start_date)
     choices: list[JointRateChoice] = []
 
-    for well in wells:
+    for kind, well in controls:
         before = current_chdd
-        best_multiplier = selected[well]
+        best_multiplier = selected[(kind, well)]
         best_steps = current_steps
         best_chdd = current_chdd
         for multiplier in multipliers:
-            candidate_multipliers = selected | {well: multiplier}
+            candidate_multipliers = selected | {(kind, well): multiplier}
             candidate = _scale_individually(base_steps, candidate_multipliers)
             candidate_chdd = _chdd(surrogate.predict(candidate), start_date)
             if candidate_chdd > best_chdd + 1e-9:
@@ -235,10 +249,10 @@ def choose_joint_rates(
                 best_steps = candidate
                 best_chdd = candidate_chdd
 
-        selected[well] = best_multiplier
+        selected[(kind, well)] = best_multiplier
         current_steps = best_steps
         current_chdd = best_chdd
-        choices.append(JointRateChoice(well, best_multiplier, before, best_chdd))
+        choices.append(JointRateChoice(well, best_multiplier, before, best_chdd, kind))
     return choices
 
 
@@ -267,13 +281,22 @@ def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
 def apply_choices(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                   choices: list[RateChoice] | list[JointRateChoice]) -> list[ScheduleStep]:
     """Собрать расписание из выбранных по скважинам режимов."""
-    by_well = {choice.well: choice.multiplier for choice in choices}
+    producers = {
+        choice.well: choice.multiplier for choice in choices if choice.kind == "production"
+    }
+    injectors = {
+        choice.well: choice.multiplier for choice in choices if choice.kind == "injection"
+    }
     result: list[ScheduleStep] = []
     for step in steps:
-        producers = tuple(
-            _scaled(control, by_well.get(control.well, 1.0)) for control in step.producers
+        scaled_producers = tuple(
+            _scaled(control, producers.get(control.well, 1.0)) for control in step.producers
         )
-        result.append(ScheduleStep(step.date, producers, step.injectors))
+        scaled_injectors = tuple(
+            _scaled_injector(control, injectors.get(control.well, 1.0))
+            for control in step.injectors
+        )
+        result.append(ScheduleStep(step.date, scaled_producers, scaled_injectors))
     return result
 
 
@@ -300,15 +323,20 @@ def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
 
 
 def _scale_individually(
-    steps: list[ScheduleStep] | tuple[ScheduleStep, ...], multipliers: dict[str, float]
+    steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+    multipliers: dict[tuple[str, str], float],
 ) -> list[ScheduleStep]:
     result: list[ScheduleStep] = []
     for step in steps:
         producers = tuple(
-            _scaled(control, multipliers.get(control.well, 1.0))
+            _scaled(control, multipliers.get(("production", control.well), 1.0))
             for control in step.producers
         )
-        result.append(ScheduleStep(step.date, producers, step.injectors))
+        injectors = tuple(
+            _scaled_injector(control, multipliers.get(("injection", control.well), 1.0))
+            for control in step.injectors
+        )
+        result.append(ScheduleStep(step.date, producers, injectors))
     return result
 
 
@@ -332,6 +360,23 @@ def _scaled(control: ProducerControl, multiplier: float) -> ProducerControl:
         control.mode,
         min(rate, MAX_LIQUID_RATE_M3_PER_DAY),
         control.bhp,
+    )
+
+
+def _scaled_injector(control: InjectorControl, multiplier: float) -> InjectorControl:
+    if multiplier == 1.0 or control.status != "OPEN":
+        return control
+    if multiplier == 0.0:
+        return InjectorControl(
+            control.well, control.fluid, "SHUT", control.mode, None, control.bhp
+        )
+    rate = (control.rate or 0.0) * multiplier
+    if rate <= 0:
+        return InjectorControl(
+            control.well, control.fluid, "SHUT", control.mode, None, control.bhp
+        )
+    return InjectorControl(
+        control.well, control.fluid, control.status, control.mode, rate, control.bhp
     )
 
 

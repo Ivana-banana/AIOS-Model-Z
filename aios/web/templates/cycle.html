@@ -73,7 +73,11 @@
       {% for choice in result.rate_choices if choice.changed %}
         <tr>
           <td>{{ choice.well }}</td>
-          <td>{{ 'остановка' if choice.multiplier == 0 else 'дебит ×%g'|format(choice.multiplier) }}</td>
+          <td>
+            {% if choice.multiplier == 0 %}остановка
+            {% elif choice.kind == 'injection' %}закачка ×{{ '%g'|format(choice.multiplier) }}
+            {% else %}дебит ×{{ '%g'|format(choice.multiplier) }}{% endif %}
+          </td>
           <td class="{{ 'bad' if choice.before_m < 0 else '' }}">
             {{ '%+.2f'|format(choice.before_m) }}
           </td>
