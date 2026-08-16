@@ -48,6 +48,25 @@
       <div class="value">{{ 'пройден' if surrogate.quality_passed else 'не пройден' }}</div>
     </div>
   </div>
+  {% if surrogate.seed is not none %}
+  <p class="muted" style="margin-top:12px">
+    Seed <code>{{ surrogate.seed }}</code>
+    {% if surrogate.sklearn_version %} · sklearn <code>{{ surrogate.sklearn_version }}</code>{% endif %}
+    {% if surrogate.pandas_version %} · pandas <code>{{ surrogate.pandas_version }}</code>{% endif %}
+  </p>
+  {% endif %}
+  {% if surrogate.datasets %}
+  <div class="scroll" style="margin-top:8px">
+    <table>
+      <thead><tr><th>Обучающий CSV</th><th>SHA-256</th></tr></thead>
+      <tbody>
+      {% for path, sha256 in surrogate.datasets %}
+        <tr><td><code>{{ path }}</code></td><td><code>{{ sha256[:12] }}…</code></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
   <div class="scroll" style="margin-top:12px">
     <table>
       <thead>

@@ -90,6 +90,10 @@ class SurrogateStatus:
         tuple[str, float, float, float | None, float | None, float | None, float | None], ...
     ] = ()
     quality_passed: bool = False
+    seed: int | None = None
+    sklearn_version: str | None = None
+    pandas_version: str | None = None
+    datasets: tuple[tuple[str, str], ...] = ()
 
 
 def load_surrogate_status(path: Path) -> SurrogateStatus:
@@ -120,6 +124,11 @@ def load_surrogate_status(path: Path) -> SurrogateStatus:
         quality_passed = all(
             by_target[target][0] < by_target[target][1] for target in QUALITY_TARGETS
         )
+        training = raw.get("training", {})
+        datasets = tuple(
+            (str(dataset["path"]), str(dataset["sha256"]))
+            for dataset in training.get("datasets", [])
+        )
         return SurrogateStatus(
             state="ready",
             train_scenarios=len(raw["train_scenarios"]),
@@ -128,6 +137,14 @@ def load_surrogate_status(path: Path) -> SurrogateStatus:
             rows=int(raw["rows"]),
             metrics=metrics,
             quality_passed=quality_passed,
+            seed=int(training["seed"]) if "seed" in training else None,
+            sklearn_version=(
+                str(training["sklearn_version"]) if "sklearn_version" in training else None
+            ),
+            pandas_version=(
+                str(training["pandas_version"]) if "pandas_version" in training else None
+            ),
+            datasets=datasets,
         )
     except (KeyError, OSError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
         return SurrogateStatus("invalid")

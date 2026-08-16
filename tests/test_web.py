@@ -128,6 +128,12 @@ def test_index_shows_surrogate_metrics(project):
             },
             "WOMT_Diff": {"neural_mae": 0.8, "linear_mae": 1.1},
         },
+        "training": {
+            "seed": 20260817,
+            "sklearn_version": "1.9.0",
+            "pandas_version": "3.0.1",
+            "datasets": [{"path": "data/dataset.csv", "sha256": "abcdef1234567890"}],
+        },
     }
     artifacts = project / "artifacts"
     artifacts.mkdir()
@@ -144,6 +150,8 @@ def test_index_shows_surrogate_metrics(project):
     assert "пройден" in text
     assert "WLPT_Diff" in text
     assert "0.91" in text
+    assert "20260817" in text
+    assert "abcdef123456" in text
     assert "Запустить MLP" in TestClient(create_app(project)).get("/run/base").text
 
 
