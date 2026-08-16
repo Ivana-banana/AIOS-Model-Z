@@ -341,8 +341,9 @@ def _schedule_multipliers(
         reference_controls = reference.get(month_start, {})
         values = []
         for well in wells:
-            planned, _ = _rates(controls.get(well))
-            base, _ = _rates(reference_controls.get(well))
+            planned, base = _relative_rate(
+                controls.get(well), reference_controls.get(well)
+            )
             if base > 0:
                 last[well] = planned / base
             elif planned > 0:
@@ -352,6 +353,20 @@ def _schedule_multipliers(
             values.append(last[well])
         result[month_start] = np.asarray(values, dtype=float)
     return result
+
+
+def _relative_rate(
+    planned: ProducerControl | InjectorControl | None,
+    reference: ProducerControl | InjectorControl | None,
+) -> tuple[float, float]:
+    """Сопоставимый режим: добыча с добычей, закачка с закачкой."""
+    planned_liquid, planned_injection = _rates(planned)
+    base_liquid, base_injection = _rates(reference)
+    if base_liquid > 0:
+        return planned_liquid, base_liquid
+    if base_injection > 0:
+        return planned_injection, base_injection
+    return max(planned_liquid, planned_injection), 0.0
 
 
 def _inference_features(month_start: date, multipliers: np.ndarray,

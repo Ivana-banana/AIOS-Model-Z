@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from aios import economics
-from aios.deck import ProducerControl, ScheduleStep
+from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.model import SurrogateLoadError, for_cycle
 from aios.neural import (
     TARGET_COLUMNS,
@@ -93,6 +93,15 @@ class InvalidModel:
         return np.tile([-1.0, 2.0, 0.0, 200.0, 50.0], (len(features), 1))
 
 
+class RecordingModel(ConstantModel):
+    def __init__(self):
+        self.features = None
+
+    def predict(self, features):
+        self.features = features.copy()
+        return np.tile([900.0, 500.0, 0.0, 200.0, 50.0], (len(features), 1))
+
+
 def report(*, neural: float = 1.0, linear: float = 2.0) -> TrainingReport:
     return TrainingReport(
         ("train",), ("test",), 1, 2,
@@ -152,6 +161,28 @@ def test_date_outside_training_horizon_is_flagged():
 
     assert any("вне обучающего горизонта" in warning
                for warning in surrogate.in_training_range([future]))
+
+
+def test_injector_multiplier_reaches_the_neural_features():
+    recorder = RecordingModel()
+    trained = bundle()
+    trained.control_wells = ("1", "2")
+    trained.models["1"] = recorder
+    reference = ScheduleStep(
+        step().date,
+        step().producers,
+        (InjectorControl("2", "WATER", "OPEN", "RATE", 40.0, 300.0),),
+    )
+    candidate = ScheduleStep(
+        step().date,
+        step().producers,
+        (InjectorControl("2", "WATER", "OPEN", "RATE", 80.0, 300.0),),
+    )
+
+    NeuralSurrogate.create(trained, [reference]).predict([candidate])
+
+    assert recorder.features is not None
+    assert recorder.features[0, -2:].tolist() == pytest.approx([1.0, 2.0])
 
 
 def test_multiple_doe_packages_keep_scenarios_distinct(tmp_path):
