@@ -121,6 +121,7 @@ scripts/
   run_flow.sh    запустить OPM Flow (Linux)
   export_rows.py проверить прогон и собрать rows.csv для команды
   build_doe.py   сгенерировать сценарии DoE и собрать под них кейсы
+  train_surrogate.py обучить MLP на целых сценариях и записать held-out метрики
   transcribe.py  расшифровка записей встреч организаторов
 docs/
   onboarding-team.md подключение нового участника
