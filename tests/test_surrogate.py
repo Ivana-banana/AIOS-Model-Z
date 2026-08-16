@@ -9,7 +9,7 @@ from conftest import make_row
 
 from aios import economics, summary
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
-from aios.surrogate import DeclineSurrogate, expand
+from aios.surrogate import DeclineSurrogate, TrainingEnvelope, expand
 
 FLUIDS = summary.Fluids()
 
@@ -199,3 +199,45 @@ def test_a_well_without_history_is_flagged_rather_than_guessed():
     # и прогноза по ней тоже нет, а не нулевая выдумка с ненулевым дебитом
     row = model.predict([producing(date(2014, 1, 1), 30.0, well="404")])[0]
     assert row["WLPR"] == 0.0
+
+
+def training_rows() -> list[dict]:
+    return [
+        {"scenario": "low", "DATA": "2014-01-01", "well": "1", "WLPR": 20, "WWIR": 0},
+        {"scenario": "low", "DATA": "2014-01-01", "well": "2", "WLPR": 0, "WWIR": 30},
+        {"scenario": "high", "DATA": "2014-01-01", "well": "1", "WLPR": 40, "WWIR": 0},
+        {"scenario": "high", "DATA": "2014-01-01", "well": "2", "WLPR": 0, "WWIR": 50},
+    ]
+
+
+def test_training_envelope_accepts_seen_local_and_field_ranges():
+    envelope = TrainingEnvelope.fit(training_rows())
+    steps = [ScheduleStep(
+        date(2014, 1, 1),
+        (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),),
+        (InjectorControl("2", "WATER", "OPEN", "RATE", 40.0, 300.0),),
+    )]
+
+    assert envelope.warnings(steps) == []
+
+
+def test_training_envelope_flags_unknown_role_and_field_combination():
+    envelope = TrainingEnvelope.fit(training_rows())
+    steps = [ScheduleStep(
+        date(2014, 1, 1),
+        (
+            ProducerControl("1", "OPEN", "LRAT", 40.0, 50.0),
+            ProducerControl("2", "OPEN", "LRAT", 20.0, 50.0),
+        ),
+        (),
+    )]
+
+    warnings = envelope.warnings(steps)
+
+    assert any("скв. 2" in warning and "режим отсутствует" in warning for warning in warnings)
+    assert any("суммарный дебит 60" in warning for warning in warnings)
+
+
+def test_training_envelope_rejects_empty_dataset():
+    with pytest.raises(ValueError, match="датасет пуст"):
+        TrainingEnvelope.fit([])

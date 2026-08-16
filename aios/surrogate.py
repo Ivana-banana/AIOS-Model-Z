@@ -70,6 +70,89 @@ class Surrogate(Protocol):
 
 
 @dataclass(frozen=True)
+class NumericRange:
+    """Замкнутый диапазон величины, фактически встречавшийся в обучении."""
+
+    minimum: float
+    maximum: float
+
+    def contains(self, value: float, *, tolerance: float = 1e-9) -> bool:
+        return self.minimum - tolerance <= value <= self.maximum + tolerance
+
+
+@dataclass(frozen=True)
+class TrainingEnvelope:
+    """Область применимости суррогата по скважинам и объекту целиком."""
+
+    producer_rates: dict[str, NumericRange]
+    injector_rates: dict[str, NumericRange]
+    field_liquid_rate: NumericRange
+    field_injection_rate: NumericRange
+
+    @classmethod
+    def fit(cls, rows: list[dict[str, Any]]) -> TrainingEnvelope:
+        """Собрать границы из строк `scenario x well x month` датасета DoE."""
+        if not rows:
+            raise ValueError("обучающий датасет пуст")
+
+        producers: dict[str, list[float]] = {}
+        injectors: dict[str, list[float]] = {}
+        field: dict[tuple[str, str], tuple[float, float]] = {}
+        for row in rows:
+            scenario = str(row.get("scenario", ""))
+            month = str(row["DATA"])
+            well = str(row["well"])
+            liquid = max(float(row["WLPR"]), 0.0)
+            injection = max(float(row["WWIR"]), 0.0)
+            if liquid > 0:
+                producers.setdefault(well, []).append(liquid)
+            if injection > 0:
+                injectors.setdefault(well, []).append(injection)
+            total_liquid, total_injection = field.get((scenario, month), (0.0, 0.0))
+            field[(scenario, month)] = (total_liquid + liquid, total_injection + injection)
+
+        return cls(
+            producer_rates={well: _numeric_range(values) for well, values in producers.items()},
+            injector_rates={well: _numeric_range(values) for well, values in injectors.items()},
+            field_liquid_rate=_numeric_range([value[0] for value in field.values()]),
+            field_injection_rate=_numeric_range([value[1] for value in field.values()]),
+        )
+
+    def warnings(self,
+                 steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> list[str]:
+        """Объяснить, чем расписание выходит за область обучающих прогонов."""
+        warnings: list[str] = []
+        for month_start, controls in expand(steps).items():
+            total_liquid = 0.0
+            total_injection = 0.0
+            for well, control in controls.items():
+                if control.status != "OPEN":
+                    continue
+                if isinstance(control, ProducerControl):
+                    rate = max(control.liquid_rate or 0.0, 0.0)
+                    total_liquid += rate
+                    warnings.extend(
+                        _range_warning(month_start, well, "дебит", rate,
+                                       self.producer_rates.get(well))
+                    )
+                else:
+                    rate = max(control.rate or 0.0, 0.0)
+                    total_injection += rate
+                    warnings.extend(
+                        _range_warning(month_start, well, "закачка", rate,
+                                       self.injector_rates.get(well))
+                    )
+
+            warnings.extend(_field_range_warning(
+                month_start, "суммарный дебит", total_liquid, self.field_liquid_rate
+            ))
+            warnings.extend(_field_range_warning(
+                month_start, "суммарная закачка", total_injection, self.field_injection_rate
+            ))
+        return warnings
+
+
+@dataclass(frozen=True)
 class WellDecline:
     """Подгонка по одной скважине: обводнённость как функция накопленного отбора."""
 
@@ -269,6 +352,37 @@ def _slope(points: list[tuple[float, float]]) -> float:
         return 0.0
     covariance = sum((x - mean_x) * (y - mean_y) for x, y in points)
     return covariance / variance
+
+
+def _numeric_range(values: list[float]) -> NumericRange:
+    if not values:
+        return NumericRange(0.0, 0.0)
+    return NumericRange(min(values), max(values))
+
+
+def _range_warning(month_start: date, well: str, label: str, value: float,
+                   bounds: NumericRange | None) -> list[str]:
+    if value <= 0:
+        return []
+    prefix = f"{month_start.isoformat()} скв. {well}: {label} {value:g} м3/сут"
+    if bounds is None:
+        return [f"{prefix}, такой режим отсутствует в обучающих прогонах"]
+    if not bounds.contains(value):
+        return [
+            f"{prefix} вне обучающего диапазона "
+            f"{bounds.minimum:g}..{bounds.maximum:g} м3/сут"
+        ]
+    return []
+
+
+def _field_range_warning(month_start: date, label: str, value: float,
+                         bounds: NumericRange) -> list[str]:
+    if bounds.contains(value):
+        return []
+    return [
+        f"{month_start.isoformat()}: {label} {value:g} м3/сут вне обучающего "
+        f"диапазона {bounds.minimum:g}..{bounds.maximum:g} м3/сут"
+    ]
 
 
 def _watercut_at(decline: WellDecline, cumulative_liquid_m3: float) -> float:
