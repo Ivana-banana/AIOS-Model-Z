@@ -32,7 +32,7 @@ from aios import config as config_module
 from aios import economics, loop, summary
 from aios.deck import ScheduleStep, parse_schedule
 from aios.margin import Norms, screen
-from aios.surrogate import DeclineSurrogate
+from aios.model import SurrogateLoadError, for_cycle
 from aios.web.charts import Series, bar_chart, line_chart
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -184,6 +184,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                     ],
                 ),
                 "settings": configuration,
+                "neural_available": _neural_available(project_root),
                 "chart_production": line_chart(
                     years,
                     [
@@ -269,7 +270,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         )
 
     @application.post("/run/{name}/cycle", response_class=HTMLResponse)
-    def cycle_page(request: Request, name: str) -> HTMLResponse:
+    def cycle_page(request: Request, name: str, model: str = "decline") -> HTMLResponse:
         run = _find(runs(), name)
         configuration = settings()
         rows = load_rows(run, configuration.fluids)
@@ -279,23 +280,47 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise HTTPException(404, f"В прогоне «{name}» нет wells_schedule.inc")
 
         assumptions, _ = economics.load_norms(configuration.economics.norms_file)
-        surrogate = DeclineSurrogate.fit(rows, configuration.fluids)
         base_steps = _steps_from(run.schedule, configuration)
+        reference_schedule = configuration.case.model_dir / "Model_Z_sch.inc"
+        reference_steps = _steps_from(
+            reference_schedule if reference_schedule.is_file() else run.schedule,
+            configuration,
+        )
+        if model not in {"decline", "neural"}:
+            raise HTTPException(400, "неизвестный тип суррогата")
+        try:
+            selected = for_cycle(
+                neural_path=(
+                    project_root / "artifacts" / "surrogate.joblib"
+                    if model == "neural" else None
+                ),
+                history=rows,
+                reference_steps=reference_steps,
+                fluids=configuration.fluids,
+            )
+        except SurrogateLoadError as error:
+            raise HTTPException(409, str(error)) from error
 
         result = loop.run_cycle(
-            surrogate,
+            selected.model,
             base_steps,
             Norms.from_assumptions(assumptions),
             control_start=configuration.case.control_start,
             start_date=configuration.economics.start_date,
             lookback_months=configuration.policy.lookback_months,
+            joint_rate_search=selected.joint_rate_search,
             limits=configuration.limits,
             fluids=configuration.fluids,
         )
         return TEMPLATES.TemplateResponse(
             request=request,
             name="cycle.html",
-            context={"run": run, "result": result, "settings": configuration},
+            context={
+                "run": run,
+                "result": result,
+                "settings": configuration,
+                "surrogate_name": selected.name,
+            },
         )
 
     return application
@@ -338,6 +363,15 @@ def _find(items: list[Run], name: str) -> Run:
         if item.name == name:
             return item
     raise HTTPException(404, f"Прогон «{name}» не найден")
+
+
+def _neural_available(project_root: Path) -> bool:
+    status = load_surrogate_status(project_root / "artifacts" / "surrogate-metrics.json")
+    return (
+        status.state == "ready"
+        and status.quality_passed
+        and (project_root / "artifacts" / "surrogate.joblib").is_file()
+    )
 
 
 app = create_app()

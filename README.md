@@ -104,6 +104,12 @@ python -m pytest -q
 python scripts/train_surrogate.py --dataset data/dataset.csv data/dataset-levels.csv
 ```
 
+После прохождения порога качества запустить цикл на обученной модели:
+
+```powershell
+python scripts/run_cycle.py --surrogate-model artifacts/surrogate.joblib
+```
+
 ## Структура
 
 ```
@@ -117,6 +123,7 @@ aios/
   policy.py      политика: от диагноза к управляющим действиям с объяснением
   surrogate.py   интерфейс суррогата и тривиальный бейзлайн (кривая обводнения)
   optimise.py    подбор режимов перебором по дисконтированной марже
+  model.py       проверенная загрузка и явный выбор суррогата для цикла
   doe.py         планирование эксперимента: сценарии для обучения суррогата
   planner.py     согласование решений через общие ограничения объекта
   loop.py        цикл МАС: состояние → диагноз → решения → прогноз → ЧДД

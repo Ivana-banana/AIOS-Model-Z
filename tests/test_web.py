@@ -127,6 +127,7 @@ def test_index_shows_surrogate_metrics(project):
     }
     artifacts = project / "artifacts"
     artifacts.mkdir()
+    (artifacts / "surrogate.joblib").write_bytes(b"model placeholder")
     (artifacts / "surrogate-metrics.json").write_text(
         json.dumps(report), encoding="utf-8"
     )
@@ -138,6 +139,7 @@ def test_index_shows_surrogate_metrics(project):
     assert "порог качества" in text.lower()
     assert "пройден" in text
     assert "WLPT_Diff" in text
+    assert "Запустить MLP" in TestClient(create_app(project)).get("/run/base").text
 
 
 def test_index_survives_invalid_surrogate_report(project):
@@ -209,6 +211,18 @@ def test_cycle_runs_and_reports_a_forecast(client):
     assert "ЧДД базового сценария" in response.text
     assert "прогноз" in response.text
     assert "не подтверждено" in response.text or "не подтверждён" in response.text
+    assert "тривиальный бейзлайн" in response.text
+
+
+def test_invalid_neural_artifact_is_a_controlled_error(project):
+    artifacts = project / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "surrogate.joblib").write_bytes(b"not a joblib model")
+
+    response = TestClient(create_app(project)).post("/run/base/cycle?model=neural")
+
+    assert response.status_code == 409
+    assert "не удалось загрузить" in response.text
 
 
 def test_cycle_explains_each_decision(client):

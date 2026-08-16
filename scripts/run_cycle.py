@@ -29,8 +29,8 @@ from aios import config as config_module  # noqa: E402
 from aios import economics, loop, summary  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
 from aios.margin import Norms  # noqa: E402
+from aios.model import SurrogateLoadError, for_cycle  # noqa: E402
 from aios.run import build_case  # noqa: E402
-from aios.surrogate import DeclineSurrogate  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="каталог посчитанного кейса: заменить прогноз полным расчётом")
     parser.add_argument("--no-tune-rates", action="store_true",
                         help="только остановка убыточных, без подбора режимов")
+    parser.add_argument("--surrogate-model", default=None,
+                        help="путь к surrogate.joblib; без параметра используется бейзлайн")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     arguments = parser.parse_args(argv)
 
@@ -59,9 +61,19 @@ def main(argv: list[str] | None = None) -> int:
     schedule = parse_schedule(config.case.model_dir / "Model_Z_sch.inc")
     base_steps = [step for step in schedule.steps if step.date >= config.case.control_start]
 
-    surrogate = DeclineSurrogate.fit(history, fluids=config.fluids)
+    try:
+        selected = for_cycle(
+            neural_path=Path(arguments.surrogate_model) if arguments.surrogate_model else None,
+            history=history,
+            reference_steps=base_steps,
+            fluids=config.fluids,
+        )
+    except SurrogateLoadError as error:
+        print(error, file=sys.stderr)
+        return 1
+    print(f"суррогат: {selected.name}")
     result = loop.run_cycle(
-        surrogate,
+        selected.model,
         base_steps,
         norms,
         control_start=config.case.control_start,
@@ -69,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         lookback_months=config.policy.lookback_months,
         known_wells=frozenset(schedule.wells),
         tune_rates=not arguments.no_tune_rates,
+        joint_rate_search=selected.joint_rate_search,
         limits=config.limits,
         fluids=config.fluids,
     )

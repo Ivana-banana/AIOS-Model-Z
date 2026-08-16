@@ -25,6 +25,10 @@
         {{ 'подтверждено' if result.confirmed else 'прогноз' }}
       </div>
     </div>
+    <div class="tile">
+      <div class="label">Модель прогноза</div>
+      <div class="value" style="font-size:16px">{{ surrogate_name }}</div>
+    </div>
   </div>
 
   {% if not result.confirmed %}

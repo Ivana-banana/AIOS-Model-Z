@@ -44,7 +44,9 @@ def test_runtime_stays_lean():
     который считает сценарии, делать нечего.
     """
     names = {re.split(r"[=<>\[]", line)[0].lower() for line in _packages(REQUIREMENTS)}
-    assert names == {"openpyxl", "resdata", "fastapi", "uvicorn", "jinja2", "scikit-learn"}
+    assert names == {
+        "openpyxl", "resdata", "fastapi", "uvicorn", "jinja2", "scikit-learn", "joblib"
+    }
     assert not names & {"pytest", "ruff", "pymupdf", "faster-whisper", "av", "httpx"}
 
 

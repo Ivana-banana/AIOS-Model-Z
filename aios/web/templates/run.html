@@ -132,8 +132,11 @@
     Состояние → диагноз → решения → прогноз → ЧДД. Прогноз считается суррогатной
     моделью и результатом не является, пока не подтверждён полным расчётом ГГДМ.
   </p>
-  <form method="post" action="/run/{{ run.name }}/cycle">
-    <button type="submit">Запустить цикл</button>
+  <form method="post" action="/run/{{ run.name }}/cycle" style="display:flex; gap:10px; flex-wrap:wrap">
+    <button type="submit">Запустить на бейзлайне</button>
+    {% if neural_available %}
+    <button type="submit" formaction="/run/{{ run.name }}/cycle?model=neural">Запустить MLP</button>
+    {% endif %}
   </form>
 </section>
 

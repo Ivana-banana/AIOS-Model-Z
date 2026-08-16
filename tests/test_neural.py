@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import joblib
 import numpy as np
 import pandas as pd
 import pytest
 
 from aios import economics
 from aios.deck import ProducerControl, ScheduleStep
+from aios.model import SurrogateLoadError, for_cycle
 from aios.neural import (
     TARGET_COLUMNS,
     NeuralBundle,
@@ -18,6 +20,7 @@ from aios.neural import (
     split_scenarios,
     train,
 )
+from aios.summary import Fluids
 from aios.surrogate import NumericRange, TrainingEnvelope
 from scripts.train_surrogate import load_datasets
 
@@ -158,3 +161,26 @@ def test_multiple_doe_packages_keep_scenarios_distinct(tmp_path):
     combined = load_datasets([str(first), str(second)])
 
     assert set(combined["scenario"]) == {"dataset:doe-000", "dataset-levels:doe-000"}
+
+
+def test_cycle_loader_enables_joint_search_for_a_valid_neural_bundle(tmp_path):
+    path = tmp_path / "surrogate.joblib"
+    joblib.dump(bundle(), path)
+
+    selected = for_cycle(
+        neural_path=path, history=[], reference_steps=[step()], fluids=Fluids()
+    )
+
+    assert isinstance(selected.model, NeuralSurrogate)
+    assert selected.joint_rate_search
+
+
+def test_cycle_loader_rejects_an_unknown_artifact(tmp_path):
+    path = tmp_path / "surrogate.joblib"
+    joblib.dump({"not": "a model"}, path)
+
+    with pytest.raises(SurrogateLoadError, match="NeuralBundle"):
+        for_cycle(
+            neural_path=path, history=[], reference_steps=[step()],
+            fluids=Fluids(),
+        )
