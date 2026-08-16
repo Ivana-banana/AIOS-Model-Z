@@ -19,6 +19,7 @@ from aios.neural import (
     train,
 )
 from aios.surrogate import NumericRange, TrainingEnvelope
+from scripts.train_surrogate import load_datasets
 
 
 def dataset() -> pd.DataFrame:
@@ -146,3 +147,14 @@ def test_date_outside_training_horizon_is_flagged():
 
     assert any("вне обучающего горизонта" in warning
                for warning in surrogate.in_training_range([future]))
+
+
+def test_multiple_doe_packages_keep_scenarios_distinct(tmp_path):
+    first = tmp_path / "dataset.csv"
+    second = tmp_path / "dataset-levels.csv"
+    pd.DataFrame({"scenario": ["doe-000"], "value": [1]}).to_csv(first, index=False)
+    pd.DataFrame({"scenario": ["doe-000"], "value": [2]}).to_csv(second, index=False)
+
+    combined = load_datasets([str(first), str(second)])
+
+    assert set(combined["scenario"]) == {"dataset:doe-000", "dataset-levels:doe-000"}

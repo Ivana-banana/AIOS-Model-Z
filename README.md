@@ -96,6 +96,13 @@ python -m pytest -q
 `pytest` гоняет и наши тесты, и тесты эталонного расчётчика организаторов — они
 часть нашего прогона, а не чужие.
 
+Обучение суррогата на обоих пакетах DoE (сценарии из разных CSV автоматически
+получают разные идентификаторы):
+
+```powershell
+python scripts/train_surrogate.py --dataset data/dataset.csv data/dataset-levels.csv
+```
+
 ## Структура
 
 ```
