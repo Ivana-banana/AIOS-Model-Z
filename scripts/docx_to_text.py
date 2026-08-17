@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
@@ -73,13 +74,19 @@ def docx_to_text(path: Path) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print(__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("source", nargs="?", help="файл .docx организаторов")
+    parser.add_argument("target", nargs="?", help="куда положить текст")
+    arguments = parser.parse_args(argv[1:])
+
+    if not arguments.source or not arguments.target:
+        parser.print_usage()
         return 2
-    source, target = Path(argv[1]), Path(argv[2])
+
+    source, target = Path(arguments.source), Path(arguments.target)
     # Кодировка задаётся явно: на Windows умолчание — cp1251, и текст поедет.
     target.write_text(docx_to_text(source), encoding="utf-8")
-    print(f"{source} → {target}")
+    print(f"{source} -> {target}")
     return 0
 
 
