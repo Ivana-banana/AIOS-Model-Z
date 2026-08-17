@@ -37,7 +37,7 @@ def test_script_is_tracked_by_git(name: str):
     """Файл на диске ничего не значит: важно, что он попадёт в клон другой машины."""
     listed = subprocess.run(
         ["git", "ls-files", "--error-unmatch", f"scripts/{name}"],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if listed.returncode != 0 and "not a git repository" in listed.stderr.lower():
         pytest.skip("не git-репозиторий")
@@ -49,7 +49,7 @@ def test_scripts_are_not_ignored_on_case_insensitive_filesystems():
     checked = subprocess.run(
         ["git", "-c", "core.ignorecase=true", "check-ignore", "-v",
          *(f"scripts/{name}" for name in REQUIRED)],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if "not a git repository" in checked.stderr.lower():
         pytest.skip("не git-репозиторий")
@@ -77,19 +77,42 @@ def test_shell_scripts_are_executable():
         assert os.access(path, os.X_OK), f"{path.name} не исполняемый — инструкция запуска врёт"
 
 
+def _bash_path(path: Path) -> str:
+    """Путь для bash — относительно корня репозитория, через прямые слэши.
+
+    Под Windows `subprocess` находит `Git\\usr\\bin\\bash.exe`: это MSYS-bash без
+    настроенного отображения дисков, и абсолютные пути ему недоступны вообще —
+    ни `C:\\Users\\...` (съедает обратные слэши как escape), ни `C:/Users/...`,
+    ни `/c/Users/...`. Относительный путь от рабочего каталога видят все три
+    варианта bash, поэтому все вызовы идут с `cwd=ROOT` и путями от него.
+
+    Цена ошибки — не падение, а ложное прохождение: bash не находил скрипт,
+    возвращал 127, и проверка «код возврата не ноль» засчитывала это за успех.
+    Защита от повтора — явная проверка на 127 в самих тестах.
+    """
+    try:
+        return os.path.relpath(path, ROOT).replace(os.sep, "/")
+    except ValueError:  # другой диск под Windows — общего относительного пути нет
+        pytest.skip(f"{path} на другом диске относительно {ROOT}")
+
+
 def _fake_flow(tmp_path: Path, body: str) -> dict[str, str]:
     """PATH с подставным `flow`, чтобы проверять поведение обвязки без симулятора."""
     binary = tmp_path / "bin"
     binary.mkdir()
     script = binary / "flow"
+    # newline="\n" обязателен: под Windows перевод строки по умолчанию — CRLF,
+    # и shebang превращается в «#!/usr/bin/env bash\r», которого нет в системе.
     script.write_text(
         '#!/usr/bin/env bash\n'
         '[[ "$1" == "--version" ]] && { echo "flow 0.0-fake"; exit 0; }\n'
         f"{body}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="\n",
     )
     script.chmod(0o755)
-    return {**os.environ, "PATH": f"{binary}:{os.environ['PATH']}"}
+    # Разделитель — системный: под Windows bash получает PATH в виде «;» и
+    # преобразует его сам, а «:» склеил бы все каталоги в одну запись.
+    return {**os.environ, "PATH": f"{binary}{os.pathsep}{os.environ['PATH']}"}
 
 
 def test_run_flow_fails_when_the_result_is_missing(tmp_path: Path):
@@ -103,13 +126,15 @@ def test_run_flow_fails_when_the_result_is_missing(tmp_path: Path):
     (case / "RUN.DATA").write_text("", encoding="utf-8")
 
     result = subprocess.run(
-        ["bash", str(SCRIPTS / "run_flow.sh"), str(case / "RUN.DATA"), "1"],
-        cwd=ROOT, capture_output=True, text=True, timeout=120,
+        ["bash", _bash_path(SCRIPTS / "run_flow.sh"), _bash_path(case / "RUN.DATA"), "1"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
         env=_fake_flow(tmp_path, "exit 0"),
     )
     assert result.returncode != 0, (
         "результата нет, а скрипт доложил об успехе:\n" + result.stdout[-800:]
     )
+    # Отказ должен быть отказом обвязки, а не «bash не нашёл файл».
+    assert result.returncode != 127, f"скрипт не запустился вовсе:\n{result.stderr[-400:]}"
 
 
 def test_run_flow_reports_skipped_keywords(tmp_path: Path):
@@ -124,13 +149,13 @@ def test_run_flow_reports_skipped_keywords(tmp_path: Path):
     (case / "RUN.DATA").write_text("", encoding="utf-8")
 
     result = subprocess.run(
-        ["bash", str(SCRIPTS / "run_flow.sh"), str(case / "RUN.DATA"), "1"],
-        cwd=ROOT, capture_output=True, text=True, timeout=120,
+        ["bash", _bash_path(SCRIPTS / "run_flow.sh"), _bash_path(case / "RUN.DATA"), "1"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
         env=_fake_flow(
             tmp_path,
             'echo "Error: Unsupported keywords or keyword items:"\n'
             'echo "  PINCHREG: keyword not supported"\n'
-            f'touch "{case}/RUN.UNSMRY"\n'
+            f'touch "{_bash_path(case)}/RUN.UNSMRY"\n'
             "exit 0",
         ),
     )
@@ -154,6 +179,32 @@ def test_python_scripts_run_from_a_clean_checkout(name: str):
 
     result = subprocess.run(
         [sys.executable, str(SCRIPTS / name), "--help"],
-        cwd=ROOT, capture_output=True, text=True, timeout=120,
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
     )
     assert result.returncode == 0, f"{name} --help упал:\n{result.stderr}"
+
+
+@pytest.mark.parametrize("name", [name for name in REQUIRED if name.endswith(".py")])
+def test_python_scripts_survive_a_cp1251_console(name: str):
+    """Вывод не должен зависеть от кодировки консоли.
+
+    Настоящий дефект, найденный 17.08: `build_dataset.py --help` падал с
+    `UnicodeEncodeError` на символе «→», потому что консоль Windows по умолчанию
+    cp1251. Цена ошибки несимметрична: расчёт к этому моменту уже выполнен, и
+    рушится именно печать результата — то есть теряется то, ради чего запускали.
+
+    ТЗ (п. 3.5) запрещает скрытые зависимости, препятствующие проверке решения;
+    кодировка консоли проверяющего — ровно такая зависимость. `PYTHONIOENCODING`
+    здесь воспроизводит чужую консоль на любой платформе.
+    """
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / name), "--help"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+        env={**os.environ, "PYTHONIOENCODING": "cp1251"},
+    )
+    assert result.returncode == 0, (
+        f"{name} --help падает в консоли cp1251:\n{result.stderr[-600:]}"
+    )
+    assert "UnicodeEncodeError" not in result.stderr

@@ -70,4 +70,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Вывод только в UTF-8: под Windows умолчание — cp1251, и печать «→»
+    # или части кириллицы роняет скрипт уже после расчёта, на выдаче
+    # результата. Скрытая зависимость от локали запрещена п. 3.5 ТЗ.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     raise SystemExit(main())
