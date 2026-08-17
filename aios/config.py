@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from aios.explain import Settings as ExplainSettings
 from aios.planner import Limits
 from aios.summary import Fluids
 
@@ -49,6 +50,7 @@ class RunConfig:
 class Config:
     case: CaseConfig
     economics: EconomicsConfig
+    explain: ExplainSettings
     fluids: Fluids
     limits: Limits
     policy: PolicyConfig
@@ -66,6 +68,7 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
     root = source.parent
     case = _section(raw, "case", source)
     economics = _section(raw, "economics", source)
+    explain = _section(raw, "explain", source)
     fluids = _section(raw, "fluids", source)
     limits = _section(raw, "limits", source)
     policy = _section(raw, "policy", source)
@@ -81,6 +84,13 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
         economics=EconomicsConfig(
             start_date=_date(economics, "start_date", "economics", source),
             norms_file=root / _value(economics, "norms_file", "economics", source),
+        ),
+        explain=ExplainSettings(
+            enabled=bool(_value(explain, "enabled", "explain", source)),
+            model=str(_value(explain, "model", "explain", source)),
+            max_tokens=int(_value(explain, "max_tokens", "explain", source)),
+            effort=str(_value(explain, "effort", "explain", source)),
+            cache_dir=root / _value(explain, "cache_dir", "explain", source),
         ),
         fluids=Fluids(
             oil_density=float(_value(fluids, "oil_density", "fluids", source)),

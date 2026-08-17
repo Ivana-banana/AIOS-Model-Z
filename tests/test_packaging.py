@@ -45,7 +45,10 @@ def test_runtime_stays_lean():
     """
     names = {re.split(r"[=<>\[]", line)[0].lower() for line in _packages(REQUIREMENTS)}
     assert names == {
-        "openpyxl", "resdata", "fastapi", "uvicorn", "jinja2", "scikit-learn", "joblib"
+        "openpyxl", "resdata", "fastapi", "uvicorn", "jinja2", "scikit-learn", "joblib",
+        # слой интерпретируемости — требование ТЗ п. 3.1, а не удобство: языковая
+        # модель обязана быть в ядре слоя. Без ключа пакет работает по шаблону.
+        "anthropic",
     }
     assert not names & {"pytest", "ruff", "pymupdf", "faster-whisper", "av", "httpx"}
 

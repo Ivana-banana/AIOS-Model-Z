@@ -29,6 +29,13 @@ max_field_injection_m3_per_day = 0
 enforce_water_balance = true
 water_tolerance = 1.0
 
+[explain]
+enabled = false
+model = "claude-opus-5"
+max_tokens = 1024
+effort = "low"
+cache_dir = "artifacts/explanations"
+
 [policy]
 lookback_months = 6
 
