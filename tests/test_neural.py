@@ -282,3 +282,46 @@ def test_cycle_loader_rejects_an_unknown_artifact(tmp_path):
             neural_path=path, history=[], reference_steps=[step()],
             fluids=Fluids(),
         )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="запуск из простоя кодируется тем же 0.0, что и остановка — находка ревизии 18.08",
+)
+def test_starting_an_idle_well_is_not_encoded_as_a_shutdown():
+    """Остановить скважину и запустить её из простоя — это не одно и то же.
+
+    Признак строится как отношение планируемого режима к опорному. Когда опорный
+    режим нулевой, отношение не определено, и `_schedule_multipliers` подставляет
+    конечное `0.0`. Но в обучающей выборке `0.0` означает буквально «скважина
+    остановлена» (`aios/doe.py`, `Scenario.shut_wells`), то есть предложение
+    запустить скважину подаётся модели как её остановка.
+
+    `CLAUDE.md` называет «запуск из простоя» одним из случаев, где суррогат врёт
+    по построению и должен мериться отдельно. Сейчас он не врёт, а получает
+    перевёрнутый вход.
+
+    Тест помечен `xfail(strict=True)`: он держит находку исполняемой и упадёт
+    как XPASS, когда кодирование починят, — тогда пометку надо снять.
+    """
+    from datetime import date
+
+    from aios import neural
+    from aios.surrogate import expand
+
+    def schedule(rate: float, status: str) -> list[ScheduleStep]:
+        return [ScheduleStep(date(2014, 1, 1),
+                             (ProducerControl("1", status, "LRAT", rate, 50.0),), ())]
+
+    def multiplier(planned: list[ScheduleStep], reference: list[ScheduleStep]) -> float:
+        values = neural._schedule_multipliers(
+            expand(planned), expand(reference), ("prod:1",),
+            neural._expand_role_controls(planned), neural._expand_role_controls(reference),
+        )
+        return float(values[date(2014, 1, 1)][0])
+
+    shutdown = multiplier(schedule(0.0, "SHUT"), schedule(30.0, "OPEN"))
+    start_up = multiplier(schedule(30.0, "OPEN"), schedule(0.0, "SHUT"))
+
+    assert shutdown == 0.0, "остановка обязана кодироваться нулём"
+    assert start_up != shutdown, "запуск из простоя не должен выглядеть как остановка"
