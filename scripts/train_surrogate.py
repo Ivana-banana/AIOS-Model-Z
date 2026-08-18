@@ -21,7 +21,7 @@ import pandas as pd  # noqa: E402
 import sklearn  # noqa: E402
 
 from aios import config as config_module  # noqa: E402
-from aios.neural import train  # noqa: E402
+from aios.neural import TrainingReport, assert_quality, train  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(bundle.report.test_scenarios)}")
     for dataset in metadata["datasets"]:
         print(f"данные: {dataset['path']} ({dataset['bytes']} байт), sha256={dataset['sha256']}")
+    print(f"порог качества: {quality_verdict(bundle.report)}")
     for target, metric in bundle.report.metrics.items():
         print(
             f"{target}: MLP MAE={metric.neural_mae:.4g}, "
@@ -68,6 +69,22 @@ def main(argv: list[str] | None = None) -> int:
             f"R²={metric.linear_r2:.4g}"
         )
     return 0
+
+
+def quality_verdict(report: TrainingReport) -> str:
+    """Проходит ли сеть порог против линейного бейзлайна — одной строкой.
+
+    Сам порог применяется не здесь, а при загрузке артефакта в цикл
+    (`NeuralSurrogate.create`), и это правильно: непрошедшую модель полезно
+    сохранить и разобрать. Но узнавать об отказе при запуске цикла — поздно:
+    метрики этого прогона уже уйдут в журнал как «сеть обучена». Поэтому вердикт
+    печатается сразу, рядом с метриками.
+    """
+    try:
+        assert_quality(report)
+    except ValueError as error:
+        return f"НЕ ПРОЙДЕН — {error}; в цикл такая модель не загрузится"
+    return "пройден, MLP лучше линейного бейзлайна по нефти и жидкости"
 
 
 def load_datasets(paths: list[str]) -> pd.DataFrame:

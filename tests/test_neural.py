@@ -325,3 +325,16 @@ def test_starting_an_idle_well_is_not_encoded_as_a_shutdown():
 
     assert shutdown == 0.0, "остановка обязана кодироваться нулём"
     assert start_up != shutdown, "запуск из простоя не должен выглядеть как остановка"
+
+
+def test_training_script_reports_the_quality_verdict_next_to_the_metrics():
+    """Об отказе порога надо узнавать при обучении, а не при запуске цикла.
+
+    Порог применяется на входе в цикл (`NeuralSurrogate.create`), и это верно:
+    непрошедшую модель полезно сохранить и разобрать. Но если при обучении об
+    этом не сказано, метрики прогона уйдут в журнал как «сеть обучена».
+    """
+    from scripts.train_surrogate import quality_verdict
+
+    assert "пройден" in quality_verdict(report(neural=1.0, linear=2.0))
+    assert "НЕ ПРОЙДЕН" in quality_verdict(report(neural=3.0, linear=2.0))
