@@ -87,7 +87,7 @@ def build_case(run_dir: str | Path,
                 source_schedule.read_text(encoding="utf-8", errors="replace"), control_start
             ))
         )
-        _assert_dates_increase(schedule_text, control_start)
+        _assert_assembled_schedule_is_sound(schedule_text, control_start)
 
     if wells is None:
         wells = parse_schedule(source_schedule).wells
@@ -115,7 +115,7 @@ def build_case(run_dir: str | Path,
                 wells_without_completions=uncompleted)
 
 
-def _assert_dates_increase(schedule_text: str, control_start: date) -> None:
+def _assert_assembled_schedule_is_sound(schedule_text: str, control_start: date) -> None:
     """Проверить склейку истории с нашими шагами, а не только сами шаги.
 
     `schedule.validate` следит за возрастанием дат, но видит объект `steps`.
@@ -134,6 +134,15 @@ def _assert_dates_increase(schedule_text: str, control_start: date) -> None:
                 "отдаётся целиком, и наши шаги дублируют её последний шаг"
             )
         previous = step.date
+
+    unsupported = parse_schedule_text(schedule_text).unsupported_controls
+    if unsupported:
+        raise ValueError(
+            "в SCHEDULE есть управляющие ключевые слова, которых мы не разбираем: "
+            + ", ".join(unsupported)
+            + ". Разобранные шаги неполны, и собранный по ним сценарий будет неверным: "
+            "поддержку надо дописать явно, а не надеяться, что «как-нибудь разберётся»"
+        )
 
 
 def wells_without_completions(schedule_text: str,

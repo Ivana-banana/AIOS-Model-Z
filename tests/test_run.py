@@ -397,3 +397,19 @@ def test_a_normal_control_start_still_assembles(tmp_path):
 
     dates = [item.date for item in parse_schedule(case.schedule_file).steps]
     assert dates == sorted(set(dates)), "даты обязаны строго возрастать"
+
+
+def test_an_unsupported_control_keyword_stops_the_build(tmp_path):
+    """WCONHIST мы не разбираем — значит собирать по такому деку сценарий нельзя.
+
+    Пропустить его молча означает получить шаги без добычи вовсе: базовый
+    сценарий, DoE и маржа посчитаются от пустоты, и выглядеть это будет как
+    «скважины стояли», а не как «мы не прочли».
+    """
+    schedule = SCHEDULE + "\nWCONHIST\n '1' 'OPEN' 'ORAT' 30.0 5.0 0.0 /\n/\n"
+    deck = _deck_with(tmp_path, schedule)
+    steps = [item for item in parse_schedule(deck / "history.inc").steps
+             if item.date >= date(2007, 1, 1)]
+
+    with pytest.raises(ValueError, match="WCONHIST"):
+        run.build_case(tmp_path / "run", deck, steps=steps, control_start=date(2007, 1, 1))

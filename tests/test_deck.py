@@ -110,3 +110,63 @@ def test_real_model_z_schedule():
     text = MODEL_Z_SCHEDULE.read_text(encoding="utf-8", errors="replace")
     assert "COMPDAT" in text
     assert "WELLTRACK" not in text and "COMPDATMD" not in text
+
+
+# ── управление, которого мы не разбираем ─────────────────────────────────────
+#
+# Р-03: поддерживаются только нужные ключевые слова, остальное пропускается.
+# Для COMPDATMD и WPIMULT это верно — они не режимы. Но WCONHIST, WELTARG и WEFAC
+# управлением являются, и в исторических деках WCONHIST встречается сплошь.
+# На таком деке разбор дал бы шаги без единого управления добычей, а базовый
+# сценарий, DoE и маржа считались бы от пустоты — молча.
+
+WITH_WCONHIST = """\
+WELSPECS
+ '1' 'GROUP' 23 17 1* 'OIL' /
+/
+
+DATES
+ 01 JAN 2007 /
+/
+
+WCONHIST
+ '1' 'OPEN' 'ORAT' 30.0 5.0 0.0 /
+/
+"""
+
+WITH_WPIMULT = """\
+DATES
+ 01 JAN 2007 /
+/
+
+WPIMULT
+ '1' 1.5 /
+/
+
+WCONPROD
+ '1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+/
+"""
+
+
+def test_unsupported_control_keywords_are_named_not_dropped():
+    """Молчаливый пропуск WCONHIST даёт базовый сценарий без добычи вовсе."""
+    schedule = deck.parse_schedule_text(WITH_WCONHIST)
+
+    assert schedule.steps[0].producers == (), "мы его действительно не разбираем"
+    assert "WCONHIST" in schedule.unsupported_controls, "и обязаны об этом сказать"
+
+
+def test_non_control_keywords_stay_silent():
+    """WPIMULT и вскрытия режимами не являются — шуметь про них незачем."""
+    schedule = deck.parse_schedule_text(WITH_WPIMULT)
+
+    assert schedule.unsupported_controls == ()
+    assert len(schedule.steps[0].producers) == 1
+
+
+@pytest.mark.skipif(not MODEL_Z_SCHEDULE.is_file(), reason="дек Модели Z не распакован")
+def test_model_z_schedule_has_nothing_unsupported():
+    """Контроль на настоящем деке: сегодня предупреждать не о чем."""
+    schedule = deck.parse_schedule(MODEL_Z_SCHEDULE)
+    assert schedule.unsupported_controls == ()

@@ -92,6 +92,15 @@ class Schedule:
 
     steps: tuple[ScheduleStep, ...]
 
+    unsupported_controls: tuple[str, ...] = ()
+    """Ключевые слова внутри шагов, которые задают режим, но нами не разбираются.
+
+    Пустой кортеж — весь режим дека прочитан. Непустой означает, что часть
+    управления мы не увидели: разобранные шаги неполны, и строить на них базовый
+    сценарий, DoE или маржу нельзя. Молчать здесь опаснее всего, потому что
+    отсутствие добычи выглядит как «скважины стояли», а не как «мы не прочли».
+    """
+
     @property
     def producer_wells(self) -> tuple[str, ...]:
         return _sorted_wells({c.well for s in self.steps for c in s.producers})
@@ -136,12 +145,31 @@ def parse_keywords(text: str) -> list[Keyword]:
     return keywords
 
 
+#: Ключевые слова, которые задают режим, но нашим разбором не поддержаны.
+#:
+#: Р-03 разрешает пропускать всё лишнее, и для `COMPDATMD` или `WPIMULT` это
+#: верно — они не режимы. Но эти задают именно управление, и молчаливый пропуск
+#: даёт шаги без добычи вовсе: базовый сценарий, DoE и маржа посчитаются от
+#: пустоты. В Модели Z их нет ни одного, а `WCONHIST` в исторических деках
+#: встречается сплошь — то есть риск ровно на валидационном кейсе (ТЗ п. 4.3).
+UNSUPPORTED_CONTROL_KEYWORDS = frozenset({
+    "WCONHIST",   # исторический режим добычи вместо WCONPROD
+    "WCONINJH",   # исторический режим закачки
+    "WELTARG",    # смена одной уставки у действующего режима
+    "WEFAC",      # коэффициент эксплуатации — множитель к дебиту
+    "WELOPEN",    # открытие и закрытие скважины отдельным ключевым словом
+    "GCONPROD",   # групповое ограничение добычи
+    "GCONINJE",   # групповое ограничение закачки
+})
+
+
 def parse_schedule_text(text: str) -> Schedule:
     """Разобрать SCHEDULE-секцию из строки."""
     keywords = parse_keywords(text)
 
     preamble: list[Keyword] = []
     steps: list[ScheduleStep] = []
+    unsupported: dict[str, None] = {}
     current_date: date | None = None
     producers: list[ProducerControl] = []
     injectors: list[InjectorControl] = []
@@ -161,11 +189,14 @@ def parse_schedule_text(text: str) -> Schedule:
             injectors.extend(_injector(record) for record in keyword.records)
         elif current_date is None:
             preamble.append(keyword)
+        elif keyword.name in UNSUPPORTED_CONTROL_KEYWORDS:
+            unsupported[keyword.name] = None
         # прочие ключевые слова внутри шага (COMPDATMD, WPIMULT) режимами не являются
 
     if current_date is not None:
         steps.append(ScheduleStep(current_date, tuple(producers), tuple(injectors)))
-    return Schedule(preamble=tuple(preamble), steps=tuple(steps))
+    return Schedule(preamble=tuple(preamble), steps=tuple(steps),
+                    unsupported_controls=tuple(sorted(unsupported)))
 
 
 def parse_schedule(path: str | Path) -> Schedule:
