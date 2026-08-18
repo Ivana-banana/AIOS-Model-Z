@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from aios import config as config_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
+from aios.deckfiles import find_data_file, layout  # noqa: E402
 from aios.run import build_case  # noqa: E402
 
 
@@ -38,13 +39,19 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = Path(arguments.run_dir) if arguments.run_dir else config.case.run_dir
     model_dir = config.case.model_dir
 
-    if not (model_dir / "Model_Z.data").is_file():
-        print(f"Дек не найден: {model_dir}/Model_Z.data\n"
-              f"Распаковать: unzip -q materials/Model_Z_final_OPM.zip -d vendor "
-              f'-x "__MACOSX/*" && mv vendor/Model_Z {model_dir.name}', file=sys.stderr)
+    # состав дека выясняется из самого дека: на кейсе организаторов (ТЗ п. 4.3)
+    # файлы называются иначе, а зашитое имя отказало бы на первом же шаге
+    try:
+        find_data_file(model_dir)
+        schedule_file = layout(model_dir).one("SCHEDULE")
+    except ValueError as error:
+        print(f"Дек не читается: {error}\n"
+              f"Ожидается каталог поставки с корневым .DATA: {model_dir}\n"
+              f"Как распаковать поставку — README.md, раздел «Установка».",
+              file=sys.stderr)
         return 1
 
-    schedule = parse_schedule(model_dir / "Model_Z_sch.inc")
+    schedule = parse_schedule(schedule_file)
     case = build_case(run_dir, model_dir, case_name=config.case.case_name)
 
     print(f"конфигурация:  {config.source}")

@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 from aios import config as config_module  # noqa: E402
 from aios import doe  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
+from aios.deckfiles import layout  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     config = config_module.load(arguments.config)
-    schedule = parse_schedule(config.case.model_dir / "Model_Z_sch.inc")
+    schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
     control_steps = [step for step in schedule.steps if step.date >= config.case.control_start]
     if not control_steps:
         print(f"в расписании нет шагов с {config.case.control_start}", file=sys.stderr)

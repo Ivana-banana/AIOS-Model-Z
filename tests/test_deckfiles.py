@@ -158,17 +158,22 @@ def test_dimens_on_the_same_line_as_the_keyword_is_not_required(tmp_path):
 
 # --- защита от возвращения хардкода -----------------------------------------
 
-def test_no_module_hardcodes_a_model_z_file_name():
+@pytest.mark.parametrize("package", ["aios", "scripts"])
+def test_no_module_hardcodes_a_model_z_file_name(package):
     """Имя файла Модели Z в исполняемой строке — отказ на кейсе организаторов.
 
     Проверяется код, а не комментарии: ссылка на поставку в документации — это
     полезный контекст, а `open("Model_Z_sch.inc")` — дефект, который проявится
     ровно один раз и ровно там, где его нельзя исправить.
+
+    `scripts/` проверяется наравне с `aios/`, и это не педантизм: жюри запускает
+    именно скрипты. Зашитое имя в библиотеке отказало бы при вызове, а зашитое
+    имя в `build_case.py` — на первом же шаге единой команды.
     """
     import ast
     from pathlib import Path
 
-    root = Path(__file__).resolve().parent.parent / "aios"
+    root = Path(__file__).resolve().parent.parent / package
     offenders: list[str] = []
     for path in sorted(root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
