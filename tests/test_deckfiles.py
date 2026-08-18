@@ -158,20 +158,24 @@ def test_dimens_on_the_same_line_as_the_keyword_is_not_required(tmp_path):
 
 # --- защита от возвращения хардкода -----------------------------------------
 
-def test_no_module_hardcodes_a_model_z_file_name():
+@pytest.mark.parametrize("package", ["aios", "scripts"])
+def test_no_module_hardcodes_a_model_z_file_name(package):
     """Имя файла Модели Z в исполняемой строке — отказ на кейсе организаторов.
 
     Проверяется код, а не комментарии: ссылка на поставку в документации — это
     полезный контекст, а `open("Model_Z_sch.inc")` — дефект, который проявится
     ровно один раз и ровно там, где его нельзя исправить.
+
+    `scripts/` проверяется наравне с `aios/`, и это не педантизм: жюри запускает
+    именно скрипты. Зашитое имя в библиотеке отказало бы при вызове, а зашитое
+    имя в `build_case.py` — на первом же шаге единой команды.
     """
     import ast
     from pathlib import Path
 
-    root = Path(__file__).resolve().parent.parent
-    sources = [*(root / "aios").rglob("*.py"), *(root / "scripts").glob("*.py")]
+    root = Path(__file__).resolve().parent.parent / package
     offenders: list[str] = []
-    for path in sorted(sources):
+    for path in sorted(root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
 
         # строки-документация — это контекст, а не поведение: пропускаем их
@@ -188,11 +192,7 @@ def test_no_module_hardcodes_a_model_z_file_name():
         for node in ast.walk(tree):
             if id(node) in documentation:
                 continue
-            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
-                continue
-            # имя архива поставки в подсказке «как распаковать» — законная
-            # константа: это то, что человек скачивает, а не файл внутри дека
-            text = node.value.replace("materials/Model_Z_final_OPM.zip", "")
-            if "Model_Z" in text:
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and "Model_Z" in node.value):
                 offenders.append(f"{path.name}:{node.lineno}: {node.value!r}")
     assert not offenders, "имена файлов дека зашиты в коде:\n" + "\n".join(offenders)

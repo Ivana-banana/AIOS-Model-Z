@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 from aios import config as config_module  # noqa: E402
 from aios import economics, loop, summary  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout as deck_layout  # noqa: E402
+from aios.deckfiles import layout  # noqa: E402
 from aios.margin import Norms  # noqa: E402
 from aios.model import SurrogateLoadError, for_cycle  # noqa: E402
 from aios.run import build_case  # noqa: E402
@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
 
     assumptions, _pumps = economics.load_norms(config.economics.norms_file)
     norms = Norms.from_assumptions(assumptions)
-    schedule = parse_schedule(deck_layout(config.case.model_dir).one("SCHEDULE"))
+    schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
     base_steps = [step for step in schedule.steps if step.date >= config.case.control_start]
 
     try:

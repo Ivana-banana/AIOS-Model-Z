@@ -142,6 +142,32 @@ def test_liquid_rate_above_500_is_rejected_by_the_reference_calculator():
         npv(rows)
 
 
+def test_the_liquid_limit_is_declared_once_and_comes_from_the_norms():
+    """500 м³/сут — не литерал методики, а верхняя граница старшего ЭЦН.
+
+    Источник числа — `Нормативы_ЧДД.xlsx` организаторов. На валидационном кейсе
+    (ТЗ п. 4.3) нормативы придут их, и если старший насос там другой, наши
+    проверки обязаны разойтись с эталоном громко. Сейчас число объявлено в
+    нескольких местах, и разъехаться они могут молча: валидатор пропустит режим,
+    который эталонный расчётчик потом отвергнет, — а это уже отказ на том
+    единственном прогоне, который оценивают.
+    """
+    import inspect
+
+    from aios import economics, summary
+    from aios.schedule import MAX_LIQUID_RATE_M3_PER_DAY
+
+    _assumptions, pumps = economics.load_norms()
+    assert pumps[-1]["max"] == MAX_LIQUID_RATE_M3_PER_DAY
+
+    # второе место — умолчание санити-чека на границе «симулятор → экономика»
+    default = inspect.signature(summary.sanity_problems).parameters["max_liquid_rate"].default
+    assert default == MAX_LIQUID_RATE_M3_PER_DAY
+
+    # третьего быть не должно: в модуле экономики константа не используется вовсе
+    assert not hasattr(economics, "MAX_LIQUID_RATE_M3_PER_DAY")
+
+
 def test_injection_only_well_counts_as_active_fund():
     """Скважина в действующем фонде, если WLPR > 0 ИЛИ WWIR > 0."""
     result = npv([

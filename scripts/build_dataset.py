@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 from aios import config as config_module  # noqa: E402
 from aios import economics, summary  # noqa: E402
 from aios.deck import ScheduleStep, parse_schedule  # noqa: E402
-from aios.deckfiles import layout as deck_layout  # noqa: E402
+from aios.deckfiles import layout  # noqa: E402
 
 CONTROL_COLUMNS = [
     "scenario", "multiplier", "production_multiplier", "injection_multiplier", "is_shut"
@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         for scenario in manifest["scenarios"]
     }
-    reference = parse_schedule(deck_layout(config.case.model_dir).one("SCHEDULE"))
+    reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
 
     target = Path(arguments.out)
     target.parent.mkdir(parents=True, exist_ok=True)

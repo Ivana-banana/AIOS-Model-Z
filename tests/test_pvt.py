@@ -12,6 +12,7 @@ import pytest
 
 from aios.pvt import (
     assign_regions,
+    from_deck,
     parse_completions,
     parse_density,
     parse_int_array,
@@ -227,3 +228,74 @@ def test_missing_pvto_is_an_error():
 def test_missing_pvtw_is_an_error():
     with pytest.raises(ValueError, match="PVTW"):
         parse_volume_factors("PVTO\n 0.005 1.13 1.0014 34.19 /\n")
+
+
+# --- сборка по деку целиком -------------------------------------------------
+
+FOREIGN_DATA = """\
+-- Дек стороннего месторождения: имена файлов не похожи на Модель Z.
+RUNSPEC
+
+DIMENS
+ 2 2 2 /
+
+PROPS
+INCLUDE
+'fluids.inc' /
+
+REGIONS
+INCLUDE
+'zones.inc' /
+
+SCHEDULE
+INCLUDE
+'history.inc' /
+
+END
+"""
+
+
+def _deck(tmp_path, schedule: str):
+    """Минимальный дек с чужими именами: PROPS, REGIONS и заданный SCHEDULE."""
+    directory = tmp_path / "FieldX"
+    directory.mkdir()
+    (directory / "FIELD_X.DATA").write_text(FOREIGN_DATA, encoding="utf-8")
+    (directory / "fluids.inc").write_text(DENSITY, encoding="utf-8")
+    (directory / "zones.inc").write_text(SMALL_REGIONS, encoding="utf-8")
+    (directory / "history.inc").write_text(schedule, encoding="utf-8")
+    return directory
+
+
+def test_from_deck_assigns_densities_on_a_foreign_deck(tmp_path):
+    """Сквозной путь «каталог дека → плотности по скважинам» на чужих именах."""
+    fluids, assigned = from_deck(_deck(tmp_path, COMPDAT))
+    assert set(assigned) == {"A", "B"}
+    assert fluids["A"].oil_density == pytest.approx(913.0765883224138)
+    assert fluids["B"].oil_density == pytest.approx(928.1613457381528)
+
+
+#: Вскрытия по измеренной глубине — формат поставки тНавигатора. Именно так
+#: устроен `materials/Model_Z.zip`: 60 блоков `COMPDATMD` и ни одного `COMPDAT`.
+#: `COMPDAT` появляется только в OPM-конвертации (`Model_Z_final_OPM.zip`).
+COMPDATMD = """\
+COMPDATMD
+ '42' 1* 1326.0 1329.3 MD OPEN 2* 0.146 1* 2 1* 1 /
+ '46' 1* 1271.2 1272.0 MD OPEN 2* 0.168 1* 2 1* 1 /
+/
+"""
+
+
+def test_completions_by_measured_depth_fail_loudly(tmp_path):
+    """Ноль сопоставленных скважин — это отказ, а не пустой словарь.
+
+    Пустой результат молча уводит весь фонд на плотность первого региона:
+    `monthly_rows` просто не находит скважину в `well_fluids` и берёт общую.
+    Узнать об этом неоткуда, а плотность — множитель прямо в выручке.
+    """
+    with pytest.raises(ValueError, match="COMPDATMD"):
+        from_deck(_deck(tmp_path, COMPDATMD))
+
+
+def test_a_schedule_without_any_completions_fails_loudly(tmp_path):
+    with pytest.raises(ValueError, match="не найдено ни одного COMPDAT"):
+        from_deck(_deck(tmp_path, "WELSPECS\n 'A' G 1 1 1* OIL /\n/\n"))

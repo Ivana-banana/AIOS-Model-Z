@@ -174,8 +174,10 @@ def parse_completions(text: str) -> dict[str, list[tuple[int, int, int, int]]]:
     """Вскрытия из `COMPDAT`: скважина → список `(I, J, K1, K2)`.
 
     Скважины, описанные через `COMPDATMD` (по измеренной глубине), сюда не
-    попадают: там нет координат ячеек. Их отсутствие видно вызывающему, а не
-    подменяется первым регионом.
+    попадают: там нет координат ячеек. Так устроена поставка тНавигатора —
+    `materials/Model_Z.zip` целиком на `COMPDATMD`, а `COMPDAT` есть только в
+    OPM-конвертации. Пустой результат превращает в отказ `from_deck`: молча он
+    означал бы первый регион на весь фонд.
     """
     completions: dict[str, list[tuple[int, int, int, int]]] = {}
     for body in _keyword_bodies(text, "COMPDAT"):
@@ -254,9 +256,33 @@ def from_deck(model_dir: str | Path) -> tuple[dict[str, Fluids], dict[str, WellR
     deck = layout(model_dir)
     pvt = parse_density(_read(deck.one("PROPS")))
     array = parse_int_array(_read(deck.one("REGIONS")), "PVTNUM")
-    completions = parse_completions(_read(deck.one("SCHEDULE")))
+    schedule = _read(deck.one("SCHEDULE"))
+    completions = parse_completions(schedule)
     assigned = assign_regions(completions, array, deck.grid())
+    if not assigned:
+        raise ValueError(_nothing_assigned(deck.one("SCHEDULE").name, schedule))
     return well_fluids(pvt, assigned), assigned
+
+
+def _nothing_assigned(schedule_name: str, schedule: str) -> str:
+    """Почему ни одна скважина не попала в регион — с указанием причины.
+
+    Пустой результат нельзя возвращать молча: `summary.monthly_rows` не находит
+    скважину в `well_fluids` и берёт общую плотность, то есть весь фонд уезжает
+    на первый регион и узнать об этом неоткуда. Плотность — множитель в выручке.
+    """
+    head = f"ни одна скважина {schedule_name} не сопоставлена с PVT-регионом: "
+    if _keyword_start(schedule, "COMPDATMD") is not None:
+        return head + (
+            "вскрытия заданы через COMPDATMD, по измеренной глубине, и координат "
+            "ячеек I J K в них нет. Так устроена поставка тНавигатора; чтобы "
+            "получить ячейки, нужны траектории скважин либо дек после конвертации "
+            "в COMPDAT"
+        )
+    return head + (
+        f"в SCHEDULE не найдено ни одного COMPDAT с координатами ячеек "
+        f"({schedule_name})"
+    )
 
 
 def report(regions: tuple[PvtRegion, ...], assigned: dict[str, WellRegion]) -> str:

@@ -1,7 +1,7 @@
 """Собрать расчётный кейс из `config.toml`.
 
 Базовый кейс — история организаторов как есть, добавлена только наша
-SUMMARY-секция: в поставке Модели Z SUMMARY-файл пустой, и без своих векторов
+SUMMARY-секция: `Model_Z_summary.inc` в поставке пустой, и без своих векторов
 симулятор не выгрузит ничего.
 
     python scripts/build_case.py                 # runs/base из config.toml
@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 
 from aios import config as config_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout as deck_layout  # noqa: E402
+from aios.deckfiles import find_data_file, layout  # noqa: E402
 from aios.run import build_case  # noqa: E402
 
 
@@ -39,15 +39,19 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = Path(arguments.run_dir) if arguments.run_dir else config.case.run_dir
     model_dir = config.case.model_dir
 
+    # состав дека выясняется из самого дека: на кейсе организаторов (ТЗ п. 4.3)
+    # файлы называются иначе, а зашитое имя отказало бы на первом же шаге
     try:
-        deck = deck_layout(model_dir)
+        find_data_file(model_dir)
+        schedule_file = layout(model_dir).one("SCHEDULE")
     except ValueError as error:
-        print(f"Дек не найден или неполон: {error}\n"
-              f"Распаковать поставку: unzip -q materials/Model_Z_final_OPM.zip "
-              f'-d vendor -x "__MACOSX/*"', file=sys.stderr)
+        print(f"Дек не читается: {error}\n"
+              f"Ожидается каталог поставки с корневым .DATA: {model_dir}\n"
+              f"Как распаковать поставку — README.md, раздел «Установка».",
+              file=sys.stderr)
         return 1
 
-    schedule = parse_schedule(deck.one("SCHEDULE"))
+    schedule = parse_schedule(schedule_file)
     case = build_case(run_dir, model_dir, case_name=config.case.case_name)
 
     print(f"конфигурация:  {config.source}")
