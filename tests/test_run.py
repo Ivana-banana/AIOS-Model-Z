@@ -463,3 +463,34 @@ TSTEP
 """
     with pytest.raises(ValueError, match="TSTEP"):
         run.build_case(tmp_path / "run", _deck_with(tmp_path, schedule))
+
+
+def test_a_wildcard_well_name_is_refused(tmp_path):
+    """`'P*'` в записи режима — шаблон Eclipse, а не имя скважины.
+
+    Разобранный как имя, он попадает в фонд скважиной-призраком: SUMMARY будет
+    выписан на `P*`, а настоящие скважины останутся без векторов, и выгрузка
+    придёт пустой — уже после полного прогона и с диагнозом «SUMMARY не попала в
+    кейс». Причина известна заранее, значит и сказать о ней надо заранее.
+    """
+    schedule = """\
+WELSPECS
+ 'P1' 'G' 1 1 1* 'OIL' /
+ 'P2' 'G' 2 2 1* 'OIL' /
+/
+
+DATES
+ 1 'JAN' 2007 /
+/
+
+COMPDAT
+ 'P1' 1 1 1 1 OPEN 1* 1* 0.146 /
+ 'P2' 2 2 1 1 OPEN 1* 1* 0.146 /
+/
+
+WCONPROD
+ 'P*' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+/
+"""
+    with pytest.raises(ValueError, match="шаблон"):
+        run.build_case(tmp_path / "run", _deck_with(tmp_path, schedule))

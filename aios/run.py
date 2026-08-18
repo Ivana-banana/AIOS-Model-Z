@@ -118,6 +118,18 @@ def build_case(run_dir: str | Path,
                "и выгрузка вышла бы пустой уже после прогона")
         )
 
+    # шаблон Eclipse (`'P*'`) — не имя скважины: разобранный как имя, он даёт
+    # фонд из одной скважины-призрака, SUMMARY выписывается на неё, а настоящие
+    # остаются без векторов, и выгрузка приходит пустой уже после полного прогона
+    templates = tuple(well for well in wells if "*" in well or "?" in well)
+    if templates:
+        raise ValueError(
+            f"в {source_schedule.name} режим задан по шаблону имени: "
+            + ", ".join(templates)
+            + ". Мы разбираем шаблоны как имена скважин, поэтому фонд получится "
+            "неверным; такие записи надо раскрыть в явные имена"
+        )
+
     uncompleted = wells_without_completions(schedule_text, wells)
     if steps is None:
         unsupported = parse_schedule_text(schedule_text).unsupported_controls
