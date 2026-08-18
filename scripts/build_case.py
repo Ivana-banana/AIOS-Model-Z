@@ -1,7 +1,7 @@
 """Собрать расчётный кейс из `config.toml`.
 
 Базовый кейс — история организаторов как есть, добавлена только наша
-SUMMARY-секция: `Model_Z_summary.inc` в поставке пустой, и без своих векторов
+SUMMARY-секция: в поставке Модели Z SUMMARY-файл пустой, и без своих векторов
 симулятор не выгрузит ничего.
 
     python scripts/build_case.py                 # runs/base из config.toml
@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from aios import config as config_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
+from aios.deckfiles import layout as deck_layout  # noqa: E402
 from aios.run import build_case  # noqa: E402
 
 
@@ -38,13 +39,15 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = Path(arguments.run_dir) if arguments.run_dir else config.case.run_dir
     model_dir = config.case.model_dir
 
-    if not (model_dir / "Model_Z.data").is_file():
-        print(f"Дек не найден: {model_dir}/Model_Z.data\n"
-              f"Распаковать: unzip -q materials/Model_Z_final_OPM.zip -d vendor "
-              f'-x "__MACOSX/*" && mv vendor/Model_Z {model_dir.name}', file=sys.stderr)
+    try:
+        deck = deck_layout(model_dir)
+    except ValueError as error:
+        print(f"Дек не найден или неполон: {error}\n"
+              f"Распаковать поставку: unzip -q materials/Model_Z_final_OPM.zip "
+              f'-d vendor -x "__MACOSX/*"', file=sys.stderr)
         return 1
 
-    schedule = parse_schedule(model_dir / "Model_Z_sch.inc")
+    schedule = parse_schedule(deck.one("SCHEDULE"))
     case = build_case(run_dir, model_dir, case_name=config.case.case_name)
 
     print(f"конфигурация:  {config.source}")

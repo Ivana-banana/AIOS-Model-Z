@@ -111,9 +111,23 @@ def _fake_flow(tmp_path: Path, body: str) -> dict[str, str]:
         encoding="utf-8", newline="\n",
     )
     script.chmod(0o755)
-    # Разделитель — системный: под Windows bash получает PATH в виде «;» и
-    # преобразует его сам, а «:» склеил бы все каталоги в одну запись.
-    return {**os.environ, "PATH": f"{binary}{os.pathsep}{os.environ['PATH']}"}
+    return binary
+
+
+def _with_fake_flow(binary: Path, command: list[str]) -> list[str]:
+    """Запустить команду так, чтобы подставной `flow` нашёлся любым bash.
+
+    Через переменную окружения это не работает и молча: `subprocess` на Windows
+    резолвит `bash` через CreateProcess, а тот находит `C:\\Windows\\System32\\bash.exe`
+    (WSL) раньше Git Bash — и Windows-PATH внутрь WSL не переносится. После
+    установки OPM Flow в WSL эти тесты начали запускать **настоящий** симулятор
+    вместо подставного, то есть проверяли не то, что написано.
+
+    Поэтому PATH задаётся внутри самой команды, а путь к каталогу — относительный
+    от `cwd`, который понимают и MSYS-bash, и WSL-bash.
+    """
+    inner = " ".join(f'"{part}"' for part in command)
+    return ["bash", "-c", f'PATH="$PWD/{_bash_path(binary)}:$PATH"; exec {inner}']
 
 
 def test_run_flow_fails_when_the_result_is_missing(tmp_path: Path):
@@ -127,9 +141,11 @@ def test_run_flow_fails_when_the_result_is_missing(tmp_path: Path):
     (case / "RUN.DATA").write_text("", encoding="utf-8")
 
     result = subprocess.run(
-        ["bash", _bash_path(SCRIPTS / "run_flow.sh"), _bash_path(case / "RUN.DATA"), "1"],
+        _with_fake_flow(
+            _fake_flow(tmp_path, "exit 0"),
+            ["bash", _bash_path(SCRIPTS / "run_flow.sh"), _bash_path(case / "RUN.DATA"), "1"],
+        ),
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
-        env=_fake_flow(tmp_path, "exit 0"),
     )
     assert result.returncode != 0, (
         "результата нет, а скрипт доложил об успехе:\n" + result.stdout[-800:]
@@ -149,16 +165,19 @@ def test_run_flow_reports_skipped_keywords(tmp_path: Path):
     case.mkdir()
     (case / "RUN.DATA").write_text("", encoding="utf-8")
 
+    fake = _fake_flow(
+        tmp_path,
+        'echo "Error: Unsupported keywords or keyword items:"\n'
+        'echo "  PINCHREG: keyword not supported"\n'
+        f'touch "$PWD/{_bash_path(case)}/RUN.UNSMRY"\n'
+        "exit 0",
+    )
     result = subprocess.run(
-        ["bash", _bash_path(SCRIPTS / "run_flow.sh"), _bash_path(case / "RUN.DATA"), "1"],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
-        env=_fake_flow(
-            tmp_path,
-            'echo "Error: Unsupported keywords or keyword items:"\n'
-            'echo "  PINCHREG: keyword not supported"\n'
-            f'touch "{_bash_path(case)}/RUN.UNSMRY"\n'
-            "exit 0",
+        _with_fake_flow(
+            fake,
+            ["bash", _bash_path(SCRIPTS / "run_flow.sh"), _bash_path(case / "RUN.DATA"), "1"],
         ),
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
     )
     assert "PINCHREG" in result.stdout, (
         "пропущенное ключевое слово не попало в отчёт скрипта:\n" + result.stdout[-800:]

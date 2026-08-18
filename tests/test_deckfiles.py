@@ -168,9 +168,10 @@ def test_no_module_hardcodes_a_model_z_file_name():
     import ast
     from pathlib import Path
 
-    root = Path(__file__).resolve().parent.parent / "aios"
+    root = Path(__file__).resolve().parent.parent
+    sources = [*(root / "aios").rglob("*.py"), *(root / "scripts").glob("*.py")]
     offenders: list[str] = []
-    for path in sorted(root.rglob("*.py")):
+    for path in sorted(sources):
         tree = ast.parse(path.read_text(encoding="utf-8"))
 
         # строки-документация — это контекст, а не поведение: пропускаем их
@@ -187,7 +188,11 @@ def test_no_module_hardcodes_a_model_z_file_name():
         for node in ast.walk(tree):
             if id(node) in documentation:
                 continue
-            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                    and "Model_Z" in node.value):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            # имя архива поставки в подсказке «как распаковать» — законная
+            # константа: это то, что человек скачивает, а не файл внутри дека
+            text = node.value.replace("materials/Model_Z_final_OPM.zip", "")
+            if "Model_Z" in text:
                 offenders.append(f"{path.name}:{node.lineno}: {node.value!r}")
     assert not offenders, "имена файлов дека зашиты в коде:\n" + "\n".join(offenders)
