@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 import calendar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Protocol
 
@@ -51,6 +51,14 @@ MIN_HISTORY_MONTHS = 3
 #: говорили прямо. Пока нет суррогата, обученного на прогонах ГГДМ, решение
 #: «форсировать» обязано выходить наверх с предупреждением, а не тихо в расписание.
 EXTRAPOLATION_MARGIN = 1.0
+
+#: Насколько закачка может отойти от исторической, прежде чем прогноз объявляется
+#: недостоверным. Порог маленький намеренно: бейзлайн отклик на закачку не
+#: моделирует вовсе — добыча в нём считается по собственному дебиту скважины, —
+#: поэтому изменение закачки не меняет прогноз ни на тонну. Молчать об этом
+#: нельзя: именно так 16.08 планировщик урезал закачку в 4,7 раза под обещание
+#: +646,5 млн руб., а полный расчёт дал −9295,4.
+INJECTION_CHANGE_TOLERANCE = 0.05
 
 
 class Surrogate(Protocol):
@@ -175,6 +183,15 @@ class DeclineSurrogate:
     wells: dict[str, WellDecline]
     fluids: Fluids
 
+    injection_range: dict[str, NumericRange] = field(default_factory=dict)
+    """Исторический диапазон приёмистости по нагнетательным, м³/сут.
+
+    Именно диапазон, а не максимум: закачка по скважине за историю гуляет, и
+    сравнение с одним лишь максимумом объявляло бы изменением любой спокойный
+    месяц. Отклик на закачку бейзлайн не моделирует, поэтому единственное, что он
+    может честно сделать, — заметить выход за пределы виденного и сказать об этом.
+    """
+
     @classmethod
     def fit(cls, history: list[dict[str, Any]], fluids: Fluids | None = None) -> DeclineSurrogate:
         """Подогнать по историческим строкам в контракте расчётчика."""
@@ -184,12 +201,16 @@ class DeclineSurrogate:
             by_well.setdefault(row["well"], []).append(row)
 
         fitted: dict[str, WellDecline] = {}
+        injection_range: dict[str, NumericRange] = {}
         for well, rows in by_well.items():
             rows.sort(key=lambda item: item["DATA"])
             decline = _fit_well(well, rows, fluids)
             if decline is not None:
                 fitted[well] = decline
-        return cls(wells=fitted, fluids=fluids)
+            injected = [float(row["WWIR"]) for row in rows if float(row["WWIR"]) > 0]
+            if injected:
+                injection_range[well] = _numeric_range(injected)
+        return cls(wells=fitted, fluids=fluids, injection_range=injection_range)
 
     def predict(self, steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> list[dict[str, Any]]:
         oil_to_t = self.fluids.oil_density / 1000.0
@@ -265,7 +286,12 @@ class DeclineSurrogate:
         warnings: list[str] = []
         for month_start, controls in expand(steps).items():
             for well, control in controls.items():
-                if not isinstance(control, ProducerControl) or control.status != "OPEN":
+                if isinstance(control, InjectorControl):
+                    warning = self._injection_warning(month_start, well, control)
+                    if warning:
+                        warnings.append(warning)
+                    continue
+                if control.status != "OPEN":
                     continue
                 decline = self.wells.get(well)
                 rate = control.liquid_rate or 0.0
@@ -283,6 +309,31 @@ class DeclineSurrogate:
                         f"форсаж, прогноз недостоверен"
                     )
         return warnings
+
+    def _injection_warning(self, month_start: date, well: str,
+                           control: InjectorControl) -> str | None:
+        """Закачку изменили — а бейзлайн этого изменения не видит.
+
+        Отклик на закачку в модель не входит: добыча считается по собственному
+        дебиту скважины и кривой обводнённости. Значит, любое отклонение от
+        исторической приёмистости прогноз не меняет — и именно поэтому о нём
+        обязано быть сказано вслух, а не выясняться полным расчётом задним числом.
+        """
+        rate = (control.rate or 0.0) if control.status == "OPEN" else 0.0
+        seen = self.injection_range.get(well)
+
+        if seen is None:
+            if rate <= 0:
+                return None
+            return (f"{month_start.isoformat()} скв. {well}: закачка {rate:g} м3/сут, "
+                    f"а в истории закачки не было — отклик на неё не моделируется")
+
+        slack = max(seen.maximum, 1.0) * INJECTION_CHANGE_TOLERANCE
+        if seen.minimum - slack <= rate <= seen.maximum + slack:
+            return None
+        return (f"{month_start.isoformat()} скв. {well}: закачка {rate:g} м3/сут вне "
+                f"исторических {seen.minimum:g}…{seen.maximum:g} — бейзлайн отклик на "
+                f"закачку не моделирует, прогноз это изменение не учитывает")
 
 
 def expand(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],

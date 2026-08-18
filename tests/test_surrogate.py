@@ -167,6 +167,62 @@ def test_shutting_a_watered_out_well_raises_the_forecast_npv():
     assert after.chdd_m > as_is.chdd_m
 
 
+def injection_history(months: int = 12, *, rate: float = 100.0, well: str = "2") -> list[dict]:
+    """История нагнетательной скважины — то, относительно чего считается изменение."""
+    rows = []
+    for index in range(months):
+        month = date(2013, 1, 1).replace(month=(index % 12) + 1)
+        rows.append(make_row(month.isoformat(), well, wwir=rate, injection=rate * 30))
+    return rows
+
+
+def injecting(day: date, rate: float, well: str = "2"):
+    return ScheduleStep(day, (), (InjectorControl(well, "WATER", "OPEN", "RATE", rate, 300.0),))
+
+
+def test_injection_on_the_historical_level_is_not_flagged():
+    model = DeclineSurrogate.fit(history() + injection_history(rate=100.0), FLUIDS)
+    assert model.in_training_range([injecting(date(2014, 1, 1), 100.0)]) == []
+
+
+def test_changed_injection_is_flagged_because_the_baseline_cannot_see_it():
+    """Бейзлайн не моделирует отклик на закачку — менять её вслепую нельзя.
+
+    Проверка не теоретическая, она из уже случившегося. 16.08 планировщик урезал
+    закачку в 4,7 раза, опираясь на прогноз этого суррогата: тот пообещал
+    +646,5 млн руб., полный расчёт дал −9295,4. Прогноз не изменился вовсе —
+    закачка в него не входит, — и предупреждения не было ни одного.
+    """
+    model = DeclineSurrogate.fit(history() + injection_history(rate=100.0), FLUIDS)
+
+    assert any("закачк" in warning for warning in model.in_training_range(
+        [injecting(date(2014, 1, 1), 300.0)]))
+    assert any("закачк" in warning for warning in model.in_training_range(
+        [injecting(date(2014, 1, 1), 20.0)]))
+
+
+def test_a_quiet_month_inside_the_historical_spread_is_not_flagged():
+    """Сравнение идёт с диапазоном, а не с максимумом.
+
+    Закачка по скважине за историю гуляет. Если опираться на один максимум, любой
+    спокойный месяц базового сценария объявляется изменением — и предупреждение
+    перестаёт что-либо значить, потому что горит всегда.
+    """
+    varied = (injection_history(months=6, rate=50.0)
+              + injection_history(months=6, rate=180.0))
+    model = DeclineSurrogate.fit(history() + varied, FLUIDS)
+
+    assert model.in_training_range([injecting(date(2014, 1, 1), 50.0)]) == []
+    assert model.in_training_range([injecting(date(2014, 1, 1), 120.0)]) == []
+    assert model.in_training_range([injecting(date(2014, 1, 1), 400.0)]) != []
+
+
+def test_injection_into_a_well_without_history_is_flagged():
+    model = DeclineSurrogate.fit(history(), FLUIDS)
+    warnings = model.in_training_range([injecting(date(2014, 1, 1), 50.0, well="9")])
+    assert warnings and "закачк" in warnings[0]
+
+
 def test_rate_within_the_history_is_not_flagged():
     """Дебит на историческом уровне и ниже — то, на чём подгонка честна."""
     model = DeclineSurrogate.fit(history(rate=30.0), FLUIDS)
