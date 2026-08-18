@@ -31,9 +31,6 @@ REQUIRED_COLUMNS: list[str] = list(chdd_model.REQUIRED_COLUMNS)
 #: Версия эталона, под которую написана обвязка. Обновили архив — обновить и тесты.
 VENDOR_VERSION: str = chdd_model.VERSION
 
-#: Дебит жидкости добывающей скважины выше этого значения методикой не допускается.
-MAX_LIQUID_RATE_M3_PER_DAY = 500.0
-
 
 @dataclass(frozen=True)
 class NpvResult:
