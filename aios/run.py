@@ -17,7 +17,7 @@ from datetime import date
 from pathlib import Path
 
 from aios import summary as summary_module
-from aios.deck import ScheduleStep, parse_date_record, parse_schedule
+from aios.deck import ScheduleStep, parse_date_record, parse_schedule, parse_schedule_text
 from aios.deckfiles import DeckLayout, layout
 from aios.schedule import render as render_steps
 
@@ -87,6 +87,7 @@ def build_case(run_dir: str | Path,
                 source_schedule.read_text(encoding="utf-8", errors="replace"), control_start
             ))
         )
+        _assert_dates_increase(schedule_text, control_start)
 
     if wells is None:
         wells = parse_schedule(source_schedule).wells
@@ -112,6 +113,27 @@ def build_case(run_dir: str | Path,
     )
     return Case(data_file=data_file, schedule_file=schedule_file, summary_file=summary_file,
                 wells_without_completions=uncompleted)
+
+
+def _assert_dates_increase(schedule_text: str, control_start: date) -> None:
+    """Проверить склейку истории с нашими шагами, а не только сами шаги.
+
+    `schedule.validate` следит за возрастанием дат, но видит объект `steps`.
+    Дубль возникает уровнем выше — при склейке текста истории с отрисованными
+    шагами, и туда валидатор не заглядывает. Самый простой способ это получить:
+    `control_start` за концом дека. Тогда история отдаётся целиком, наши шаги
+    дописываются следом и повторяют её последнюю дату, а для симулятора шаг, не
+    превосходящий текущего времени, — ошибка.
+    """
+    previous: date | None = None
+    for step in parse_schedule_text(schedule_text).steps:
+        if previous is not None and step.date <= previous:
+            raise ValueError(
+                f"в собранном расписании дата не возрастает: {step.date} после {previous}. "
+                f"Проверьте control_start ({control_start}): за концом дека история "
+                "отдаётся целиком, и наши шаги дублируют её последний шаг"
+            )
+        previous = step.date
 
 
 def wells_without_completions(schedule_text: str,

@@ -366,3 +366,34 @@ def test_a_well_declared_but_never_completed_is_named(tmp_path):
 def test_a_fully_completed_deck_reports_nothing(tmp_path, foreign_model_dir):
     case = run.build_case(tmp_path / "run", foreign_model_dir)
     assert case.wells_without_completions == ()
+
+
+def test_a_control_start_past_the_deck_horizon_is_refused(tmp_path):
+    """Дата начала управления за концом дека даёт расписание с повтором даты.
+
+    Сегодня оно собирается молча: история отдаётся целиком, наши шаги
+    дописываются следом, и последний шаг дублирует последнюю дату истории. Для
+    симулятора шаг, не превосходящий текущего времени, — ошибка, то есть в
+    сдаваемый файл уезжает брак.
+
+    Валидатор расписания возрастание дат проверяет, но смотрит на объект `steps`,
+    а дубль возникает при склейке истории с ними — в тексте, которого валидатор
+    не видит. Поэтому проверка нужна на самой склейке.
+    """
+    deck = _deck_with(tmp_path, SCHEDULE)
+    steps = parse_schedule(deck / "history.inc").steps[-1:]
+
+    with pytest.raises(ValueError, match="не возрастает"):
+        run.build_case(tmp_path / "run", deck, steps=steps, control_start=date(2030, 1, 1))
+
+
+def test_a_normal_control_start_still_assembles(tmp_path):
+    """Проверка склейки не должна мешать обычной сборке."""
+    deck = _deck_with(tmp_path, SCHEDULE)
+    steps = [step for step in parse_schedule(deck / "history.inc").steps
+             if step.date >= date(2007, 1, 1)]
+
+    case = run.build_case(tmp_path / "run", deck, steps=steps, control_start=date(2007, 1, 1))
+
+    dates = [item.date for item in parse_schedule(case.schedule_file).steps]
+    assert dates == sorted(set(dates)), "даты обязаны строго возрастать"
