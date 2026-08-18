@@ -170,3 +170,35 @@ def test_model_z_schedule_has_nothing_unsupported():
     """Контроль на настоящем деке: сегодня предупреждать не о чем."""
     schedule = deck.parse_schedule(MODEL_Z_SCHEDULE)
     assert schedule.unsupported_controls == ()
+
+
+WITH_INCLUDE = """\
+WELSPECS
+ '1' 'G' 1 1 1* 'OIL' /
+/
+
+DATES
+ 1 'JAN' 2007 /
+/
+
+WCONPROD
+ '1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+/
+
+INCLUDE
+ 'part2.inc' /
+"""
+
+
+def test_an_include_inside_the_schedule_is_named():
+    """Разбиение расписания по файлам — обычное дело в больших деках.
+
+    Наш разбор включения не раскрывает, и до 18.08 делал это молча: шаги и
+    скважины из включённого файла просто исчезали. Базовый сценарий покрывал бы
+    часть горизонта, DoE масштабировал бы часть фонда, а собранное по таким шагам
+    расписание уехало бы организаторам неполным.
+    """
+    schedule = deck.parse_schedule_text(WITH_INCLUDE)
+
+    assert len(schedule.steps) == 1, "включение мы действительно не раскрываем"
+    assert "INCLUDE" in schedule.unsupported_controls, "и обязаны об этом сказать"

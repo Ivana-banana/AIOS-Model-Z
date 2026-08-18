@@ -145,7 +145,7 @@ def parse_keywords(text: str) -> list[Keyword]:
     return keywords
 
 
-#: Ключевые слова, которые задают режим или ход времени, но нами не разбираются.
+#: Ключевые слова, которые меняют смысл расписания, но нами не разбираются.
 #:
 #: Р-03 разрешает пропускать всё лишнее, и для `COMPDATMD` или `WPIMULT` это
 #: верно — они не режимы. Но эти задают именно управление, и молчаливый пропуск
@@ -160,7 +160,7 @@ def parse_keywords(text: str) -> list[Keyword]:
 #: лишь домножают или переключают уже заданный режим, доходят до симулятора
 #: дословно, и неточен только наш собственный взгляд на режимы. Отказывать из-за
 #: них значило бы превратить работоспособный кейс организаторов в отказ.
-REPLACING_CONTROL_KEYWORDS = frozenset({"WCONHIST", "WCONINJH", "TSTEP"})
+REPLACING_CONTROL_KEYWORDS = frozenset({"WCONHIST", "WCONINJH", "TSTEP", "INCLUDE"})
 
 UNSUPPORTED_CONTROL_KEYWORDS = frozenset({
     "WCONHIST",   # исторический режим добычи вместо WCONPROD
@@ -171,6 +171,7 @@ UNSUPPORTED_CONTROL_KEYWORDS = frozenset({
     "GCONPROD",   # групповое ограничение добычи
     "GCONINJE",   # групповое ограничение закачки
     "TSTEP",      # шаг времени в сутках вместо DATES — законный способ вести время
+    "INCLUDE",    # расписание, разбитое по файлам: включение мы не раскрываем
 })
 
 
