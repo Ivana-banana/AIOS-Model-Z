@@ -9,7 +9,7 @@ from conftest import make_row
 
 from aios import balance, economics, planner
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
-from aios.margin import Norms
+from aios.margin import Norms, month_margin
 from aios.schedule import validate
 from aios.summary import Fluids
 
@@ -228,3 +228,41 @@ def test_explain_groups_by_resource():
 
     assert "закачка:" in text and "жидкость:" in text
     assert "скв. 1" in text and "скв. 2" in text
+
+
+# ── единицы ранжирования ─────────────────────────────────────────────────────
+
+def test_margin_is_ranked_per_cubic_metre_not_per_tonne(norms):
+    """Дефицитный ресурс — м³/сут, значит и деньги считаются на кубометр.
+
+    `WLPT_Diff` в контракте расчётчика — **тонны**, а предел системы сбора,
+    уставка `WCONPROD` и сам срез заданы в **м³/сут**. Делить маржу на тонны и
+    подписывать результат «млн руб./м³» значит ранжировать фонд по чужой единице:
+    плотность жидкости меняется с обводнённостью от 913 до 1172 кг/м³.
+
+    На порядок среза это влияет слабо — маржу определяет нефть, и обе метрики
+    упорядочивают фонд почти одинаково. Но число уходит в объяснение решения
+    человеку, а объяснение с чужой единицей — это то же самое, что неверное число.
+    """
+    rows = [produced("2007-01-01", "1", oil_m3=300.0, water_m3=600.0)]
+
+    value = planner._margin_per_liquid(rows, norms, FLUIDS)
+
+    assert value["1"] == pytest.approx(month_margin(rows[0], norms) / 900.0)
+    # а по тоннам получилось бы заметно другое число
+    assert value["1"] != pytest.approx(month_margin(rows[0], norms) / rows[0]["WLPT_Diff"])
+
+
+def test_the_cut_reason_reports_the_same_unit_it_ranks_by(norms):
+    forecast = [produced("2007-01-01", "1", oil_m3=300.0, water_m3=600.0),
+                produced("2007-01-01", "2", oil_m3=10.0, water_m3=890.0)]
+    steps = [step(producers=(prod("1", 40.0), prod("2", 40.0)))]
+
+    _, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(max_field_liquid_m3_per_day=50.0, enforce_water_balance=False), FLUIDS
+    )
+
+    liquid = [d for d in decisions if d.resource == "жидкость"]
+    assert liquid, "предел по жидкости не сработал"
+    assert "млн руб./м³" in liquid[0].reason

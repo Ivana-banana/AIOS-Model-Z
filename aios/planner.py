@@ -100,7 +100,7 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
 
     if limits.max_field_liquid_m3_per_day is not None:
         result, liquid = _fit_liquid_to_capacity(result, forecast, norms,
-                                                 limits.max_field_liquid_m3_per_day)
+                                                 limits.max_field_liquid_m3_per_day, fluids)
         decisions.extend(liquid)
 
     if limits.max_field_injection_m3_per_day is not None:
@@ -238,14 +238,15 @@ def _fit_injection_to_available_water(steps: list[ScheduleStep],
 def _fit_liquid_to_capacity(steps: list[ScheduleStep],
                             forecast: list[dict[str, Any]],
                             norms: Norms,
-                            capacity: float) -> tuple[list[ScheduleStep], list[Allocation]]:
+                            capacity: float,
+                            fluids: Fluids) -> tuple[list[ScheduleStep], list[Allocation]]:
     """Ужать отбор жидкости до пропускной способности по объекту.
 
     Режем по возрастанию удельной маржи: первой уходит скважина, которая приносит
     меньше всех денег на кубометр поднятой жидкости. Это единственный порядок,
     который можно объяснить и защитить — остальные сводятся к «нам так показалось».
     """
-    value = _margin_per_liquid(forecast, norms)
+    value = _margin_per_liquid(forecast, norms, fluids)
     decisions: list[Allocation] = []
     result: list[ScheduleStep] = []
     reported: set[str] = set()
@@ -302,14 +303,30 @@ def _fit_liquid_to_capacity(steps: list[ScheduleStep],
     return result, decisions
 
 
-def _margin_per_liquid(forecast: list[dict[str, Any]], norms: Norms) -> dict[str, float]:
-    """Сколько скважина приносит на кубометр поднятой жидкости, млн руб./м³."""
+def _margin_per_liquid(forecast: list[dict[str, Any]], norms: Norms,
+                       fluids: Fluids | None = None) -> dict[str, float]:
+    """Сколько скважина приносит на кубометр поднятой жидкости, млн руб./м³.
+
+    Знаменатель — именно объём. В контракте расчётчика `WLPT_Diff` это **тонны**,
+    а дефицитный ресурс, предел системы сбора и сама уставка `WCONPROD` заданы в
+    **м³/сут**: делить на тонны значит ранжировать фонд по чужой единице.
+    Плотность жидкости меняется с обводнённостью от 913 до 1172 кг/м³, так что
+    расхождение доходит до 28 % — на порядок среза влияет слабо, потому что маржу
+    определяет нефть, но число уходит в объяснение решения человеку.
+
+    Перевод массы в объём — той же конвенцией, что в `aios.balance.by_year`.
+    """
+    fluids = fluids or Fluids()
     margin: dict[str, float] = {}
     liquid: dict[str, float] = {}
     for row in forecast:
         well = row["well"]
+        oil_t = max(row["WOMT_Diff"], 0.0)
+        liquid_t = max(row["WLPT_Diff"], 0.0)
+        volume = (oil_t * 1000.0 / fluids.oil_density
+                  + max(liquid_t - oil_t, 0.0) * 1000.0 / fluids.water_density)
         margin[well] = margin.get(well, 0.0) + month_margin(row, norms)
-        liquid[well] = liquid.get(well, 0.0) + max(row["WLPT_Diff"], 0.0)
+        liquid[well] = liquid.get(well, 0.0) + volume
     return {
         well: (margin[well] / volume if volume > 0 else margin[well])
         for well, volume in liquid.items()
