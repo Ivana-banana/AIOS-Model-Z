@@ -57,6 +57,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"конфигурация:  {config.source}")
     print(f"дек:           {model_dir}")
     print(f"скважин:       {len(schedule.wells)}")
+    if case.wells_without_completions:
+        # скважина без вскрытий даёт ноль весь горизонт, а симулятор об этом
+        # только предупреждает — так уже были потеряны 22 скважины 16.08
+        names = ", ".join(case.wells_without_completions[:10])
+        more = "" if len(case.wells_without_completions) <= 10 else " …"
+        print(f"ВНИМАНИЕ: без вскрытий {len(case.wells_without_completions)}: {names}{more}")
+        print("          такие скважины дадут ноль весь горизонт — проверьте дек")
     print(f"шагов SCHEDULE:{len(schedule.steps):>4}")
     print(f"кейс:          {case.data_file}")
     print(f"SUMMARY:       {case.summary_file}")

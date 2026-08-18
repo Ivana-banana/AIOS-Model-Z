@@ -293,3 +293,76 @@ def test_rebuilt_case_keeps_every_completion_of_the_real_deck(tmp_path):
     assert rebuilt.count("COMPDAT") == original.count("COMPDAT"), (
         "потеряны вскрытия: скважины останутся без соединений с пластом"
     )
+
+
+# ── чужие условия задачи, а не чужой дек (ТЗ п. 4.3) ─────────────────────────
+#
+# В валидационном кейсе меняются условия, а не объект. Значит контур обязан
+# внятно отказывать на том, чего в Модели Z не встречается, — и отказывать
+# **до** прогона, а не после часа счёта с неверным диагнозом.
+
+NO_WELLS = """\
+RPTSCHED
+ 'WELLS=1' /
+
+DATES
+ 01 JAN 2007 /
+/
+"""
+
+UNCOMPLETED = """\
+WELSPECS
+ '1' 'GROUP' 23 17 1* 'OIL' /
+ '2' 'GROUP' 24 18 1* 'OIL' /
+/
+
+DATES
+ 01 JAN 2007 /
+/
+
+COMPDATMD
+ '1' 1* 1326.0 1329.3 MD OPEN 2* 0.146 1* 2 1* 1 /
+/
+
+WCONPROD
+ '1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+ '2' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+/
+"""
+
+
+def _deck_with(tmp_path, schedule: str):
+    directory = tmp_path / "FieldY"
+    directory.mkdir()
+    (directory / "FIELD_Y.DATA").write_text(FOREIGN_DATA, encoding="utf-8")
+    (directory / "history.inc").write_text(schedule, encoding="utf-8")
+    (directory / "vectors.inc").write_text("", encoding="utf-8")
+    (directory / "geometry.grdecl").write_text("-- сетка\n", encoding="utf-8")
+    return directory
+
+
+def test_a_deck_without_wells_is_refused_before_the_simulator_runs(tmp_path):
+    """Пустой фонд — это отказ, а не SUMMARY без единого вектора.
+
+    Сегодня такой кейс собирается молча, симулятор считает его час и отдаёт
+    выгрузку без строк, а `export_rows.py` объявляет причиной «SUMMARY-секция не
+    попала в кейс» — то есть не ту. Диагноз известен заранее.
+    """
+    with pytest.raises(ValueError, match="ни одной скважины"):
+        run.build_case(tmp_path / "run", _deck_with(tmp_path, NO_WELLS))
+
+
+def test_a_well_declared_but_never_completed_is_named(tmp_path):
+    """Скважина без вскрытий даёт ноль весь горизонт, и симулятор об этом молчит.
+
+    Ровно так проект уже потерял 22 скважины и все сценарные прогоны 16.08.
+    Проверка обязана считать вскрытием и `COMPDAT`, и `COMPDATMD`: в поставке
+    тНавигатора есть только второй.
+    """
+    case = run.build_case(tmp_path / "run", _deck_with(tmp_path, UNCOMPLETED))
+    assert case.wells_without_completions == ("2",)
+
+
+def test_a_fully_completed_deck_reports_nothing(tmp_path, foreign_model_dir):
+    case = run.build_case(tmp_path / "run", foreign_model_dir)
+    assert case.wells_without_completions == ()

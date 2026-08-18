@@ -35,6 +35,16 @@ class Case:
     schedule_file: Path
     summary_file: Path
 
+    wells_without_completions: tuple[str, ...] = ()
+    """Скважины из `WELSPECS`, у которых нет ни одного вскрытия.
+
+    Такая скважина получает режим, но не соединена с пластом: симулятор пишет
+    `has no connections to grid and will remain SHUT` и считает дальше, а
+    скважина молча даёт ноль весь горизонт. Так проект уже потерял 22 скважины и
+    все сценарные прогоны 16.08 — поэтому список едет вместе с кейсом, а не
+    остаётся в логе симулятора.
+    """
+
     @property
     def summary_case(self) -> Path:
         """Путь к результату без расширения — его ждёт `aios.summary.monthly_rows`."""
@@ -80,6 +90,13 @@ def build_case(run_dir: str | Path,
 
     if wells is None:
         wells = parse_schedule(source_schedule).wells
+    if not wells:
+        raise ValueError(
+            f"в {source_schedule.name} нет ни одной скважины (WELSPECS пуст или отсутствует): "
+            "считать нечего, и выгрузка вышла бы пустой уже после прогона"
+        )
+
+    uncompleted = wells_without_completions(schedule_text, wells)
 
     schedule_file = run_path / "wells_schedule.inc"
     schedule_file.write_text(schedule_text, encoding="utf-8", newline="\n")
@@ -93,7 +110,28 @@ def build_case(run_dir: str | Path,
     data_file.write_text(
         _render_data(deck, schedule_file, summary_file), encoding="utf-8", newline="\n"
     )
-    return Case(data_file=data_file, schedule_file=schedule_file, summary_file=summary_file)
+    return Case(data_file=data_file, schedule_file=schedule_file, summary_file=summary_file,
+                wells_without_completions=uncompleted)
+
+
+def wells_without_completions(schedule_text: str,
+                              wells: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Скважины, объявленные в `WELSPECS`, но ни разу не вскрытые.
+
+    Вскрытием считается запись и в `COMPDAT`, и в `COMPDATMD`: первый формат
+    приходит из OPM-конвертации, второй — из поставки тНавигатора, и на
+    валидационном кейсе (ТЗ п. 4.3) заранее неизвестно, какой будет.
+    """
+    completed: set[str] = set()
+    for match in re.finditer(r"^[ 	]*COMPDAT(?:MD)?[ 	]*$", schedule_text, re.MULTILINE):
+        for line in schedule_text[match.end():].splitlines():
+            stripped = line.split("--", 1)[0].strip()
+            if not stripped:
+                continue
+            if stripped == "/" or not stripped.endswith("/"):
+                break
+            completed.add(stripped.split()[0].strip("'\""))
+    return tuple(well for well in wells if well not in completed)
 
 
 #: Ключевые слова, которые мы генерируем сами. Всё остальное внутри шага —
