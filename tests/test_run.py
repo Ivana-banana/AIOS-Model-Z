@@ -348,7 +348,7 @@ def test_a_deck_without_wells_is_refused_before_the_simulator_runs(tmp_path):
     выгрузку без строк, а `export_rows.py` объявляет причиной «SUMMARY-секция не
     попала в кейс» — то есть не ту. Диагноз известен заранее.
     """
-    with pytest.raises(ValueError, match="ни одной скважины"):
+    with pytest.raises(ValueError, match="ни одной работающей скважины"):
         run.build_case(tmp_path / "run", _deck_with(tmp_path, NO_WELLS))
 
 
@@ -436,3 +436,30 @@ def test_a_modifying_keyword_does_not_stop_the_build(tmp_path):
 
     assert case.unsupported_controls == ("WEFAC",), "промолчать тоже нельзя"
     assert "WEFAC" in case.schedule_file.read_text(encoding="utf-8"), "и оно обязано дойти до дека"
+
+
+def test_a_deck_stepping_by_tstep_names_the_real_cause(tmp_path):
+    """`TSTEP` — законный способ вести время, и мы его не разбираем.
+
+    Вторая самопроверка: отказ по пустому фонду сказал бы «нет ни одной
+    скважины» и отправил искать скважины, тогда как скважины на месте, а
+    неразобран шаг времени. Диагноз обязан называть причину, иначе он хуже
+    молчания — уводит в сторону.
+
+    Отказ здесь верен по существу: мы генерируем `DATES`, и вместе с
+    перенесённым `TSTEP` время шло бы дважды.
+    """
+    schedule = """\
+WELSPECS
+ '1' 'G' 1 1 1* 'OIL' /
+/
+
+WCONPROD
+ '1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+/
+
+TSTEP
+ 31 28 31 /
+"""
+    with pytest.raises(ValueError, match="TSTEP"):
+        run.build_case(tmp_path / "run", _deck_with(tmp_path, schedule))

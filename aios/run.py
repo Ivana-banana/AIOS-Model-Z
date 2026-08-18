@@ -106,9 +106,16 @@ def build_case(run_dir: str | Path,
     if wells is None:
         wells = parse_schedule(source_schedule).wells
     if not wells:
+        # диагноз обязан называть причину: пустой фонд и неразобранный ход
+        # времени выглядят одинаково, но искать надо совсем разное
+        unparsed = parse_schedule_text(schedule_text).unsupported_controls
         raise ValueError(
-            f"в {source_schedule.name} нет ни одной скважины (WELSPECS пуст или отсутствует): "
-            "считать нечего, и выгрузка вышла бы пустой уже после прогона"
+            f"в {source_schedule.name} не нашлось ни одной работающей скважины. "
+            + (f"Причина, вероятно, в том, что мы не разбираем {', '.join(unparsed)}: "
+               "шаги расписания не прочитаны, и режимы вместе с ними"
+               if unparsed else
+               "WELSPECS пуст или ни одной скважине не назначен режим — считать нечего, "
+               "и выгрузка вышла бы пустой уже после прогона")
         )
 
     uncompleted = wells_without_completions(schedule_text, wells)

@@ -145,7 +145,7 @@ def parse_keywords(text: str) -> list[Keyword]:
     return keywords
 
 
-#: Ключевые слова, которые задают режим, но нашим разбором не поддержаны.
+#: Ключевые слова, которые задают режим или ход времени, но нами не разбираются.
 #:
 #: Р-03 разрешает пропускать всё лишнее, и для `COMPDATMD` или `WPIMULT` это
 #: верно — они не режимы. Но эти задают именно управление, и молчаливый пропуск
@@ -160,7 +160,7 @@ def parse_keywords(text: str) -> list[Keyword]:
 #: лишь домножают или переключают уже заданный режим, доходят до симулятора
 #: дословно, и неточен только наш собственный взгляд на режимы. Отказывать из-за
 #: них значило бы превратить работоспособный кейс организаторов в отказ.
-REPLACING_CONTROL_KEYWORDS = frozenset({"WCONHIST", "WCONINJH"})
+REPLACING_CONTROL_KEYWORDS = frozenset({"WCONHIST", "WCONINJH", "TSTEP"})
 
 UNSUPPORTED_CONTROL_KEYWORDS = frozenset({
     "WCONHIST",   # исторический режим добычи вместо WCONPROD
@@ -170,6 +170,7 @@ UNSUPPORTED_CONTROL_KEYWORDS = frozenset({
     "WELOPEN",    # открытие и закрытие скважины отдельным ключевым словом
     "GCONPROD",   # групповое ограничение добычи
     "GCONINJE",   # групповое ограничение закачки
+    "TSTEP",      # шаг времени в сутках вместо DATES — законный способ вести время
 })
 
 
@@ -197,10 +198,14 @@ def parse_schedule_text(text: str) -> Schedule:
             producers.extend(_producer(record) for record in keyword.records)
         elif keyword.name == "WCONINJE" and current_date is not None:
             injectors.extend(_injector(record) for record in keyword.records)
+        elif keyword.name in UNSUPPORTED_CONTROL_KEYWORDS:
+            # и до первой DATES тоже: дек, ведущий время через TSTEP, шагов не
+            # даёт вовсе, и всё его содержимое оказывается в преамбуле
+            unsupported[keyword.name] = None
+            if current_date is None:
+                preamble.append(keyword)
         elif current_date is None:
             preamble.append(keyword)
-        elif keyword.name in UNSUPPORTED_CONTROL_KEYWORDS:
-            unsupported[keyword.name] = None
         # прочие ключевые слова внутри шага (COMPDATMD, WPIMULT) режимами не являются
 
     if current_date is not None:
