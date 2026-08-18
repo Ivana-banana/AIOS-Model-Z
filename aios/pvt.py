@@ -185,22 +185,20 @@ def well_fluids(regions: tuple[PvtRegion, ...],
     return fluids
 
 
-def from_deck(model_dir: str | Path,
-              *,
-              dimensions: tuple[int, int, int],
-              props: str = "Model_Z_props.inc",
-              regions: str = "Model_Z_regs.inc",
-              schedule: str = "Model_Z_sch.inc") -> tuple[dict[str, Fluids], dict[str, WellRegion]]:
+def from_deck(model_dir: str | Path) -> tuple[dict[str, Fluids], dict[str, WellRegion]]:
     """Собрать плотности по скважинам прямо из дека.
 
-    Имена файлов — параметры, а не константы: на валидационном кейсе организаторов
-    дек будет называться иначе (ТЗ п. 4.3).
+    Ни имена файлов, ни размеры сетки не задаются: и то и другое читается из
+    корневого `.DATA` (`aios.deckfiles`). На валидационном кейсе организаторов
+    дек будет называться иначе, а сетка будет другой (ТЗ п. 4.3).
     """
-    directory = Path(model_dir)
-    pvt = parse_density(_read(directory / props))
-    array = parse_int_array(_read(directory / regions), "PVTNUM")
-    completions = parse_completions(_read(directory / schedule))
-    assigned = assign_regions(completions, array, dimensions)
+    from aios.deckfiles import layout  # локально: разбор состава дека нужен только здесь
+
+    deck = layout(model_dir)
+    pvt = parse_density(_read(deck.one("PROPS")))
+    array = parse_int_array(_read(deck.one("REGIONS")), "PVTNUM")
+    completions = parse_completions(_read(deck.one("SCHEDULE")))
+    assigned = assign_regions(completions, array, deck.grid())
     return well_fluids(pvt, assigned), assigned
 
 

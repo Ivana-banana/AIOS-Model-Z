@@ -18,14 +18,13 @@ from pathlib import Path
 
 from aios import summary as summary_module
 from aios.deck import ScheduleStep, parse_date_record, parse_schedule
+from aios.deckfiles import DeckLayout, layout
 from aios.schedule import render as render_steps
 
 _INCLUDE_RE = re.compile(r"(INCLUDE\s*\n\s*)'([^']+)'", re.IGNORECASE)
 _DATES_LINE_RE = re.compile(r"^\s*DATES\s*$", re.IGNORECASE)
 _RECORD_RE = re.compile(r"^\s*(\d+)\s+([A-Za-z]{3})\s+(\d{4})\s*/")
 
-SUMMARY_INCLUDE = "Model_Z_summary.inc"
-SCHEDULE_INCLUDE = "Model_Z_sch.inc"
 
 
 @dataclass(frozen=True)
@@ -63,7 +62,9 @@ def build_case(run_dir: str | Path,
     model_path = Path(model_dir)
     run_path.mkdir(parents=True, exist_ok=True)
 
-    source_schedule = model_path / SCHEDULE_INCLUDE
+    # имена файлов дека не зашиты: на кейсе организаторов они будут другими
+    deck = layout(model_path)
+    source_schedule = deck.one("SCHEDULE")
     schedule_text = source_schedule.read_text(encoding="utf-8", errors="replace")
 
     if steps is not None:
@@ -90,7 +91,7 @@ def build_case(run_dir: str | Path,
 
     data_file = run_path / f"{case_name}.DATA"
     data_file.write_text(
-        _render_data(model_path, schedule_file, summary_file), encoding="utf-8", newline="\n"
+        _render_data(deck, schedule_file, summary_file), encoding="utf-8", newline="\n"
     )
     return Case(data_file=data_file, schedule_file=schedule_file, summary_file=summary_file)
 
@@ -185,18 +186,19 @@ def _first_date_after(lines: list[str], index: int) -> date | None:
     return None
 
 
-def _render_data(model_path: Path, schedule_file: Path, summary_file: Path) -> str:
-    """`Model_Z.data` с подменёнными SUMMARY и SCHEDULE и абсолютными путями."""
-    text = (model_path / "Model_Z.data").read_text(encoding="utf-8", errors="replace")
+def _render_data(deck: DeckLayout, schedule_file: Path, summary_file: Path) -> str:
+    """Корневой `.DATA` дека с подменёнными SUMMARY и SCHEDULE и абсолютными путями.
+
+    Какой `INCLUDE` относится к SUMMARY, а какой к SCHEDULE, определяет секция, в
+    которой он записан, а не его имя (`aios.deckfiles`).
+    """
+    text = deck.data_file.read_text(encoding="utf-8", errors="replace")
+    model_path = deck.data_file.parent
+    ours = {deck.one("SUMMARY"): summary_file, deck.one("SCHEDULE"): schedule_file}
 
     def replace(match: re.Match[str]) -> str:
         prefix, name = match.group(1), match.group(2)
-        if name == SUMMARY_INCLUDE:
-            target = summary_file
-        elif name == SCHEDULE_INCLUDE:
-            target = schedule_file
-        else:
-            target = model_path / name
+        target = ours.get((model_path / name).resolve(), model_path / name)
         return f"{prefix}'{target.resolve().as_posix()}'"
 
     header = (

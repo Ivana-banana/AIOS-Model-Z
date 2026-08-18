@@ -76,6 +76,72 @@ def model_dir(tmp_path):
     return directory
 
 
+FOREIGN_DATA = """\
+-- Дек стороннего месторождения: ни одно имя не совпадает с Моделью Z.
+RUNSPEC
+METRIC
+
+DIMENS
+ 10 20 5 /
+
+GRID
+INCLUDE
+'geometry.grdecl' /
+
+SUMMARY
+INCLUDE
+'vectors.inc' /
+
+SCHEDULE
+INCLUDE
+'history.inc' /
+
+END
+"""
+
+
+@pytest.fixture
+def foreign_model_dir(tmp_path):
+    """Дек, в котором ничто не названо по-нашему: проверка на ТЗ п. 4.3."""
+    directory = tmp_path / "FieldX"
+    directory.mkdir()
+    (directory / "FIELD_X.DATA").write_text(FOREIGN_DATA, encoding="utf-8")
+    (directory / "history.inc").write_text(SCHEDULE, encoding="utf-8")
+    (directory / "vectors.inc").write_text("", encoding="utf-8")
+    (directory / "geometry.grdecl").write_text("-- сетка\n", encoding="utf-8")
+    return directory
+
+
+def test_case_is_built_on_a_deck_with_foreign_file_names(foreign_model_dir, tmp_path):
+    """Заявляемый ЧДД считается на кейсе организаторов, а он назван не по-нашему.
+
+    До 18.08 имена `Model_Z.data` и `Model_Z_sch.inc` были зашиты в коде, и на
+    таком деке сборка кейса просто не находила файлов.
+    """
+    case = run.build_case(tmp_path / "run", foreign_model_dir)
+
+    assert case.data_file.is_file()
+    assert case.schedule_file.read_text(encoding="utf-8") == SCHEDULE
+
+    data = case.data_file.read_text(encoding="utf-8")
+    assert case.schedule_file.resolve().as_posix() in data, "наш SCHEDULE не подставлен"
+    assert case.summary_file.resolve().as_posix() in data, "наш SUMMARY не подставлен"
+    assert "geometry.grdecl" in data, "сетка организаторов должна остаться на месте"
+
+
+def test_wells_are_read_from_the_foreign_deck(foreign_model_dir, tmp_path):
+    case = run.build_case(tmp_path / "run", foreign_model_dir)
+    assert "'1'" in case.summary_file.read_text(encoding="utf-8")
+
+
+def test_deck_without_a_data_file_fails_loudly(tmp_path):
+    """Пустой каталог — это не «соберём как получится», а отказ с причиной."""
+    empty = tmp_path / "пусто"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="нет ни одного .DATA"):
+        run.build_case(tmp_path / "run", empty)
+
+
 def test_history_prefix_keeps_completions_and_cuts_at_the_control_date():
     prefix = run.history_prefix(SCHEDULE, date(2007, 1, 1))
 

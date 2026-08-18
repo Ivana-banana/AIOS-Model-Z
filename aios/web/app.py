@@ -29,7 +29,7 @@ from fastapi.templating import Jinja2Templates
 
 from aios import balance as balance_module
 from aios import config as config_module
-from aios import economics, loop, summary
+from aios import deckfiles, economics, loop, summary
 from aios.deck import ScheduleStep, parse_schedule
 from aios.margin import Norms, screen
 from aios.model import SurrogateLoadError, for_cycle
@@ -311,7 +311,12 @@ def create_app(root: Path | None = None) -> FastAPI:
 
         assumptions, _ = economics.load_norms(configuration.economics.norms_file)
         base_steps = _steps_from(run.schedule, configuration)
-        reference_schedule = configuration.case.model_dir / "Model_Z_sch.inc"
+        # SCHEDULE ищется по составу дека, а не по имени файла: на кейсе
+        # организаторов он будет называться иначе (ТЗ п. 4.3)
+        try:
+            reference_schedule = deckfiles.layout(configuration.case.model_dir).one("SCHEDULE")
+        except (ValueError, OSError):
+            reference_schedule = run.schedule
         reference_steps = _steps_from(
             reference_schedule if reference_schedule.is_file() else run.schedule,
             configuration,
