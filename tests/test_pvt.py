@@ -12,6 +12,7 @@ import pytest
 
 from aios.pvt import (
     assign_regions,
+    fluids_by_well,
     from_deck,
     parse_completions,
     parse_density,
@@ -299,3 +300,58 @@ def test_completions_by_measured_depth_fail_loudly(tmp_path):
 def test_a_schedule_without_any_completions_fails_loudly(tmp_path):
     with pytest.raises(ValueError, match="не найдено ни одного COMPDAT"):
         from_deck(_deck(tmp_path, "WELSPECS\n 'A' G 1 1 1* OIL /\n/\n"))
+
+
+# --- точка входа рабочих путей ----------------------------------------------
+#
+# `fluids_by_well` — единственное, что стоит между чужим пластом и подстановкой
+# плотности Модели Z. Она намеренно не бросает, поэтому её отказы обязаны быть
+# видны в `note`: молчаливый пустой результат здесь неотличим от успеха.
+
+def test_deck_fluids_carry_densities_and_say_where_they_came_from(tmp_path):
+    result = fluids_by_well(_deck(tmp_path, COMPDAT))
+
+    assert set(result.by_well) == {"A", "B"}
+    assert result.by_well["A"].oil_density == pytest.approx(913.0765883224138)
+    assert result.without_region == ()
+    assert result.complete
+    assert "скважин 2" in result.note
+
+
+def test_a_deck_on_measured_depth_does_not_raise_but_says_so(tmp_path):
+    """Прогон не должен падать посреди счёта — но и молчать не должен."""
+    result = fluids_by_well(_deck(tmp_path, COMPDATMD))
+
+    assert result.by_well == {}
+    assert not result.complete
+    assert "COMPDAT" in result.note
+    assert "конфигурации" in result.note
+
+
+def test_an_unreadable_deck_is_reported_not_raised(tmp_path):
+    result = fluids_by_well(tmp_path / "нет-такого-каталога")
+
+    assert result.by_well == {}
+    assert not result.complete
+    assert "недоступны" in result.note
+
+
+def test_wells_missing_from_the_deck_are_listed(tmp_path):
+    """Скважина без региона молча уходит на общую плотность — это надо назвать."""
+    result = fluids_by_well(_deck(tmp_path, COMPDAT), wells=("A", "B", "нет-в-деке"))
+
+    assert result.without_region == ("нет-в-деке",)
+    assert not result.complete
+    assert "без региона осталось 1" in result.note
+
+
+def test_the_note_counts_wells_that_open_several_regions(tmp_path):
+    """Вскрытие двух регионов — приближение, и оно обязано быть видно."""
+    both = """\
+COMPDAT
+ 'A' 1 1 1 2 OPEN 1* 1* 0.146 1* 2 1* Z /
+/
+"""
+    result = fluids_by_well(_deck(tmp_path, both))
+
+    assert "несколько регионов: 1" in result.note
