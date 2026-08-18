@@ -1,6 +1,15 @@
 """Возобновляемый пакетный запуск подготовленных сценариев DoE.
 
     python scripts/run_doe.py runs/doe-injection 4 -- --parsing-strictness=low
+
+Возобновление опирается на файл-отметку `.doe-done`, а не на наличие `.UNSMRY`.
+Причина конкретная: 18.08 пакет оборвали на середине сценария, и от него остался
+`.UNSMRY` вдвое меньше нормального (723 КБ против 1,64 МБ). По наличию файла
+возобновление засчитало бы его за готовый, и в датасет суррогата уехал бы обрезок
+истории — молча, потому что формально файл есть и читается.
+
+Отметка пишется только после того, как `run_flow.sh` вернул ноль и результат на
+месте, то есть она означает «этот сценарий досчитан целиком».
 """
 
 from __future__ import annotations
@@ -38,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         print(error, file=sys.stderr)
         return 1
 
-    pending = [case for case in cases if not case.with_suffix(".UNSMRY").is_file()]
+    pending = [case for case in cases if not _is_done(case)]
     completed = len(cases) - len(pending)
     print(f"пакет: {run_root}")
     print(f"готово: {completed}, в очереди: {len(pending)}, всего: {len(cases)}")
@@ -56,12 +65,14 @@ def main(argv: list[str] | None = None) -> int:
         result = subprocess.run(command, cwd=ROOT, check=False)
         if result.returncode != 0 or not case.with_suffix(".UNSMRY").is_file():
             failures.append({"case": case.parent.name, "returncode": result.returncode})
+        else:
+            _mark_done(case)
 
     report = {
         "updated_at": datetime.now(UTC).isoformat(),
         "run_root": str(run_root),
         "total": len(cases),
-        "completed": sum(case.with_suffix(".UNSMRY").is_file() for case in cases),
+        "completed": sum(_is_done(case) for case in cases),
         "failures": failures,
         "flow_args": flow_args,
     }
@@ -70,6 +81,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nстатус: {report_path}")
     print(f"готово: {report['completed']}/{report['total']}, ошибок: {len(failures)}")
     return 1 if failures or report["completed"] != report["total"] else 0
+
+
+def _marker(case: Path) -> Path:
+    """Отметка «сценарий досчитан целиком» рядом с кейсом."""
+    return case.parent / ".doe-done"
+
+
+def _is_done(case: Path) -> bool:
+    """Досчитан ли сценарий. Наличия `.UNSMRY` недостаточно — он бывает обрезанным."""
+    return _marker(case).is_file() and case.with_suffix(".UNSMRY").is_file()
+
+
+def _mark_done(case: Path) -> None:
+    _marker(case).write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
 
 
 def discover_cases(run_root: Path) -> list[Path]:
