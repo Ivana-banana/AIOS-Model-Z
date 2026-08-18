@@ -413,3 +413,26 @@ def test_an_unsupported_control_keyword_stops_the_build(tmp_path):
 
     with pytest.raises(ValueError, match="WCONHIST"):
         run.build_case(tmp_path / "run", deck, steps=steps, control_start=date(2007, 1, 1))
+
+
+def test_a_modifying_keyword_does_not_stop_the_build(tmp_path):
+    """WEFAC переносится в расписание дословно — отказывать из-за него нельзя.
+
+    Самопроверка правки от 18.08: первый вариант отказывал на любом
+    неразбираемом управлении, включая то, которое доходит до симулятора без
+    потерь. На деке организаторов это превратило бы работоспособный кейс в
+    жёсткий отказ — цена ошибки несимметрична, и в эту сторону она хуже.
+
+    Разница принципиальная: `WCONHIST` **заменяет** то, что мы генерируем, и
+    разобранные шаги остаются без добычи вовсе; `WEFAC` лишь домножает, идёт в
+    выходной файл как есть, и неточен только наш взгляд на режимы.
+    """
+    schedule = SCHEDULE + "\nWEFAC\n '1' 0.85 /\n/\n"
+    deck = _deck_with(tmp_path, schedule)
+    steps = [item for item in parse_schedule(deck / "history.inc").steps
+             if item.date >= date(2007, 1, 1)]
+
+    case = run.build_case(tmp_path / "run", deck, steps=steps, control_start=date(2007, 1, 1))
+
+    assert case.unsupported_controls == ("WEFAC",), "промолчать тоже нельзя"
+    assert "WEFAC" in case.schedule_file.read_text(encoding="utf-8"), "и оно обязано дойти до дека"

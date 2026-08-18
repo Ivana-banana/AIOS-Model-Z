@@ -57,6 +57,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"конфигурация:  {config.source}")
     print(f"дек:           {model_dir}")
     print(f"скважин:       {len(schedule.wells)}")
+    if case.unsupported_controls:
+        # эти слова дойдут до симулятора дословно, но наши маржа, DoE и подбор
+        # режимов их не видят — оценка приблизительна ровно на их величину
+        print(f"ВНИМАНИЕ: управление, которое мы не разбираем: "
+              f"{', '.join(case.unsupported_controls)}")
+        print("          симулятор их применит, наша оценка режимов — нет")
     if case.wells_without_completions:
         # скважина без вскрытий даёт ноль весь горизонт, а симулятор об этом
         # только предупреждает — так уже были потеряны 22 скважины 16.08

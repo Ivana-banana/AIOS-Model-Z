@@ -17,7 +17,13 @@ from datetime import date
 from pathlib import Path
 
 from aios import summary as summary_module
-from aios.deck import ScheduleStep, parse_date_record, parse_schedule, parse_schedule_text
+from aios.deck import (
+    REPLACING_CONTROL_KEYWORDS,
+    ScheduleStep,
+    parse_date_record,
+    parse_schedule,
+    parse_schedule_text,
+)
 from aios.deckfiles import DeckLayout, layout
 from aios.schedule import render as render_steps
 
@@ -34,6 +40,14 @@ class Case:
     data_file: Path
     schedule_file: Path
     summary_file: Path
+
+    unsupported_controls: tuple[str, ...] = ()
+    """Управляющие слова расписания, которых наш разбор не понимает.
+
+    Пустой кортеж — режимы прочитаны полностью. Непустой означает, что в дек они
+    попадут дословно и симулятор их применит, а вот наши маржа, DoE и подбор
+    режимов их не видят: оценка приблизительна ровно на их величину.
+    """
 
     wells_without_completions: tuple[str, ...] = ()
     """Скважины из `WELSPECS`, у которых нет ни одного вскрытия.
@@ -87,7 +101,7 @@ def build_case(run_dir: str | Path,
                 source_schedule.read_text(encoding="utf-8", errors="replace"), control_start
             ))
         )
-        _assert_assembled_schedule_is_sound(schedule_text, control_start)
+        unsupported = _assert_assembled_schedule_is_sound(schedule_text, control_start)
 
     if wells is None:
         wells = parse_schedule(source_schedule).wells
@@ -98,6 +112,8 @@ def build_case(run_dir: str | Path,
         )
 
     uncompleted = wells_without_completions(schedule_text, wells)
+    if steps is None:
+        unsupported = parse_schedule_text(schedule_text).unsupported_controls
 
     schedule_file = run_path / "wells_schedule.inc"
     schedule_file.write_text(schedule_text, encoding="utf-8", newline="\n")
@@ -112,10 +128,11 @@ def build_case(run_dir: str | Path,
         _render_data(deck, schedule_file, summary_file), encoding="utf-8", newline="\n"
     )
     return Case(data_file=data_file, schedule_file=schedule_file, summary_file=summary_file,
-                wells_without_completions=uncompleted)
+                unsupported_controls=unsupported, wells_without_completions=uncompleted)
 
 
-def _assert_assembled_schedule_is_sound(schedule_text: str, control_start: date) -> None:
+def _assert_assembled_schedule_is_sound(schedule_text: str,
+                                        control_start: date) -> tuple[str, ...]:
     """Проверить склейку истории с нашими шагами, а не только сами шаги.
 
     `schedule.validate` следит за возрастанием дат, но видит объект `steps`.
@@ -136,13 +153,16 @@ def _assert_assembled_schedule_is_sound(schedule_text: str, control_start: date)
         previous = step.date
 
     unsupported = parse_schedule_text(schedule_text).unsupported_controls
-    if unsupported:
+    replacing = tuple(name for name in unsupported if name in REPLACING_CONTROL_KEYWORDS)
+    if replacing:
         raise ValueError(
-            "в SCHEDULE есть управляющие ключевые слова, которых мы не разбираем: "
-            + ", ".join(unsupported)
-            + ". Разобранные шаги неполны, и собранный по ним сценарий будет неверным: "
-            "поддержку надо дописать явно, а не надеяться, что «как-нибудь разберётся»"
+            "в SCHEDULE есть управление, заменяющее генерируемое нами: "
+            + ", ".join(replacing)
+            + ". Разобранные шаги остаются без режимов, а в файл попадёт и оно, и наш "
+            "WCONPROD — поддержку надо дописать явно, а не надеяться, что «как-нибудь "
+            "разберётся»"
         )
+    return unsupported
 
 
 def wells_without_completions(schedule_text: str,
