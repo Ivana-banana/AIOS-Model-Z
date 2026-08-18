@@ -45,6 +45,15 @@
     (<code>{{ result.raw.version }}</code>) от {{ settings.economics.start_date }}.
     Своей формулы ЧДД в проекте нет.
   </p>
+  {% if deck_fluids.complete %}
+    <p class="muted" style="margin-top:8px">Плотности: {{ deck_fluids.note }}.</p>
+  {% else %}
+    <div class="warn" style="margin-top:8px">
+      <p>Плотности: {{ deck_fluids.note }}.</p>
+      <p>Масса нефти — множитель в выручке, поэтому общая плотность вместо
+         подеквенной меняет ЧДД. На Модели Z разницы нет, на другом пласте есть.</p>
+    </div>
+  {% endif %}
   {% if result.warnings %}
     <div class="warn" style="margin-top:12px">
       {% for warning in result.warnings %}<p>{{ warning }}</p>{% endfor %}

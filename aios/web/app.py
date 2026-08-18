@@ -216,6 +216,9 @@ def create_app(root: Path | None = None) -> FastAPI:
             context={
                 "run": run,
                 "result": result,
+                # откуда взяты плотности — рядом с числом ЧДД, а не в логе:
+                # общая плотность вместо подеквенной меняет выручку молча
+                "deck_fluids": deck_fluids(),
                 "verdicts": verdicts[:25],
                 "problems": summary.sanity_problems(rows)[:25],
                 "water": water,

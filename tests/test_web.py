@@ -380,3 +380,19 @@ def test_index_offers_comparison_when_there_are_two_runs(two_runs):
 
 def test_index_hides_comparison_when_there_is_nothing_to_compare(client):
     assert 'action="/compare"' not in client.get("/").text
+
+
+def test_run_page_says_where_the_densities_came_from(client, project):
+    """Плотность — множитель в выручке, и на чём посчитано, обязано быть видно.
+
+    В этом проекте дека нет, значит фонд считается по общей плотности из
+    конфигурации. Без пометки такой прогон на странице выглядит ровно так же,
+    как посчитанный по PVT-регионам дека, — а на чужом пласте (ТЗ п. 4.3) это
+    разные числа.
+    """
+    text = client.get("/run/base").text
+
+    assert "плотност" in text.lower()
+    assert "конфигурации" in text
+    # и подано как оговорка, а не как обычная строка: подеквенных плотностей нет
+    assert "множитель в выручке" in text
