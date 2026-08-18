@@ -98,3 +98,55 @@ def test_control_start_matches_the_organisers_export_script():
     loaded = config.load()
     assert loaded.case.control_start == date(2007, 1, 1)
     assert loaded.economics.start_date == loaded.case.control_start
+
+
+# ── значения, а не только наличие ключей ─────────────────────────────────────
+#
+# В валидационном кейсе (ТЗ п. 4.3) ограничения организаторов лягут именно сюда,
+# и править файл будет человек. Опечатка в знаке уходит прямо в ЧДД: предел −1
+# м³/сут — это не «предела нет», а требование срезать весь фонд, и получившийся
+# прогон выглядит совершенно обычным.
+
+def _written(tmp_path, text: str):
+    path = tmp_path / "config.toml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_zero_limit_still_means_no_limit(tmp_path):
+    """Ноль — задокументированное «предела нет», его ломать нельзя."""
+    loaded = config.load(_written(tmp_path, MINIMAL))
+
+    assert loaded.limits.max_field_liquid_m3_per_day is None
+    assert loaded.limits.max_field_injection_m3_per_day is None
+
+
+def test_a_negative_limit_is_refused(tmp_path):
+    """Отрицательный предел проходит как настоящий и срезает фонд в ноль."""
+    text = MINIMAL.replace("max_field_liquid_m3_per_day = 0",
+                           "max_field_liquid_m3_per_day = -1")
+    with pytest.raises(ValueError, match="max_field_liquid_m3_per_day"):
+        config.load(_written(tmp_path, text))
+
+
+def test_a_non_positive_density_is_refused(tmp_path):
+    """Плотность — множитель в выручке; ноль превращает нефть в ничто."""
+    text = MINIMAL.replace("oil_density = 913.0765883224138", "oil_density = 0")
+    with pytest.raises(ValueError, match="oil_density"):
+        config.load(_written(tmp_path, text))
+
+
+def test_a_non_positive_water_tolerance_is_refused(tmp_path):
+    text = MINIMAL.replace("water_tolerance = 1.0", "water_tolerance = 0")
+    with pytest.raises(ValueError, match="water_tolerance"):
+        config.load(_written(tmp_path, text))
+
+
+@pytest.mark.parametrize(("line", "broken", "key"), [
+    ("processes = 2", "processes = 0", "processes"),
+    ("lookback_months = 6", "lookback_months = 0", "lookback_months"),
+    ("max_tokens = 1024", "max_tokens = 0", "max_tokens"),
+])
+def test_counts_must_be_at_least_one(tmp_path, line, broken, key):
+    with pytest.raises(ValueError, match=key):
+        config.load(_written(tmp_path, MINIMAL.replace(line, broken)))
