@@ -15,6 +15,7 @@ from aios.pvt import (
     parse_completions,
     parse_density,
     parse_int_array,
+    parse_volume_factors,
     report,
     well_fluids,
 )
@@ -180,3 +181,49 @@ def test_report_names_regions_and_counts_mixed_wells():
     text = report(regions, assigned)
     assert "913.08" in text and "928.16" in text
     assert "несколько регионов: 1" in text
+
+
+# --- объёмные коэффициенты --------------------------------------------------
+
+PVT_TABLES = """\
+PVTO
+-- gor      pressure  fvf      viscosity
+   0.005     1.13     1.0014   34.19
+             10.29    1.0011   34.58
+             19.45    0.9900   34.97
+/
+PVTW
+-- pref fvf compressibility viscosity viscosibility
+   123  1   0.000046 1.6 /
+   125  1   0.000046 1.6 /
+"""
+
+
+def test_oil_volume_factor_range_comes_from_pvto():
+    factors = parse_volume_factors(PVT_TABLES)
+    assert factors.oil_min == pytest.approx(0.9900)
+    assert factors.oil_max == pytest.approx(1.0014)
+
+
+def test_continuation_lines_of_pvto_are_read():
+    """У PVTO первая строка узла длиннее продолжений — иначе теряются точки."""
+    assert parse_volume_factors(PVT_TABLES).oil_max == pytest.approx(1.0014)
+
+
+def test_water_volume_factor_comes_from_pvtw():
+    assert parse_volume_factors(PVT_TABLES).water == pytest.approx(1.0)
+
+
+def test_spread_shows_how_much_the_factor_moves():
+    factors = parse_volume_factors(PVT_TABLES)
+    assert factors.oil_spread == pytest.approx((1.0014 - 0.99) / 0.99)
+
+
+def test_missing_pvto_is_an_error():
+    with pytest.raises(ValueError, match="PVTO"):
+        parse_volume_factors("PVTW\n 123 1 0.000046 1.6 /\n")
+
+
+def test_missing_pvtw_is_an_error():
+    with pytest.raises(ValueError, match="PVTW"):
+        parse_volume_factors("PVTO\n 0.005 1.13 1.0014 34.19 /\n")

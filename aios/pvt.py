@@ -89,6 +89,63 @@ def parse_density(text: str) -> tuple[PvtRegion, ...]:
     return tuple(regions)
 
 
+@dataclass(frozen=True)
+class VolumeFactors:
+    """Объёмные коэффициенты: во сколько раз пластовый объём больше поверхностного.
+
+    Нужны для компенсации отбора закачкой: закачка возмещает **отобранный объём в
+    пластовых условиях**, а выгрузка даёт поверхностные. Пересчёт —
+    `Qотб,пласт ≈ Qн·Bн + Qв·Bв`.
+    """
+
+    oil_min: float
+    oil_max: float
+    water: float
+
+    @property
+    def oil_typical(self) -> float:
+        """Середина диапазона `Bн` по таблице."""
+        return (self.oil_min + self.oil_max) / 2
+
+    @property
+    def oil_spread(self) -> float:
+        """Насколько `Bн` вообще меняется по таблице, доля."""
+        return (self.oil_max - self.oil_min) / self.oil_min if self.oil_min else 0.0
+
+
+def parse_volume_factors(text: str) -> VolumeFactors:
+    """Диапазон `Bн` из `PVTO` и `Bв` из `PVTW`.
+
+    `PVTO` — таблица с продолжениями строк: первая строка узла несёт газосодержание,
+    давление, `Bн` и вязкость, следующие — только давление, `Bн`, вязкость.
+    Поэтому берутся третье с конца и второе с конца числа соответственно.
+    """
+    oil: list[float] = []
+    start = _keyword_start(text, "PVTO")
+    if start is None:
+        raise ValueError("в тексте нет ключевого слова PVTO")
+    for line in text[start:].splitlines()[1:]:
+        stripped = line.split("--", 1)[0].strip()
+        if not stripped:
+            continue
+        if re.fullmatch(r"[A-Z][A-Z0-9]{1,7}", stripped):
+            break
+        numbers = [float(token) for token in re.findall(r"-?\d+\.?\d*(?:[eE][-+]?\d+)?", stripped)]
+        if len(numbers) == 4:
+            oil.append(numbers[2])
+        elif len(numbers) == 3:
+            oil.append(numbers[1])
+    if not oil:
+        raise ValueError("в PVTO не нашлось ни одного значения объёмного коэффициента")
+
+    water_body = _keyword_body(text, "PVTW")
+    if not water_body:
+        raise ValueError("в тексте нет ключевого слова PVTW")
+    water = float(water_body[0][1])
+
+    return VolumeFactors(oil_min=min(oil), oil_max=max(oil), water=water)
+
+
 def parse_int_array(text: str, keyword: str) -> list[int]:
     """Развернуть целочисленный массив по сетке (`PVTNUM`, `SATNUM`, `FIPNUM`).
 

@@ -113,3 +113,55 @@ def test_water_oil_ratio_ranks_the_worst_well():
 def test_a_well_that_produces_no_oil_has_infinite_ratio():
     rows = [produced("2014-01-01", "dead", 0.0, 500.0)]
     assert balance.well_water_oil_ratio(rows, FLUIDS)["dead"] == float("inf")
+
+
+# --- компенсация отбора: вторая, физическая формулировка --------------------
+
+def _rows(oil_t: float, water_t: float, injected_m3: float, year: int = 2019):
+    """Строки одного года: массы в тоннах, закачка в кубах — как в выгрузке."""
+    return [{
+        "DATA": f"{year}-01-01", "well": "1",
+        "WOMT_Diff": oil_t, "WLPT_Diff": oil_t + water_t, "WWIT_Diff": injected_m3,
+    }]
+
+
+def test_history_violates_the_produced_water_check_but_passes_compensation():
+    """Главная находка: буквальное прочтение отвергает саму историю месторождения.
+
+    Числа — исторический сценарий Модели Z (`docs/experiments.md`): нефть 3656,8
+    тыс. т, жидкость 9561,6 тыс. т, закачка 11 671 тыс. м³.
+    """
+    rows = _rows(oil_t=3_656_800, water_t=9_561_600 - 3_656_800, injected_m3=11_671_000)
+
+    assert balance.problems(rows), "проверка по добытой воде обязана видеть превышение"
+    assert not balance.compensation_problems(rows), "по компенсации история нормальна"
+
+
+def test_compensation_of_the_historical_scenario_is_about_130_percent():
+    rows = _rows(oil_t=3_656_800, water_t=9_561_600 - 3_656_800, injected_m3=11_671_000)
+    year = balance.by_year(rows)[0]
+    assert 1.25 < year.compensation < 1.35
+
+
+def test_injection_far_above_the_withdrawn_volume_is_reported():
+    rows = _rows(oil_t=100_000, water_t=100_000, injected_m3=10_000_000)
+    problems = balance.compensation_problems(rows)
+    assert problems and "выше предела" in problems[0]
+
+
+def test_injection_without_any_withdrawal_is_reported():
+    rows = _rows(oil_t=0.0, water_t=0.0, injected_m3=1000.0)
+    assert "возмещать нечего" in balance.compensation_problems(rows)[0]
+
+
+def test_the_ceiling_is_a_parameter_not_a_constant():
+    rows = _rows(oil_t=100_000, water_t=100_000, injected_m3=300_000)
+    assert not balance.compensation_problems(rows, ceiling=2.0)
+    assert balance.compensation_problems(rows, ceiling=1.1)
+
+
+def test_volume_factors_change_the_withdrawn_volume():
+    """На другом объекте Bн заметно больше единицы, и это меняет вывод."""
+    rows = _rows(oil_t=1_000_000, water_t=0.0, injected_m3=1_400_000)
+    assert balance.compensation_problems(rows, ceiling=1.2, oil_fvf=1.0)
+    assert not balance.compensation_problems(rows, ceiling=1.2, oil_fvf=1.3)
