@@ -25,3 +25,35 @@ def test_reference_schedule_preserves_role_when_scenario_response_is_zero():
     assert roles[("2014-01-01", "9")] == "production"
     assert roles[("2014-02-01", "9")] == "injection"
     assert roles[("2014-03-01", "9")] == "injection"
+
+
+def test_a_case_without_the_done_marker_is_not_collected(tmp_path, capsys):
+    """Оборванный прогон оставляет `.UNSMRY`, но это обрезок истории.
+
+    Настоящий случай 18.08: сборщик подхватил сценарий, который в этот момент
+    считался заново, и положил в датасет 7107 строк вместо 38110 — молча, без
+    единой жалобы. Суррогат, обученный на такой выборке, врёт именно там, где
+    данных не хватило.
+    """
+    import json
+
+    from scripts.build_dataset import main
+
+    root = tmp_path / "doe"
+    (root / "doe-000").mkdir(parents=True)
+    (root / "doe.json").write_text(
+        json.dumps({"scenarios": [{"name": "doe-000", "multipliers": {}}]}),
+        encoding="utf-8",
+    )
+    # результат есть, отметки о завершении нет — значит прогон оборвали
+    (root / "doe-000" / "RUN.UNSMRY").write_text("обрывок", encoding="utf-8")
+
+    status = main([
+        "--run-root", str(root),
+        "--out", str(tmp_path / "dataset.csv"),
+    ])
+    output = capsys.readouterr().out
+
+    assert status == 1, "собранных сценариев нет — это отказ, а не успех"
+    assert "нет отметки о завершении" in output
+    assert "0 собрано" in output

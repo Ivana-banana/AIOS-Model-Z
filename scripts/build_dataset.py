@@ -1,5 +1,11 @@
 """Собрать датасет «управление → отклик» из посчитанных сценариев DoE.
 
+Сценарий берётся, только если у него есть отметка `.doe-done` — наличия `.UNSMRY`
+недостаточно. 18.08 сборщик подхватил сценарий, который в этот момент считался
+заново, и положил в датасет 7107 строк вместо 38110: обрезок истории, молча, без
+единой жалобы. Суррогат, обученный на такой выборке, врёт именно там, где данных
+не хватило.
+
     python scripts/build_dataset.py --run-root runs/doe --out data/dataset.csv
 
 Одна строка = скважина × месяц одного сценария: то же, что отдаёт симулятор в
@@ -73,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
 
     written = skipped = 0
+    lengths: dict[str, int] = {}
     with target.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CONTROL_COLUMNS + economics.REQUIRED_COLUMNS)
         writer.writeheader()
@@ -83,9 +90,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{name}: не досчитан, пропускаю")
                 skipped += 1
                 continue
+            # наличия .UNSMRY недостаточно: у оборванного прогона он тоже есть, но
+            # несёт кусок истории. Отметку пишет run_doe.py после успешного расчёта
+            if not (root / name / ".doe-done").is_file():
+                print(f"{name}: нет отметки о завершении — прогон оборван, пропускаю")
+                skipped += 1
+                continue
 
             rows = summary.monthly_rows(case, fluids=config.fluids,
                                         well_fluids=deck_fluids.by_well)
+            lengths[name] = len(rows)
             roles = control_roles(reference.steps, {str(row["DATA"]) for row in rows})
             problems = summary.sanity_problems(rows)
             if problems:
@@ -116,6 +130,17 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f"датасет:   {target} ({size_mb:.1f} МБ)")
     print(f"сценариев: {written} собрано, {skipped} пропущено")
+
+    # защита в глубину на случай датасета, собранного до появления отметок:
+    # у сценариев одного пакета горизонт один, значит и число строк одно
+    if len(set(lengths.values())) > 1:
+        expected = max(set(lengths.values()), key=list(lengths.values()).count)
+        odd = {name: count for name, count in lengths.items() if count != expected}
+        print("\nВНИМАНИЕ: у сценариев разное число строк при одинаковом горизонте.")
+        print(f"  ожидалось {expected}, отличаются: " +
+              ", ".join(f"{name}={count}" for name, count in sorted(odd.items())))
+        print("  это признак оборванного расчёта; такие сценарии надо пересчитать, "
+              "иначе суррогат учится на обрезке истории")
     if skipped:
         print("пропущенные сценарии придётся досчитать: суррогат, обученный на дырявой "
               "выборке, врёт именно в дырах")
