@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -90,7 +91,8 @@ def render_summary_section(wells: tuple[str, ...] | list[str],
 
 def monthly_rows(case: str | Path,
                  wells: tuple[str, ...] | list[str] | None = None,
-                 fluids: Fluids | None = None) -> list[dict[str, Any]]:
+                 fluids: Fluids | None = None,
+                 well_fluids: Mapping[str, Fluids] | None = None) -> list[dict[str, Any]]:
     """Прочитать результат расчёта и собрать строки «скважина × месяц».
 
     `case` — путь к расчёту без расширения (или к `.UNSMRY`/`.SMSPEC`).
@@ -118,11 +120,15 @@ def monthly_rows(case: str | Path,
     known = set(summary.keys())
     names = list(wells) if wells is not None else _wells_in_summary(summary)
 
-    oil_to_t = fluids.oil_density / 1000.0
-    water_to_t = fluids.water_density / 1000.0
 
     rows: list[dict[str, Any]] = []
     for well in names:
+        # плотность берётся по PVT-региону скважины, если он определён (aios/pvt.py);
+        # иначе — общая. Регионы физически разные, усреднять их по фонду нельзя.
+        own = (well_fluids or {}).get(well, fluids)
+        oil_to_t = own.oil_density / 1000.0
+        water_to_t = own.water_density / 1000.0
+
         oil_total = _vector(summary, f"WOPT:{well}", known, steps)
         water_total = _vector(summary, f"WWPT:{well}", known, steps)
         injection_total = _vector(summary, f"WWIT:{well}", known, steps)

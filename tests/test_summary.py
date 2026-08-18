@@ -79,6 +79,34 @@ def test_volumes_are_converted_to_mass_by_deck_densities(tmp_path):
     assert row["WOMT"] == pytest.approx(row["WOMT_Diff"])
 
 
+def test_a_wells_own_pvt_region_overrides_the_field_density(tmp_path):
+    """Плотность берётся по PVT-региону скважины, а не одна на весь фонд.
+
+    В Модели Z два региона — 913,08 и 928,16 кг/м³, разница 1,6 % идёт прямо в
+    выручку. Какая скважина в каком регионе, определяет `aios/pvt.py`.
+    """
+    case = _write_case(tmp_path, monthly_oil_m3=[100.0], monthly_water_m3=[900.0], well="1")
+    field = summary.Fluids(oil_density=913.0765883224138, water_density=1172.0)
+    own = summary.Fluids(oil_density=928.1613457381528, water_density=1173.0)
+
+    rows = summary.monthly_rows(case, fluids=field, well_fluids={"1": own})
+
+    assert rows[0]["WOMT_Diff"] == pytest.approx(100.0 * 928.1613457381528 / 1000)
+    assert rows[0]["WLPT_Diff"] == pytest.approx(
+        100.0 * 928.1613457381528 / 1000 + 900.0 * 1173.0 / 1000
+    )
+
+
+def test_a_well_without_a_region_keeps_the_field_density(tmp_path):
+    """Скважина не нашлась в разборе дека — считаем по общей, а не по нулю."""
+    case = _write_case(tmp_path, monthly_oil_m3=[100.0], monthly_water_m3=[900.0], well="1")
+    field = summary.Fluids(oil_density=913.0765883224138, water_density=1172.0)
+
+    rows = summary.monthly_rows(case, fluids=field, well_fluids={"другая": summary.Fluids(1.0, 1.0)})
+
+    assert rows[0]["WOMT_Diff"] == pytest.approx(100.0 * 913.0765883224138 / 1000)
+
+
 def test_rates_are_instantaneous_at_the_end_of_the_month(tmp_path):
     """Организаторы делают shift(-1): дебит в строке — значение на конец месяца.
 
