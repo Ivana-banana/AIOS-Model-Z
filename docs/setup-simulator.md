@@ -38,7 +38,56 @@ python scripts/export_rows.py runs/base
 следствие: датасет суррогата можно считать локально, облако для этого не
 обязательно.
 
-## Где именно считать
+## WSL2 на рабочей машине: проверено 18.08, работает
+
+Раздел ниже («Где именно считать») писался про машину со сборкой Windows 17763,
+где WSL2 действительно не заводится. **На рабочей машине сборка другая**, и
+штатный путь оказался доступен:
+
+| | |
+|---|---|
+| ОС | Windows 10 Enterprise LTSC **2021**, сборка **19044** (21H2) |
+| WSL | версия 2, дистрибутивы Ubuntu 24.04 и 22.04 уже установлены |
+| Процессор | 12 логических ядер |
+| Память | 15,3 ГБ на хосте, ~7 ГБ видно из WSL |
+| Права | прав администратора **не нужно**: `wsl -u root` даёт root внутри дистрибутива |
+
+Установка целиком (~5 минут, из PowerShell):
+
+```powershell
+wsl -d Ubuntu-24.04 -u root -- bash -lc "apt-get update -qq &&
+  apt-get install -y -qq software-properties-common &&
+  add-apt-repository -y ppa:opm/ppa && apt-get update -qq &&
+  apt-get install -y -qq mpi-default-bin libopm-simulators-bin python3.12-venv"
+```
+
+Получается `flow 2026.04` — **та же версия, что в Docker-образе проекта**, и
+Open MPI 4.1.6. Окружение Python для обвязки ставится отдельно, в домашний
+каталог WSL, а не в репозиторий:
+
+```powershell
+wsl -d Ubuntu-24.04 -- bash -lc "python3 -m venv ~/aios-venv &&
+  ~/aios-venv/bin/pip install -q -r /mnt/c/.../AIOS/requirements.txt"
+```
+
+Прогон запускается из каталога репозитория на диске C, но **результаты пишутся в
+нативную ФС WSL**: `/mnt/c` в WSL2 медленный, а симулятор пишет много.
+
+```powershell
+wsl -d Ubuntu-24.04 -- bash -lc "cd /mnt/c/.../AIOS &&
+  ~/aios-venv/bin/python scripts/build_case.py ~/runs/base &&
+  bash scripts/run_flow.sh ~/runs/base/RUN.DATA 4 --parsing-strictness=low"
+```
+
+Дек при этом читается из `/mnt/c` — он нужен один раз, и это приемлемо.
+
+**Побочный эффект, о котором надо знать.** После установки WSL `subprocess` на
+Windows начинает резолвить `bash` в `C:\Windows\System32\bash.exe` (WSL), а не в
+Git Bash: CreateProcess ищет System32 раньше PATH, хотя `shutil.which` показывает
+Git Bash. Тесты обвязки симулятора из-за этого молча начали запускать настоящий
+`flow` вместо подставного. Исправлено в `tests/test_scripts.py`.
+
+## Где именно считать (писалось про машину со сборкой 17763)
 
 Windows 10 Enterprise LTSC 2019 — сборка 17763 (версия 1809). WSL2 требует 1903+,
 Docker Desktop современных версий — 21H2+. Штатный путь «OPM Flow под WSL2» на этой
