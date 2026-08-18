@@ -396,3 +396,20 @@ def test_run_page_says_where_the_densities_came_from(client, project):
     assert "конфигурации" in text
     # и подано как оговорка, а не как обычная строка: подеквенных плотностей нет
     assert "множитель в выручке" in text
+
+
+def test_pages_pull_nothing_from_the_network():
+    """Страницы обязаны открываться без сети — их смотрят на чужой машине.
+
+    Подключить CDN с библиотекой графиков легко и незаметно, а проверяющий может
+    открыть интерфейс в закрытом контуре. Поэтому графики рисуются inline-SVG, и
+    это свойство закрепляется тестом, а не обещанием в README.
+    """
+    templates = Path(__file__).resolve().parent.parent / "aios" / "web" / "templates"
+    offenders = []
+    for page in sorted(templates.glob("*.html")):
+        text = page.read_text(encoding="utf-8")
+        for marker in ("http://", "https://", "//cdn", "<script src", "<link rel=\"stylesheet\""):
+            if marker in text:
+                offenders.append(f"{page.name}: {marker}")
+    assert not offenders, "страницы тянут внешние ресурсы:\n" + "\n".join(offenders)
