@@ -26,7 +26,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aios import config as config_module  # noqa: E402
-from aios import economics, loop, summary  # noqa: E402
+from aios import (  # noqa: E402
+    economics,
+    loop,
+    pvt,  # noqa: E402
+    summary,
+)
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 from aios.margin import Norms  # noqa: E402
@@ -49,10 +54,14 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     config = config_module.load(arguments.config)
+    # плотности по PVT-регионам скважин; пометка печатается всегда — молча
+    # посчитать чужой пласт по нашей плотности нельзя (ТЗ п. 4.3)
+    deck_fluids = pvt.fluids_by_well(config.case.model_dir)
+    print(f"плотности: {deck_fluids.note}")
     source = Path(arguments.source) if arguments.source else config.case.run_dir
     case_name = config.case.case_name
 
-    history = summary.monthly_rows(source / case_name, fluids=config.fluids)
+    history = summary.monthly_rows(source / case_name, fluids=config.fluids, well_fluids=deck_fluids.by_well)
     if not history:
         print(f"нет выгрузки в {source}: сначала посчитайте базовый прогон", file=sys.stderr)
         return 1
@@ -67,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
             neural_path=Path(arguments.surrogate_model) if arguments.surrogate_model else None,
             history=history,
             reference_steps=base_steps,
-            fluids=config.fluids,
+            fluids=config.fluids, well_fluids=deck_fluids.by_well,
         )
     except SurrogateLoadError as error:
         print(error, file=sys.stderr)
@@ -84,12 +93,12 @@ def main(argv: list[str] | None = None) -> int:
         tune_rates=not arguments.no_tune_rates,
         joint_rate_search=selected.joint_rate_search,
         limits=config.limits,
-        fluids=config.fluids,
+        fluids=config.fluids, well_fluids=deck_fluids.by_well,
     )
 
     if arguments.confirm:
         confirmed_dir = Path(arguments.confirm)
-        rows = summary.monthly_rows(confirmed_dir / case_name, fluids=config.fluids)
+        rows = summary.monthly_rows(confirmed_dir / case_name, fluids=config.fluids, well_fluids=deck_fluids.by_well)
         if not rows:
             print(f"нет выгрузки в {confirmed_dir}", file=sys.stderr)
             return 1

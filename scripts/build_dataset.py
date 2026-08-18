@@ -28,7 +28,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aios import config as config_module  # noqa: E402
-from aios import economics, summary  # noqa: E402
+from aios import (  # noqa: E402
+    economics,
+    pvt,  # noqa: E402
+    summary,
+)
 from aios.deck import ScheduleStep, parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 
@@ -60,6 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         for scenario in manifest["scenarios"]
     }
     reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    # плотности по PVT-регионам скважин; пометка печатается всегда — молча
+    # посчитать чужой пласт по нашей плотности нельзя (ТЗ п. 4.3)
+    deck_fluids = pvt.fluids_by_well(config.case.model_dir)
+    print(f"плотности: {deck_fluids.note}")
 
     target = Path(arguments.out)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -76,7 +84,8 @@ def main(argv: list[str] | None = None) -> int:
                 skipped += 1
                 continue
 
-            rows = summary.monthly_rows(case, fluids=config.fluids)
+            rows = summary.monthly_rows(case, fluids=config.fluids,
+                                        well_fluids=deck_fluids.by_well)
             roles = control_roles(reference.steps, {str(row["DATA"]) for row in rows})
             problems = summary.sanity_problems(rows)
             if problems:

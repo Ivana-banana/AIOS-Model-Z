@@ -21,7 +21,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aios import config as config_module  # noqa: E402
-from aios import economics, summary  # noqa: E402
+from aios import (  # noqa: E402
+    economics,
+    pvt,  # noqa: E402
+    summary,
+)
 
 #: Ориентир организаторов по накопленной нефти за историю, тыс. т. Их число из
 #: разбора задачи; расхождение больше пары процентов означает, что мы посчитали
@@ -47,7 +51,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"нет результата расчёта: {case}.UNSMRY", file=sys.stderr)
         return 1
 
-    rows = summary.monthly_rows(case, fluids=config.fluids)
+    # плотность берётся по PVT-региону скважины; пометка печатается всегда —
+    # молча посчитать чужой пласт по нашей плотности нельзя (ТЗ п. 4.3)
+    deck_fluids = pvt.fluids_by_well(config.case.model_dir)
+    print(f"плотности:     {deck_fluids.note}")
+    rows = summary.monthly_rows(case, fluids=config.fluids,
+                                well_fluids=deck_fluids.by_well)
     if not rows:
         print("выгрузка пустая: SUMMARY-секция не попала в кейс или прогон оборвался",
               file=sys.stderr)

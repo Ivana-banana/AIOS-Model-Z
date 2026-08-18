@@ -244,6 +244,63 @@ def well_fluids(regions: tuple[PvtRegion, ...],
     return fluids
 
 
+@dataclass(frozen=True)
+class DeckFluids:
+    """Плотности по скважинам плюс честная пометка о том, что получилось.
+
+    Пометка обязательна. Дек может не дать плотностей вовсе — например, если
+    вскрытия описаны через `COMPDATMD` (по измеренной глубине), где координат
+    ячеек нет. Тогда считать приходится по общей плотности из конфигурации, и об
+    этом надо сказать вслух: падать посреди прогона нельзя, но и молчать нельзя —
+    на чужом пласте общая плотность будет просто неверной (ТЗ п. 4.3).
+    """
+
+    by_well: dict[str, Fluids]
+    note: str
+    """Одна строка для лога, отчёта и UI: откуда взяты плотности."""
+
+    without_region: tuple[str, ...] = ()
+    """Скважины, для которых регион определить не удалось."""
+
+    @property
+    def complete(self) -> bool:
+        """Все ли скважины получили плотность из дека."""
+        return bool(self.by_well) and not self.without_region
+
+
+def fluids_by_well(model_dir: str | Path,
+                   wells: tuple[str, ...] | list[str] | None = None) -> DeckFluids:
+    """Плотности по скважинам из дека — точка входа для рабочих путей.
+
+    Не бросает: разобрать дек может не получиться по множеству причин, а прогон
+    из-за этого падать не должен. Всё, что пошло не так, попадает в `note`.
+    """
+    try:
+        by_well, assigned = from_deck(model_dir)
+    except (ValueError, OSError) as error:
+        return DeckFluids({}, f"плотности из дека недоступны ({error}); взята общая из конфигурации")
+
+    if not by_well:
+        return DeckFluids(
+            {}, "в деке не нашлось вскрытий COMPDAT — плотности по скважинам определить "
+                "нельзя, взята общая из конфигурации"
+        )
+
+    missing = tuple(sorted(set(wells) - set(by_well))) if wells else ()
+    regions = sorted({placement.region for placement in assigned.values()})
+    mixed = sum(1 for placement in assigned.values() if placement.mixed)
+
+    note = (
+        f"плотности из дека: скважин {len(by_well)}, "
+        f"PVT-регион{'ы' if len(regions) > 1 else ''} {', '.join(map(str, regions))}"
+    )
+    if mixed:
+        note += f"; вскрывают несколько регионов: {mixed}"
+    if missing:
+        note += f"; без региона осталось {len(missing)} — им общая из конфигурации"
+    return DeckFluids(by_well, note, missing)
+
+
 def from_deck(model_dir: str | Path) -> tuple[dict[str, Fluids], dict[str, WellRegion]]:
     """Собрать плотности по скважинам прямо из дека.
 

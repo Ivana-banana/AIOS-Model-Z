@@ -29,7 +29,7 @@ from fastapi.templating import Jinja2Templates
 
 from aios import balance as balance_module
 from aios import config as config_module
-from aios import deckfiles, economics, loop, summary
+from aios import deckfiles, economics, loop, pvt, summary
 from aios import explain as explain_module
 from aios.deck import ScheduleStep, parse_schedule
 from aios.margin import Norms, screen
@@ -165,6 +165,19 @@ def create_app(root: Path | None = None) -> FastAPI:
     def settings():
         return config_module.load(project_root / "config.toml")
 
+    deck_fluids_cache: dict[str, pvt.DeckFluids] = {}
+
+    def deck_fluids() -> pvt.DeckFluids:
+        """Плотности по PVT-регионам скважин. Разбор дека кэшируется на процесс.
+
+        Без них весь фонд считался бы по одной плотности из конфигурации — на
+        Модели Z это совпадает, на чужом пласте нет (ТЗ п. 4.3).
+        """
+        key = str(settings().case.model_dir)
+        if key not in deck_fluids_cache:
+            deck_fluids_cache[key] = pvt.fluids_by_well(settings().case.model_dir)
+        return deck_fluids_cache[key]
+
     @application.get("/", response_class=HTMLResponse)
     def index(request: Request) -> HTMLResponse:
         return TEMPLATES.TemplateResponse(
@@ -182,7 +195,7 @@ def create_app(root: Path | None = None) -> FastAPI:
     @application.get("/run/{name}", response_class=HTMLResponse)
     def run_page(request: Request, name: str) -> HTMLResponse:
         run = _find(runs(), name)
-        rows = load_rows(run, settings().fluids)
+        rows = load_rows(run, settings().fluids, deck_fluids().by_well)
         if not rows:
             raise HTTPException(404, f"В прогоне «{name}» нет результатов расчёта")
 
@@ -242,8 +255,8 @@ def create_app(root: Path | None = None) -> FastAPI:
         norms = Norms.from_assumptions(assumptions)
 
         left, right = _find(runs(), a), _find(runs(), b)
-        left_rows = load_rows(left, configuration.fluids)
-        right_rows = load_rows(right, configuration.fluids)
+        left_rows = load_rows(left, configuration.fluids, deck_fluids().by_well)
+        right_rows = load_rows(right, configuration.fluids, deck_fluids().by_well)
         if not left_rows or not right_rows:
             raise HTTPException(404, "У одного из прогонов нет результатов расчёта")
 
@@ -304,7 +317,7 @@ def create_app(root: Path | None = None) -> FastAPI:
     def cycle_page(request: Request, name: str, model: str = "decline") -> HTMLResponse:
         run = _find(runs(), name)
         configuration = settings()
-        rows = load_rows(run, configuration.fluids)
+        rows = load_rows(run, configuration.fluids, deck_fluids().by_well)
         if not rows:
             raise HTTPException(404, f"В прогоне «{name}» нет результатов расчёта")
         if not run.schedule.is_file():
@@ -373,13 +386,19 @@ def create_app(root: Path | None = None) -> FastAPI:
     return application
 
 
-def load_rows(run: Run, fluids: summary.Fluids) -> list[dict[str, Any]]:
-    """Строки прогона: сначала `rows.csv`, иначе `.UNSMRY` симулятора."""
+def load_rows(run: Run, fluids: summary.Fluids,
+              well_fluids: dict[str, summary.Fluids] | None = None) -> list[dict[str, Any]]:
+    """Строки прогона: сначала `rows.csv`, иначе `.UNSMRY` симулятора.
+
+    `well_fluids` — плотности по PVT-регионам скважин (`aios.pvt`). Без них
+    весь фонд считался бы по одной плотности из конфигурации, что на чужом
+    пласте просто неверно (ТЗ п. 4.3).
+    """
     if run.rows_csv.is_file():
         return read_rows_csv(run.rows_csv)
     case = run.summary_case
     if case is not None:
-        return summary.monthly_rows(case, fluids=fluids)
+        return summary.monthly_rows(case, fluids=fluids, well_fluids=well_fluids)
     return []
 
 
