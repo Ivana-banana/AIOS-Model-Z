@@ -43,6 +43,46 @@
   {% endif %}
 </section>
 
+{% if explanation %}
+<section>
+  <h2>Почему система решила так</h2>
+  <p class="muted">
+    Объяснение сформулировано языковой моделью по числам, которые посчитал цикл.
+    Модель ничего не решает и не считает: каждое число в тексте автоматически
+    сверяется с расчётом, и ответ с числом, которого в расчёте нет, отвергается
+    целиком.
+  </p>
+
+  <pre style="white-space:pre-wrap">{{ explanation.text }}</pre>
+
+  <p class="muted" style="margin-top:12px">
+    Чем получено:
+    {% if explanation.source == 'llm' %}
+      <strong>языковой моделью</strong> ({{ explanation.model }}), проверка чисел пройдена.
+    {% elif explanation.source == 'cache' %}
+      <strong>из кэша</strong> ({{ explanation.model }}) — те же факты уже объяснялись.
+      Детерминизма у вызова нет, воспроизводимость даёт кэш.
+    {% elif explanation.source == 'template-rejected' %}
+      <strong>шаблоном: ответ модели отвергнут.</strong>
+    {% else %}
+      <strong>шаблоном</strong> — слой выключен в конфигурации либо недоступен.
+    {% endif %}
+    Отпечаток фактов: <code>{{ explanation.fingerprint }}</code>.
+  </p>
+
+  {% if explanation.rejected_numbers %}
+  <div class="warn">
+    <p>
+      Ответ языковой модели отвергнут: в тексте появились числа, которых нет в
+      расчёте — {{ explanation.rejected_numbers|join(', ') }}. Показано шаблонное
+      объяснение. Отброшен весь ответ, а не отдельное число: ошибка в одном числе
+      не оставляет доверия к остальному тексту.
+    </p>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
 {% if result.rate_choices %}
 <section>
   <h2>Подбор режимов</h2>

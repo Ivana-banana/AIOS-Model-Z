@@ -245,6 +245,58 @@ def template_text(evidence: Evidence) -> str:
     return "\n".join(lines)
 
 
+def evidence_from_cycle(result: Any, surrogate_name: str = "") -> Evidence:
+    """Собрать набор фактов из итога цикла (`aios.loop.CycleResult`).
+
+    Числа берутся ровно те, что посчитал цикл, — модели остаётся их изложить.
+    Оговорки собираются здесь же, а не в подсказке: неподтверждённый прирост,
+    выход за обучающий диапазон суррогата и нарушения ограничений обязаны попасть
+    в объяснение, даже если модель сочтёт их незначительными.
+    """
+    numbers = {
+        "ЧДД базового сценария, млн руб.": result.base_chdd_m,
+        "ЧДД после решений, млн руб.": result.chdd_m,
+        "прирост, млн руб.": result.gain_m,
+        "решений об остановке": float(len(result.actions)),
+        "скважин с подобранным режимом": float(len(result.rate_choices)),
+    }
+    if result.allocations:
+        numbers["срезано планировщиком, скважин"] = float(len(result.allocations))
+
+    observations = []
+    if surrogate_name:
+        observations.append(f"прогноз получен источником: {surrogate_name}")
+    if result.actions:
+        kinds = sorted({action.kind for action in result.actions})
+        observations.append("типы принятых решений: " + ", ".join(kinds))
+
+    caveats = []
+    if not result.confirmed:
+        caveats.append(
+            "прирост посчитан по прогнозу суррогата и полным расчётом ГГДМ не подтверждён"
+        )
+    if result.warnings:
+        caveats.append(
+            f"режимы выходят за обучающий диапазон суррогата: предупреждений "
+            f"{len(result.warnings)}"
+        )
+        numbers["предупреждений о выходе за диапазон"] = float(len(result.warnings))
+    if result.problems:
+        caveats.append(
+            f"расписание нарушает ограничения ({len(result.problems)}) и организаторам "
+            "не отправляется"
+        )
+        numbers["нарушений ограничений"] = float(len(result.problems))
+
+    return Evidence(
+        subject="цикл управления фондом: подбор режимов и остановка убыточных скважин",
+        observations=tuple(observations),
+        numbers=numbers,
+        confirmed=bool(result.confirmed),
+        caveats=tuple(caveats),
+    )
+
+
 def _cache_path(settings: Settings, fingerprint: str) -> Path | None:
     if settings.cache_dir is None:
         return None

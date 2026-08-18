@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 from aios import balance as balance_module
 from aios import config as config_module
 from aios import deckfiles, economics, loop, summary
+from aios import explain as explain_module
 from aios.deck import ScheduleStep, parse_schedule
 from aios.margin import Norms, screen
 from aios.model import SurrogateLoadError, for_cycle
@@ -347,6 +348,16 @@ def create_app(root: Path | None = None) -> FastAPI:
             limits=configuration.limits,
             fluids=configuration.fluids,
         )
+        # слой интерпретируемости: модель излагает уже принятое решение по
+        # посчитанным фактам. Отказ слоя не должен ронять страницу — при любой
+        # проблеме возвращается шаблонное объяснение (ТЗ п. 3.1)
+        try:
+            explanation = explain_module.explain(
+                explain_module.evidence_from_cycle(result, selected.name),
+                configuration.explain,
+            )
+        except Exception:  # noqa: BLE001 — объяснение не должно уносить результат цикла
+            explanation = None
         return TEMPLATES.TemplateResponse(
             request=request,
             name="cycle.html",
@@ -355,6 +366,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "result": result,
                 "settings": configuration,
                 "surrogate_name": selected.name,
+                "explanation": explanation,
             },
         )
 

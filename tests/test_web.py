@@ -254,6 +254,65 @@ def test_cycle_explains_each_decision(client):
     assert "обводнённость" in text or "Действий нет" in text
 
 
+def test_cycle_page_shows_the_interpretability_layer(client):
+    """ТЗ п. 3.1: интерфейс должен быть достаточен для интерпретации результатов."""
+    text = client.post("/run/base/cycle").text
+    assert "Почему система решила так" in text
+
+
+def test_the_origin_of_the_explanation_is_visible(client):
+    """Читателю обязано быть видно, объяснение от модели или шаблонное."""
+    text = client.post("/run/base/cycle").text
+    assert "Чем получено" in text
+    assert "Отпечаток фактов" in text
+
+
+def test_template_explanation_is_labelled_as_such(client):
+    """Слой выключен в конфигурации тестов — значит, шаблон, и так и написано."""
+    text = client.post("/run/base/cycle").text
+    assert "слой выключен в конфигурации" in text
+
+
+def test_a_rejected_model_answer_is_shown_not_hidden(project, monkeypatch):
+    """Отвергнутый ответ с выдуманным числом — находка, а не мусор: он виден."""
+    from aios import explain as explain_module
+
+    real = explain_module.explain
+
+    def rejected(evidence, settings, **kwargs):
+        base = real(evidence, explain_module.Settings(enabled=False))
+        return explain_module.Explanation(
+            text=base.text,
+            source="template-rejected",
+            fingerprint=base.fingerprint,
+            model="claude-opus-5",
+            rejected_numbers=("2500.0",),
+        )
+
+    monkeypatch.setattr("aios.web.app.explain_module.explain", rejected)
+    text = TestClient(create_app(project)).post("/run/base/cycle").text
+
+    assert "ответ модели отвергнут" in text
+    assert "2500.0" in text
+
+
+def test_the_explanation_never_breaks_the_page(project, monkeypatch):
+    """Отказ слоя — это отчётность о решении, а не само решение. Страница живёт.
+
+    Результат цикла — числа ЧДД и расписание — не должен пропадать оттого, что
+    сломалось его словесное изложение.
+    """
+    def broken(evidence, settings, **kwargs):
+        raise RuntimeError("слой сломался")
+
+    monkeypatch.setattr("aios.web.app.explain_module.explain", broken)
+    response = TestClient(create_app(project)).post("/run/base/cycle")
+
+    assert response.status_code == 200
+    assert "ЧДД базового сценария" in response.text
+    assert "Почему система решила так" not in response.text
+
+
 def test_rows_csv_is_read_as_numbers(project):
     rows = read_rows_csv(project / "runs" / "base" / "rows.csv")
 
