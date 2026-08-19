@@ -240,8 +240,6 @@ def test_export_rows_labels_two_different_totals_blocks(tmp_path, monkeypatch, c
     заголовке, а жидкость и закачка печатаются в обоих блоках, а не только в
     верхнем.
     """
-    import sys
-
     from conftest import make_row
 
     from aios import pvt, summary
