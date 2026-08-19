@@ -41,7 +41,10 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = config_module.load(arguments.config)
     frame = load_datasets(arguments.dataset)
-    bundle = train(frame, seed=settings.run.seed, kind=arguments.model)
+    # метрики считаются только на управляемой части горизонта: история у всех
+    # сценариев одна и по входу, и по отклику, поэтому по ней меряется память
+    bundle = train(frame, seed=settings.run.seed, kind=arguments.model,
+                   control_start=settings.case.control_start)
     metadata = {
         "seed": settings.run.seed,
         "datasets": dataset_fingerprints(arguments.dataset),
@@ -63,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"train/test сценариев: {len(bundle.report.train_scenarios)}/"
           f"{len(bundle.report.test_scenarios)}")
     print(f"в модель сохранён: {bundle.report.kind}")
+    print(f"метрики считаны на {bundle.report.metric_rows} строках"
+          + (f" с {bundle.report.metric_start}" if bundle.report.metric_start else ""))
     for dataset in metadata["datasets"]:
         print(f"данные: {dataset['path']} ({dataset['bytes']} байт), sha256={dataset['sha256']}")
     print(f"порог качества: {quality_verdict(bundle.report)}")

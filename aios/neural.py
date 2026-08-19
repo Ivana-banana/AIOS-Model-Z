@@ -64,6 +64,17 @@ class TrainingReport:
     rows: int
     metrics: dict[str, TargetMetric]
 
+    metric_rows: int = 0
+    """Сколько строк отложенной выборки реально участвовало в метриках.
+
+    Меньше, чем `rows`, когда часть выборки — история до начала управления:
+    она одинакова у всех сценариев и по входу, и по отклику, поэтому мерить по
+    ней значит мерить память, а не обобщение (ревизия 20.08, `d9d9750`).
+    """
+
+    metric_start: str = ""
+    """С какой даты считались метрики; пусто — считались по всей выборке."""
+
     kind: str = "mlp"
     """Что именно сохранено в модели: `mlp` или `linear`.
 
@@ -257,11 +268,19 @@ class NeuralSurrogate:
 
 def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
           hidden_layers: tuple[int, ...] = (32, 16), max_iter: int = 300,
-          kind: str = "mlp") -> NeuralBundle:
+          kind: str = "mlp", control_start: date | None = None) -> NeuralBundle:
     """Обучить модель на каждую скважину и измерить held-out ошибку.
 
     `kind` выбирает, какая из двух обученных моделей поедет в цикл: `mlp` или
     `linear`. Меряются обе в любом случае — сравнение и есть смысл упражнения.
+
+    `control_start` отделяет управляемую часть горизонта от истории. **Учимся на
+    всей выборке, меряемся только на управляемой.** История до этой даты у всех
+    сценариев побайтово одна: сценарий DoE меняет расписание только с неё. После
+    правки `42fec5d` вход там нейтрален, но отклик по-прежнему одинаков, поэтому
+    каждая историческая строка отложенного сценария дословно встречается в
+    обучающих — метрика по ней меряет память. Учить на них законно: на
+    нейтральном управлении они задают базовый уровень скважины.
     """
     if kind not in ("mlp", "linear"):
         raise ValueError(f"неизвестный вид модели: {kind}")
@@ -289,6 +308,11 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         test_rows = rows[rows["scenario"].isin(test_scenarios)]
         if train_rows.empty or test_rows.empty:
             continue
+
+        if control_start is not None:
+            test_rows = test_rows[test_rows["DATA"] >= pd.Timestamp(control_start)]
+            if test_rows.empty:
+                continue
 
         x_train = _features(train_rows, controls, start_month, month_span)
         x_test = _features(test_rows, controls, start_month, month_span)
@@ -342,6 +366,8 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         wells=len(models),
         rows=len(data),
         metrics=metrics,
+        metric_rows=int(sum(len(part) for part in test_targets)),
+        metric_start="" if control_start is None else control_start.isoformat(),
         kind=kind,
     )
     return NeuralBundle(

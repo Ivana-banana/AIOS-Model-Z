@@ -517,3 +517,54 @@ def test_a_network_worse_than_the_mean_is_refused_even_if_it_beats_the_baseline(
 
     with pytest.raises(ValueError, match="R²"):
         assert_quality(losing)
+
+
+def test_history_rows_do_not_count_towards_held_out_metrics():
+    """История одинакова во всех сценариях, поэтому в метриках она — память.
+
+    Находка ревизии 20.08 (`d9d9750`): фикс `42fec5d` убрал управляющий вектор с
+    исторических строк, но сами строки остались — и теперь совпадают у всех
+    сценариев **и по входу, и по отклику**. Разбиение по сценариям их не
+    разделяет: каждая историческая строка отложенного сценария дословно
+    встречается в обучающих. Две пятых held-out предсказываются точным повтором
+    обучающей строки, то есть метрика меряет память, а не обобщение.
+
+    Обучать на них по-прежнему законно — на нейтральном управлении они учат
+    базовому уровню скважины. Мерить по ним нельзя.
+    """
+    rows = []
+    for scenario, multiplier in (("a", 0.8), ("b", 1.0), ("c", 1.2), ("d", 1.4)):
+        for month in range(1, 13):
+            date = pd.Timestamp(f"2006-{month:02d}-01")
+            # история: вход нейтрален, отклик одинаков у всех сценариев
+            rows.append({
+                "scenario": scenario, "DATA": date, "well": "1",
+                "multiplier": np.nan, "production_multiplier": np.nan,
+                "injection_multiplier": np.nan, "is_shut": "",
+                "WLPR": 30.0, "WWIR": 0.0, "WLPT_Diff": 900.0, "WOMT_Diff": 600.0,
+                "WWIT_Diff": 0.0, "THP": 100.0, "BHP": 80.0,
+            })
+        for month in range(1, 13):
+            date = pd.Timestamp(f"2007-{month:02d}-01")
+            rows.append({
+                "scenario": scenario, "DATA": date, "well": "1",
+                "multiplier": multiplier, "production_multiplier": multiplier,
+                "injection_multiplier": np.nan, "is_shut": 0,
+                "WLPR": 30.0 * multiplier, "WWIR": 0.0,
+                "WLPT_Diff": 900.0 * multiplier, "WOMT_Diff": 600.0 * multiplier,
+                "WWIT_Diff": 0.0, "THP": 100.0, "BHP": 80.0,
+            })
+
+    bundle = train(pd.DataFrame(rows), seed=3, control_start=date_(2007, 1, 1))
+
+    assert bundle.report.metric_rows > 0
+    assert bundle.report.metric_rows < bundle.report.rows, (
+        "метрики обязаны считаться на управляемой части, а не на всей выборке"
+    )
+    assert bundle.report.metric_start == "2007-01-01"
+
+
+def date_(year: int, month: int, day: int):
+    from datetime import date
+
+    return date(year, month, day)
