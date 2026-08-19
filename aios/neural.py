@@ -199,9 +199,13 @@ class NeuralSurrogate:
         planned = _expand_role_controls(steps)
         reference = _expand_role_controls(self.reference_steps)
         known = set(self.bundle.control_wells)
-        seen: set[str] = set()
         warnings: list[str] = []
         started: dict[str, list[date]] = {}
+        unknown: dict[str, dict[str, date]] = {}
+        # Роли, размеченные в обучающем датасете. Пустое множество — датасет
+        # старого вида, с одной колонкой на скважину: там о покрытии ролей судить
+        # нельзя, и поведение остаётся прежним
+        covered_roles = {key.split(":", 1)[0] for key in known if ":" in key}
 
         for month_start, controls in planned.items():
             for (role, well), control in controls.items():
@@ -209,17 +213,33 @@ class NeuralSurrogate:
                     continue
                 key = f"{'prod' if role == 'production' else 'inj'}:{well}"
                 if key not in known and well not in known:
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    warnings.append(
-                        f"{month_start.isoformat()}: управления {key} нет в обучающем "
-                        f"датасете — прогноз этого решения не учитывает вовсе"
-                    )
+                    unknown.setdefault(key.split(":", 1)[0], {}).setdefault(key, month_start)
                     continue
                 base = _role_rate(reference.get(month_start, {}).get((role, well)), role)
                 if base <= 0:
                     started.setdefault(key, []).append(month_start)
+
+        # Целый класс управления, которого в датасете нет, — это одна причина
+        # (пакет посчитан по одному виду скважин), а не находка на каждую
+        # скважину. Ревизия 19.08 намерила 71 предупреждение на любое расписание,
+        # включая историческое, у модели, обученной только на пакете по
+        # нагнетателям (`docs/experiments.md`).
+        for prefix, months_by_key in unknown.items():
+            if covered_roles and prefix not in covered_roles:
+                listed = ", ".join(list(months_by_key)[:5])
+                if len(months_by_key) > 5:
+                    listed += f" и ещё {len(months_by_key) - 5}"
+                warnings.append(
+                    f"управления вида {prefix}: нет в обучающем датасете вовсе — "
+                    f"суррогат обучен на пакете одного вида, и эти решения прогноз "
+                    f"не учитывает (скважин {len(months_by_key)}: {listed})"
+                )
+            else:
+                warnings.extend(
+                    f"{month.isoformat()}: управления {key} нет в обучающем "
+                    f"датасете — прогноз этого решения не учитывает вовсе"
+                    for key, month in months_by_key.items()
+                )
 
         # Запуск живёт весь горизонт, а не один месяц: без свёртки девять
         # переведённых скважин дают 188 строк, из которых 180 — одна и та же

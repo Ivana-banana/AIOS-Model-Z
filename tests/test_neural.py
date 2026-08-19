@@ -464,3 +464,31 @@ def test_an_idle_well_started_for_many_months_is_reported_once():
     assert "2014-01-01" in warnings[0] and "2014-12-01" in warnings[0], (
         "диапазон месяцев обязан остаться в тексте: без него неясен масштаб")
     assert "12" in warnings[0]
+
+
+def test_a_model_trained_on_one_kind_of_control_says_so_once():
+    """Пакет одного вида — это одна причина, а не предупреждение на каждую скважину.
+
+    Измерено ревизией 19.08: суррогат, обученный только на пакете по
+    нагнетателям, выдаёт 71 предупреждение на **любое** расписание, включая
+    историческое, — по одному на каждую добывающую скважину, управления которой
+    в датасете нет вовсе. Условие «обучать на объединении пакетов» нигде не
+    записано и из кода не следует: `assert_quality` смотрит метрики, а не
+    покрытие координат управления. Защита в таком виде превращается в шум
+    (`docs/experiments.md`).
+    """
+    from datetime import date
+
+    trained = bundle()
+    trained.control_wells = ("inj:9",)
+    producers = [ScheduleStep(date(2014, 1, 1),
+                              tuple(ProducerControl(well, "OPEN", "LRAT", 30.0, 50.0)
+                                    for well in ("1", "2", "3")), ())]
+    surrogate = NeuralSurrogate.create(trained, producers)
+
+    warnings = [w for w in surrogate.in_training_range(producers)
+                if "обучающем датасете" in w]
+
+    assert len(warnings) == 1, warnings
+    assert "3" in warnings[0], "число затронутых скважин обязано остаться видимым"
+    assert "prod" in warnings[0]
