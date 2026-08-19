@@ -437,3 +437,30 @@ def _dataset_frame():
                     "WWIT_Diff": 0.0, "THP": 100.0 + index, "BHP": 80.0 + index,
                 })
     return pd.DataFrame(rows)
+
+
+def test_an_idle_well_started_for_many_months_is_reported_once():
+    """Одна мысль об одной скважине не должна повторяться по числу месяцев.
+
+    Измерено ревизией 19.08 на настоящем расписании: сценарий с девятью
+    переведёнными скважинами даёт 188 предупреждений, из которых 180 — одна и та
+    же скважина, повторённая помесячно. Первый блок дедуплицирован `seen`, второй
+    нет, поэтому защита читаема там, где она не нужна, и нечитаема ровно на том
+    классе решений, ради которого заводилась (`docs/experiments.md`).
+    """
+    from datetime import date
+
+    idle = [ScheduleStep(date(2014, month, 1),
+                         (ProducerControl("1", "SHUT", "LRAT", None, 50.0),), ())
+            for month in range(1, 13)]
+    planned = [ScheduleStep(date(2014, month, 1),
+                            (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),), ())
+               for month in range(1, 13)]
+    surrogate = NeuralSurrogate.create(bundle(), idle)
+
+    warnings = [w for w in surrogate.in_training_range(planned) if "без опорного режима" in w]
+
+    assert len(warnings) == 1, warnings
+    assert "2014-01-01" in warnings[0] and "2014-12-01" in warnings[0], (
+        "диапазон месяцев обязан остаться в тексте: без него неясен масштаб")
+    assert "12" in warnings[0]

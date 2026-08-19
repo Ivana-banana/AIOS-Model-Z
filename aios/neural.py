@@ -201,6 +201,7 @@ class NeuralSurrogate:
         known = set(self.bundle.control_wells)
         seen: set[str] = set()
         warnings: list[str] = []
+        started: dict[str, list[date]] = {}
 
         for month_start, controls in planned.items():
             for (role, well), control in controls.items():
@@ -218,10 +219,19 @@ class NeuralSurrogate:
                     continue
                 base = _role_rate(reference.get(month_start, {}).get((role, well)), role)
                 if base <= 0:
-                    warnings.append(
-                        f"{month_start.isoformat()}: {key} запускается без опорного "
-                        f"режима — обучающая выборка таких решений не содержит"
-                    )
+                    started.setdefault(key, []).append(month_start)
+
+        # Запуск живёт весь горизонт, а не один месяц: без свёртки девять
+        # переведённых скважин дают 188 строк, из которых 180 — одна и та же
+        # мысль об одной скважине (`docs/experiments.md`, ревизия 19.08).
+        for key, months in started.items():
+            first, last = min(months), max(months)
+            span = (first.isoformat() if first == last
+                    else f"{first.isoformat()}…{last.isoformat()} ({len(months)} мес.)")
+            warnings.append(
+                f"{span}: {key} запускается без опорного "
+                f"режима — обучающая выборка таких решений не содержит"
+            )
         return warnings
 
 
