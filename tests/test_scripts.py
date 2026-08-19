@@ -228,3 +228,44 @@ def test_python_scripts_survive_a_cp1251_console(name: str):
         f"{name} --help падает в консоли cp1251:\n{result.stderr[-600:]}"
     )
     assert "UnicodeEncodeError" not in result.stderr
+
+
+def test_export_rows_labels_two_different_totals_blocks(tmp_path, monkeypatch, capsys):
+    """Слово «нефть» печаталось дважды с разным смыслом — и числа уже путались.
+
+    Верхний блок считает всю выгрузку целиком, нижний — эталонный расчётчик, то
+    есть с даты дисконтирования и без строк с отрицательными приращениями. Это
+    разные периоды и разные фильтры, а подпись была одна. Дважды числа за разные
+    периоды попадали в одну строку журнала — поэтому период теперь стоит в
+    заголовке, а жидкость и закачка печатаются в обоих блоках, а не только в
+    верхнем.
+    """
+    import sys
+
+    from conftest import make_row
+
+    from aios import pvt, summary
+    from scripts import export_rows
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "RUN.UNSMRY").write_bytes(b"")
+    rows = [
+        make_row("2013-01-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2014-01-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2014-02-01", "2", wwir=50.0, injection=1500.0),
+    ]
+    monkeypatch.setattr(summary, "monthly_rows", lambda *a, **k: rows)
+    monkeypatch.setattr(export_rows.summary, "monthly_rows", lambda *a, **k: rows)
+    monkeypatch.setattr(
+        export_rows.pvt, "fluids_by_well",
+        lambda *a, **k: pvt.DeckFluids({}, "плотности: подставные, тест"),
+    )
+
+    code = export_rows.main([str(run_dir), "--case-name", "RUN"])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert "итоги по всей выгрузке" in printed, "верхний блок обязан назвать свой период"
+    assert printed.count("жидкость") >= 2, "жидкости не было в блоке ЧДД вовсе"
+    assert printed.count("закачка") >= 2, "закачки не было в блоке ЧДД вовсе"

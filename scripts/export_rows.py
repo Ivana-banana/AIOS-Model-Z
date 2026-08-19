@@ -72,6 +72,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"строк:     {len(rows)} ({len(wells)} скважин × {len(dates)} месяцев)")
     print(f"период:    {dates[0]} — {dates[-1]}")
     print()
+    # Подпись периода обязательна: ниже идёт второй блок итогов — от эталонного
+    # расчётчика, — и он считает те же величины за другой период (с даты
+    # дисконтирования) и без строк с отрицательными приращениями. Пока оба блока
+    # назывались просто «нефть», числа за разные периоды уже дважды попадали в
+    # одну строку журнала.
+    print(f"--- итоги по всей выгрузке ({dates[0]} — {dates[-1]}) ---")
     print(f"нефть:     {oil_kt:11.1f} тыс. т   ориентир организаторов {REFERENCE_OIL_KT:.0f} тыс. т "
           f"({100.0 * (oil_kt - REFERENCE_OIL_KT) / REFERENCE_OIL_KT:+.1f} %)")
     print(f"жидкость:  {liquid_kt:11.1f} тыс. т")
@@ -115,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"OPEX:             {result.opex_m:12.1f} млн руб.")
     print(f"CAPEX:            {result.capex_m:12.1f} млн руб.")
     print(f"нефть:            {result.oil_kt:12.1f} тыс. т")
+    print(f"жидкость:         {result.liquid_kt:12.1f} тыс. т")
+    print(f"закачка:          {result.injection_km3:12.1f} тыс. м3")
     print(f"лет:              {result.years:12d}")
     print(f"смен ЭЦН:         {result.pump_changes:12.0f}")
     print(f"пусков/остановок: {result.start_stop_count:12d}")
