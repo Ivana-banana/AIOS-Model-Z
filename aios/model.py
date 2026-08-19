@@ -48,4 +48,6 @@ def for_cycle(
         raise SurrogateLoadError(
             f"не удалось загрузить проверенный суррогат {neural_path}: {error}"
         ) from error
-    return CycleSurrogate(surrogate, "MLP по сценариям DoE", True)
+    label = ("линейный суррогат по сценариям DoE" if bundle.report.kind == "linear"
+             else "MLP по сценариям DoE")
+    return CycleSurrogate(surrogate, label, True)

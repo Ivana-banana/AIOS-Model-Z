@@ -64,6 +64,15 @@ class TrainingReport:
     rows: int
     metrics: dict[str, TargetMetric]
 
+    kind: str = "mlp"
+    """Что именно сохранено в модели: `mlp` или `linear`.
+
+    Линейный бейзлайн обучается всегда — им меряется сеть. До 19.08 он при этом
+    выбрасывался: если MLP не проходил порог, в цикл ехал тривиальный суррогат,
+    хотя измеренно лучшая модель на прогонах ГГДМ уже была обучена. Теперь её
+    можно сохранить и отвечать за неё числом (`Р-16`).
+    """
+
 
 @dataclass
 class NeuralBundle:
@@ -217,8 +226,15 @@ class NeuralSurrogate:
 
 
 def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
-          hidden_layers: tuple[int, ...] = (32, 16), max_iter: int = 300) -> NeuralBundle:
-    """Обучить отдельный MLP на каждую скважину и измерить held-out ошибку."""
+          hidden_layers: tuple[int, ...] = (32, 16), max_iter: int = 300,
+          kind: str = "mlp") -> NeuralBundle:
+    """Обучить модель на каждую скважину и измерить held-out ошибку.
+
+    `kind` выбирает, какая из двух обученных моделей поедет в цикл: `mlp` или
+    `linear`. Меряются обе в любом случае — сравнение и есть смысл упражнения.
+    """
+    if kind not in ("mlp", "linear"):
+        raise ValueError(f"неизвестный вид модели: {kind}")
     _validate(frame, test_fraction)
     data = frame.copy()
     data["scenario"] = data["scenario"].astype(str)
@@ -269,7 +285,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         neural_predictions.append(neural_prediction)
         linear_predictions.append(linear_prediction)
         test_targets.append(y_test)
-        models[well] = neural
+        models[well] = neural if kind == "mlp" else baseline
 
     if not models:
         raise ValueError("после разбиения не осталось скважин с train и test строками")
@@ -296,6 +312,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         wells=len(models),
         rows=len(data),
         metrics=metrics,
+        kind=kind,
     )
     return NeuralBundle(
         tuple(controls.columns), models, start_month, int(month_span), _envelope(data), report
@@ -303,7 +320,28 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
 
 
 def assert_quality(report: TrainingReport) -> None:
-    """Не допустить MLP в цикл, пока он не лучше линейного бейзлайна."""
+    """Не пустить в цикл модель, которая не лучше того, чем её меряют.
+
+    Для MLP «то, чем меряют» — линейный бейзлайн: усложнение обязано доказать
+    превосходство числом, иначе его не существует (принцип 3 `CLAUDE.md`).
+
+    Для линейной модели такой порог бессмыслен — она сама и есть бейзлайн, —
+    поэтому проверяется другое и более грубое: объясняет ли она вообще хоть
+    что-то на отложенных сценариях. `R² ≤ 0` означает «не лучше среднего», и
+    такую модель в цикл пускать нельзя ничуть не больше, чем проигравший MLP.
+    """
+    if report.kind == "linear":
+        failed = [
+            target for target in ("WLPT_Diff", "WOMT_Diff")
+            if (report.metrics[target].linear_r2 or 0.0) <= 0.0
+        ]
+        if failed:
+            raise ValueError(
+                "линейный суррогат не объясняет отложенные сценарии (R² ≤ 0): "
+                + ", ".join(failed)
+            )
+        return
+
     failed = [
         target for target in ("WLPT_Diff", "WOMT_Diff")
         if report.metrics[target].neural_mae >= report.metrics[target].linear_mae

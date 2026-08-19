@@ -33,11 +33,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="artifacts/surrogate.joblib")
     parser.add_argument("--report", default="artifacts/surrogate-metrics.json")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
+    parser.add_argument(
+        "--model", choices=("mlp", "linear"), default="mlp",
+        help="какая из двух обученных моделей поедет в цикл; меряются обе в любом случае",
+    )
     arguments = parser.parse_args(argv)
 
     settings = config_module.load(arguments.config)
     frame = load_datasets(arguments.dataset)
-    bundle = train(frame, seed=settings.run.seed)
+    bundle = train(frame, seed=settings.run.seed, kind=arguments.model)
     metadata = {
         "seed": settings.run.seed,
         "datasets": dataset_fingerprints(arguments.dataset),
@@ -58,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"отчёт:  {report_path}")
     print(f"train/test сценариев: {len(bundle.report.train_scenarios)}/"
           f"{len(bundle.report.test_scenarios)}")
+    print(f"в модель сохранён: {bundle.report.kind}")
     for dataset in metadata["datasets"]:
         print(f"данные: {dataset['path']} ({dataset['bytes']} байт), sha256={dataset['sha256']}")
     print(f"порог качества: {quality_verdict(bundle.report)}")
@@ -84,6 +89,9 @@ def quality_verdict(report: TrainingReport) -> str:
         assert_quality(report)
     except ValueError as error:
         return f"НЕ ПРОЙДЕН — {error}; в цикл такая модель не загрузится"
+    if report.kind == "linear":
+        return ("пройден, линейный суррогат объясняет отложенные сценарии "
+                "(порог «лучше бейзлайна» к нему неприменим — он и есть бейзлайн)")
     return "пройден, MLP лучше линейного бейзлайна по нефти и жидкости"
 
 

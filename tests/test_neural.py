@@ -6,6 +6,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.compose import TransformedTargetRegressor
 
 from aios import economics
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
@@ -381,3 +382,58 @@ def test_training_script_reports_the_quality_verdict_next_to_the_metrics():
 
     assert "пройден" in quality_verdict(report(neural=1.0, linear=2.0))
     assert "НЕ ПРОЙДЕН" in quality_verdict(report(neural=3.0, linear=2.0))
+
+
+def test_the_linear_baseline_can_be_shipped_when_the_network_loses():
+    """Обученный бейзлайн не должен выбрасываться вместе с проигравшей сетью.
+
+    До 19.08 путь был такой: MLP не прошёл порог — в цикл едет тривиальный
+    суррогат (экстраполяция кривой падения), хотя измеренно лучшая модель на
+    прогонах ГГДМ уже обучена и тут же выброшена. Проигрыш сети — это довод
+    против сети, а не против данных.
+
+    Здесь проверяется, что модель линейного вида действительно попадает в
+    артефакт и что порог для неё — свой: «лучше бейзлайна» к самому бейзлайну
+    неприменим, поэтому спрашивается объяснённая дисперсия на отложенных
+    сценариях.
+    """
+    frame = _dataset_frame()
+
+    bundle = train(frame, seed=7, kind="linear")
+
+    assert bundle.report.kind == "linear"
+    assert all(isinstance(model, TransformedTargetRegressor) for model in bundle.models.values())
+    # порог MLP к линейной модели не применяется, иначе она отвергала бы сама себя
+    assert_quality(bundle.report)
+
+
+def test_a_linear_surrogate_explaining_nothing_is_still_refused():
+    """Свой порог не значит «никакого порога»: R² ≤ 0 — это «не лучше среднего»."""
+    metrics = {
+        target: TargetMetric(1.0, 1.0, 1.0, 1.0, neural_r2=0.5, linear_r2=-0.2)
+        for target in TARGET_COLUMNS
+    }
+    report = TrainingReport(("train",), ("test",), 1, 2, metrics, kind="linear")
+
+    with pytest.raises(ValueError, match="R²"):
+        assert_quality(report)
+
+
+def _dataset_frame():
+    """Крошечный датасет в контракте обучения: три сценария, две скважины."""
+    rows = []
+    for index, (scenario, multiplier) in enumerate(
+        (("doe-000", 0.8), ("doe-001", 1.0), ("doe-002", 1.3), ("doe-003", 1.5))
+    ):
+        for month in range(1, 13):
+            for well in ("1", "2"):
+                base = 100.0 * multiplier + 3.0 * month + 10.0 * int(well)
+                rows.append({
+                    "scenario": scenario, "DATA": f"2014-{month:02d}-01", "well": well,
+                    "multiplier": multiplier, "production_multiplier": multiplier,
+                    "injection_multiplier": float("nan"), "is_shut": 0,
+                    "WLPR": 30.0 * multiplier, "WWIR": 0.0,
+                    "WLPT_Diff": base, "WOMT_Diff": base * 0.6,
+                    "WWIT_Diff": 0.0, "THP": 100.0 + index, "BHP": 80.0 + index,
+                })
+    return pd.DataFrame(rows)
