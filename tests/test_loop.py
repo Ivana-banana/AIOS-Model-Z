@@ -206,3 +206,50 @@ def test_without_limits_the_planner_stays_out(surrogate, norms):
     result = loop.run_cycle(surrogate, plan(), norms,
                             control_start=CONTROL_START, start_date=CONTROL_START)
     assert result.allocations == ()
+
+
+def test_forecast_reports_rows_the_calculator_threw_away():
+    """Прогноз считается по строкам суррогата, а негодные расчётчик выбрасывает.
+
+    Методика исключает строку с отрицательным приростом целиком, поэтому
+    прогнозный ЧДД падает почти пропорционально доле таких строк: 5 % негодных
+    дают −5,3 %, 20 % — −20,0 % (измерено 20.08). Само по себе это правильно, но
+    молча: цикл берёт из расчёта только число денег и теряет счётчик.
+
+    На странице настоящего прогона счётчик показывается, а в прогнозе — нет, то
+    есть честный указатель стоит ровно там, где он наименее нужен. Замер А4 на
+    сценарии с ВНС дал 22 563 нарушения физических проверок, так что случай не
+    гипотетический.
+    """
+    from datetime import date
+
+    from conftest import make_row
+
+    from aios import loop as loop_module
+
+    rows = []
+    for month in range(6):
+        broken = month % 3 == 0
+        rows.append(make_row(f"2014-{month + 1:02d}-01", "1", wlpr=30.0,
+                             womr=-1.0 if broken else 5.0,
+                             liquid=-30.0 if broken else 900.0,
+                             oil=-30.0 if broken else 150.0))
+
+    result = loop_module._npv(rows, date(2014, 1, 1))
+    assert result.excluded_negative_rows == 2, "строки с отрицательным приростом исключены"
+
+
+def test_summary_names_the_discarded_rows_when_there_are_any():
+    """Прогноз, посчитанный на обрезанном наборе строк, обязан это сказать."""
+    from aios.loop import CycleResult
+
+    clean = CycleResult(base_chdd_m=100.0, chdd_m=110.0, actions=(), rate_choices=(),
+                        allocations=(), steps=(), warnings=(), problems=())
+    assert "исключено" not in clean.summary().lower()
+
+    spoiled = CycleResult(base_chdd_m=100.0, chdd_m=110.0, actions=(), rate_choices=(),
+                          allocations=(), steps=(), warnings=(), problems=(),
+                          excluded_rows=4231)
+    text = spoiled.summary()
+    assert "4231" in text
+    assert "исключ" in text.lower()
