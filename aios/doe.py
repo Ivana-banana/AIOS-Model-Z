@@ -59,6 +59,20 @@ CONVERSION_RANGE = (0.5, 1.5)
 #: ВНС и делается. Доля разыгрывается отдельной осью, как и общий уровень отбора.
 CONVERSION_SHARE = (0.05, 0.30)
 
+#: Полупериод циклического заводнения, месяцы: сколько группа работает подряд.
+#:
+#: Меньше месяца шаг расписания не позволяет, а дольше полугода пульсация
+#: перестаёт быть пульсацией — пласт успевает прийти в равновесие, и режим
+#: вырождается в две разные постоянные закачки на разных участках.
+CYCLIC_HALF_PERIOD = (1, 6)
+
+#: Во сколько раз поднимается приёмистость работающей группы.
+#:
+#: Единица означает «та же закачка, но вдвое реже» — суммарный объём падает
+#: вдвое, и отклик смешается с обычным снижением закачки. Двойка сохраняет
+#: суммарный объём, и тогда измеряется именно эффект пульсации.
+CYCLIC_AMPLITUDE = (1.0, 2.0)
+
 
 @dataclass(frozen=True)
 class ControlPeriod:
@@ -81,6 +95,14 @@ class Scenario:
     seed: int
     periods: tuple[ControlPeriod, ...]
     steps: tuple[ScheduleStep, ...]
+
+    cyclic_half_period: int = 0
+    """Полупериод циклического заводнения в месяцах; ноль — режим не циклический.
+
+    Нужен не для расчёта, а чтобы сценарий можно было прочитать обратно: по
+    периодам видно, что режим меняется, но не видно, что это именно противофазная
+    пульсация с таким шагом.
+    """
 
     converted_wells: tuple[str, ...] = ()
     """Скважины, переведённые из добычи под закачку в этом сценарии.
@@ -205,8 +227,11 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     injector_wells = sorted(
         {control.well for step in base_steps for control in step.injectors}, key=_well_key
     )
-    if control_kind not in {"producers", "injectors", "all", "conversions"}:
+    if control_kind not in {"producers", "injectors", "all", "conversions", "cyclic"}:
         raise ValueError(f"неизвестный тип управления: {control_kind}")
+    if control_kind == "cyclic":
+        return _design_cyclic(base_steps, injector_wells, samples=samples, seed=seed)
+
     if control_kind == "conversions":
         if shut_share is not None:
             raise ValueError(
@@ -295,6 +320,74 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                 seed=seed,
                 periods=tuple(control),
                 steps=tuple(steps),
+            )
+        )
+    return scenarios
+
+
+def _design_cyclic(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   injector_wells: list[str],
+                   *,
+                   samples: int,
+                   seed: int) -> list[Scenario]:
+    """Сценарии циклического заводнения — противофазная пульсация закачки.
+
+    Записывается периодами, а не одним множителем на скважину: режим здесь
+    меняется во времени, и сборщик датасета читает именно периоды. Благодаря
+    этому цикл доезжает до модели тем же путём, что и остальные виды управления,
+    без отдельной поддержки на её стороне.
+
+    Три вещи разыгрываются отдельно: кто в какой группе (ось на скважину),
+    полупериод и амплитуда (по оси на сценарий). Такой сценарий читается прямо:
+    «эти четыре качают три месяца, пока те три стоят, потом наоборот, с
+    амплитудой 1.6».
+    """
+    if len(injector_wells) < 2:
+        raise ValueError(
+            "циклическое заводнение требует хотя бы двух нагнетательных скважин: "
+            "одна скважина в противофазе сама с собой — это не заводнение, "
+            f"а перерывы в закачке (в расписании их {len(injector_wells)})"
+        )
+
+    dates = sorted({step.date for step in base_steps})
+    points = latin_hypercube(samples, len(injector_wells) + 2, seed)
+    period_low, period_high = CYCLIC_HALF_PERIOD
+    amplitude_low, amplitude_high = CYCLIC_AMPLITUDE
+    scenarios: list[Scenario] = []
+
+    for index, point in enumerate(points):
+        half = int(period_low + point[-2] * (period_high - period_low + 1))
+        half = min(max(half, period_low), period_high)
+        amplitude = round(amplitude_low + point[-1] * (amplitude_high - amplitude_low), 4)
+
+        first = {well for well, value in zip(injector_wells, point[:-2], strict=True) if value < 0.5}
+        second = set(injector_wells) - first
+        if not first or not second:      # вырожденный расклад — делим пополам по порядку
+            middle = len(injector_wells) // 2
+            first = set(injector_wells[:middle])
+            second = set(injector_wells[middle:])
+
+        periods: list[ControlPeriod] = []
+        for number, start in enumerate(dates[::half]):
+            works_first = number % 2 == 0
+            periods.append(ControlPeriod(
+                start=start,
+                multipliers={},
+                injector_multipliers={
+                    **dict.fromkeys(first, amplitude if works_first else 0.0),
+                    **dict.fromkeys(second, 0.0 if works_first else amplitude),
+                },
+            ))
+
+        steps = _apply_periods(base_steps, periods)
+        assert_valid(steps)
+        scenarios.append(
+            Scenario(
+                name=f"doe-{index:03d}",
+                seed=seed,
+                periods=tuple(periods),
+                steps=tuple(steps),
+                cyclic_half_period=half,
             )
         )
     return scenarios
@@ -402,16 +495,25 @@ def coverage(scenarios: list[Scenario]) -> dict[str, Any]:
     if not scenarios:
         return {"scenarios": 0}
 
+    # Поштучное сравнение периодов имеет смысл, только если границы у сценариев
+    # общие. У циклического заводнения полупериод свой в каждом сценарии, и
+    # «период №3» означает в них разные месяцы — складывать их в одну корзину
+    # нельзя, а раньше это ещё и роняло подсчёт по выходу за границы списка.
+    layouts = {tuple(period.start for period in s.periods) for s in scenarios}
+    aligned = len(layouts) == 1
+
     pooled: dict[str, list[float]] = {}
-    by_period: list[dict[str, list[float]]] = [{} for _ in scenarios[0].periods]
+    by_period: list[dict[str, list[float]]] = [{} for _ in scenarios[0].periods] if aligned else []
     for scenario in scenarios:
         for number, period in enumerate(scenario.periods):
             for well, multiplier in period.multipliers.items():
                 pooled.setdefault(f"prod:{well}", []).append(multiplier)
-                by_period[number].setdefault(f"prod:{well}", []).append(multiplier)
+                if aligned:
+                    by_period[number].setdefault(f"prod:{well}", []).append(multiplier)
             for well, multiplier in period.injector_multipliers.items():
                 pooled.setdefault(f"inj:{well}", []).append(multiplier)
-                by_period[number].setdefault(f"inj:{well}", []).append(multiplier)
+                if aligned:
+                    by_period[number].setdefault(f"inj:{well}", []).append(multiplier)
 
     report = {
         "scenarios": len(scenarios),
@@ -420,6 +522,8 @@ def coverage(scenarios: list[Scenario]) -> dict[str, Any]:
     }
     # Общий размах по пакету скрывает провал в отдельном периоде: сценариев в
     # каждом столько же, сколько во всём пакете, а точек по скважине в нём — свои
+    if not aligned:
+        report["period_layouts"] = len(layouts)
     if len(by_period) > 1:
         report["periods"] = [
             {"from": scenarios[0].periods[number].start.isoformat(), **_spans(values)}

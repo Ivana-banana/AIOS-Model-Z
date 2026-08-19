@@ -37,7 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--level-high", type=float, default=None,
                         help="верхняя граница общего уровня отбора сценария")
     parser.add_argument(
-        "--control-kind", choices=("producers", "injectors", "all", "conversions"),
+        "--control-kind",
+        choices=("producers", "injectors", "all", "conversions", "cyclic"),
         default="producers",
         help="какие режимы варьировать (по умолчанию только добывающие)",
     )
@@ -92,15 +93,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"seed:            {config.run.seed} (из {config.source})")
     # для переводов диапазон свой: множитель здесь — доля от бывшего дебита
     # скважины, и ноль в нём смысла не имеет. Печатаем то, что применено
-    effective = doe.CONVERSION_RANGE if (
-        arguments.control_kind == "conversions"
-        and (arguments.low, arguments.high) == doe.DEFAULT_RANGE
+    own_range = {"conversions": doe.CONVERSION_RANGE, "cyclic": doe.CYCLIC_AMPLITUDE}
+    effective = own_range.get(arguments.control_kind, (arguments.low, arguments.high)) if (
+        (arguments.low, arguments.high) == doe.DEFAULT_RANGE
     ) else (arguments.low, arguments.high)
     print(f"диапазон:        {effective[0]} — {effective[1]}")
     print(f"управление:      {arguments.control_kind}")
     print(f"сценариев:       {report['scenarios']}")
     print(f"скважин:         {report['wells']}")
-    if arguments.control_kind == "conversions":
+    if arguments.control_kind == "cyclic":
+        # доля остановок здесь не тревожный признак, а сам режим: каждая группа
+        # стоит половину времени, поэтому около 0,5 — это норма, а не провал
+        halves = sorted({s.cyclic_half_period for s in scenarios})
+        print(f"полупериод:      от {halves[0]} до {halves[-1]} мес.")
+        print(f"доля простоя:    {report['min_shut_share']:.3f} — {report['max_shut_share']:.3f} "
+              "(половина — это и есть противофаза)")
+        if report["max_shut_share"] > 0.75:
+            print("\nвнимание: группы простаивают больше трёх четвертей времени — "
+                  "это уже не пульсация, а остановка закачки")
+    elif arguments.control_kind == "conversions":
         # размах множителей здесь ничего не значит: скважина либо переведена,
         # либо её в сценарии нет вовсе. Смотреть надо на охват фонда переводами
         converted = sorted({well for s in scenarios for well in s.converted_wells})

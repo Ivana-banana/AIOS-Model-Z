@@ -296,6 +296,60 @@ def scale_injection(
     return result
 
 
+def cyclic_injection(
+    steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+    phase_a: set[str],
+    phase_b: set[str],
+    *,
+    half_period: int,
+    amplitude: float = 1.0,
+) -> list[ScheduleStep]:
+    """Циклическое заводнение: две группы нагнетателей работают противофазно.
+
+    Организаторы рекомендуют этот режим прямо. Смысл его не в том, что закачка
+    становится переменной, — так средняя закачка просто падает. Смысл в
+    **перепаде давления между участками**: пока одна группа нагнетает, соседняя
+    стоит, фронт вытеснения перекашивается, и вода идёт в поры, мимо которых при
+    постоянной закачке проходила бы по промытым путям.
+
+    Отсюда и устройство: на каждом полупериоде одна группа открыта, другая
+    закрыта, на границе они меняются местами. Синхронная пульсация обеих групп
+    отвергается — это уже не заводнение, а равномерное снижение закачки.
+
+    Скважины вне обеих групп не трогаются: их режим задаётся другим видом
+    управления, и смешивать два воздействия в одном сценарии значит не понять,
+    какое из них дало отклик.
+
+    `amplitude` умножает приёмистость работающей группы. Единица означает «та же
+    закачка, но в полтора раза реже» — суммарный объём падает вдвое; чтобы
+    сохранить его, нужна амплитуда около двух.
+    """
+    if half_period < 1:
+        raise ValueError(f"полупериод задаётся в месяцах и не может быть меньше одного: {half_period}")
+    overlap = phase_a & phase_b
+    if overlap:
+        raise ValueError(
+            "группы обязаны быть в противофазе, а не пересекаться: "
+            + ", ".join(sorted(overlap))
+        )
+
+    result: list[ScheduleStep] = []
+    for index, step in enumerate(steps):
+        first_group_works = (index // half_period) % 2 == 0
+        injectors = []
+        for control in step.injectors:
+            if control.well in phase_a:
+                works = first_group_works
+            elif control.well in phase_b:
+                works = not first_group_works
+            else:
+                injectors.append(control)
+                continue
+            injectors.append(_scaled_injector(control, amplitude if works else 0.0))
+        result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
+    return result
+
+
 def convert_to_injection(
     steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     wells: set[str],

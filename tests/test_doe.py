@@ -720,3 +720,94 @@ def test_the_cli_needs_both_shut_bounds(tmp_path, capsys):
 
     assert status == 1
     assert "задаются вместе" in capsys.readouterr().err
+
+
+# ── циклическое заводнение ───────────────────────────────────────────────────
+
+def plan_with_injectors(injectors, months: int = 6, rate: float = 40.0):
+    """Базовое расписание с несколькими нагнетательными — иначе противофазы нет."""
+    return [
+        ScheduleStep(
+            date(2007, month, 1),
+            (ProducerControl("1", "OPEN", "LRAT", rate, 50.0),),
+            tuple(InjectorControl(w, "WATER", "OPEN", "RATE", 30.0, 300.0) for w in injectors),
+        )
+        for month in range(1, months + 1)
+    ]
+
+
+def test_cyclic_scenarios_alternate_two_groups():
+    """Смысл режима в перепаде давления, значит группы не работают вместе."""
+    scenarios = doe.design(plan_with_injectors(["9", "8", "7", "6"]), samples=4, seed=5,
+                           control_kind="cyclic")
+
+    for scenario in scenarios:
+        for step in scenario.steps:
+            working = [c.well for c in step.injectors if c.status == "OPEN"]
+            resting = [c.well for c in step.injectors if c.status != "OPEN"]
+            assert working and resting, "на каждом шаге кто-то работает, а кто-то стоит"
+
+
+def test_cyclic_scenario_is_written_as_periods():
+    """Один множитель на скважину такой сценарий описать не может."""
+    scenario = doe.design(plan_with_injectors(["9", "8"]), samples=2, seed=5,
+                          control_kind="cyclic")[0]
+
+    assert len(scenario.periods) > 1, "режим обязан меняться во времени"
+    assert scenario.periods[0].injector_multipliers != scenario.periods[1].injector_multipliers
+
+
+def test_cyclic_needs_at_least_two_injectors():
+    """Одна скважина в противофазе сама с собой — это не заводнение."""
+    with pytest.raises(ValueError, match="двух"):
+        doe.design(plan_with_injectors(["9"]), samples=2, seed=5, control_kind="cyclic")
+
+
+def test_cyclic_scenarios_stay_valid():
+    for scenario in doe.design(plan_with_injectors(["9", "8"]), samples=3, seed=1,
+                               control_kind="cyclic"):
+        assert validate(list(scenario.steps)) == []
+
+
+def test_periods_and_the_direct_transformation_agree():
+    """Два представления одного режима обязаны совпадать, иначе они разойдутся.
+
+    В датасете цикл записывается периодами — их понимает сборщик. Агенту нужен
+    прямой приём `optimise.cyclic_injection`. Если бы они расходились, датасет
+    учил бы сеть одному, а предлагала бы она другое.
+    """
+    from aios import optimise
+
+    base = plan_with_injectors(["9", "8"], months=6)
+    scenario = doe.design(base, samples=2, seed=5, control_kind="cyclic")[0]
+
+    groups: dict[float, set[str]] = {}
+    for well, value in scenario.periods[0].injector_multipliers.items():
+        groups.setdefault(value, set()).add(well)
+    working = groups[max(groups)]
+    resting = groups[min(groups)]
+
+    direct = optimise.cyclic_injection(
+        base, working, resting,
+        half_period=scenario.cyclic_half_period, amplitude=max(groups),
+    )
+    assert [step.injectors for step in direct] == [step.injectors for step in scenario.steps]
+
+
+def test_coverage_survives_scenarios_with_different_period_layouts():
+    """У циклических сценариев полупериод свой, и «период №3» — разные месяцы.
+
+    Раньше подсчёт покрытия брал число периодов у первого сценария и падал по
+    выходу за границы списка на втором. Складывать такие периоды в одну корзину
+    нельзя и по смыслу: сравнивать имеет смысл только совпадающие границы.
+    """
+    scenarios = doe.design(plan_with_injectors(["9", "8", "7"]), samples=5, seed=3,
+                           control_kind="cyclic")
+    layouts = {tuple(p.start for p in s.periods) for s in scenarios}
+    assert len(layouts) > 1, "иначе тест не проверяет того, ради чего написан"
+
+    report = doe.coverage(scenarios)
+
+    assert report["scenarios"] == 5
+    assert "periods" not in report, "поштучное сравнение здесь бессмысленно"
+    assert report["period_layouts"] == len(layouts)
