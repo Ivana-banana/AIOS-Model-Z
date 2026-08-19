@@ -16,6 +16,8 @@ FOREIGN = """\
 -- Дек стороннего месторождения: имена не имеют ничего общего с Моделью Z.
 RUNSPEC
 
+METRIC
+
 DIMENS
  10 20 5 /
 
@@ -196,3 +198,25 @@ def test_no_module_hardcodes_a_model_z_file_name(package):
                     and "Model_Z" in node.value):
                 offenders.append(f"{path.name}:{node.lineno}: {node.value!r}")
     assert not offenders, "имена файлов дека зашиты в коде:\n" + "\n".join(offenders)
+
+
+# ── система единиц ───────────────────────────────────────────────────────────
+
+def test_metric_deck_is_recognised(foreign_deck):
+    assert layout(foreign_deck).units == "METRIC"
+
+
+def test_field_units_are_recognised(tmp_path):
+    directory = tmp_path / "FieldUS"
+    directory.mkdir()
+    (directory / "US.DATA").write_text(FOREIGN.replace("METRIC", "FIELD"), encoding="utf-8")
+    for name in ("geometry.grdecl", "fluid_tables.inc", "zones.inc", "vectors.inc", "history.inc"):
+        (directory / name).write_text("-- заглушка\n", encoding="utf-8")
+
+    assert layout(directory).units == "FIELD"
+
+
+def test_units_absent_from_the_root_file_are_not_guessed(tmp_path):
+    """Объявление может лежать во включаемом RUNSPEC — тогда мы просто не знаем."""
+    (tmp_path / "d.DATA").write_text("RUNSPEC\n\nDIMENS\n 1 1 1 /\n", encoding="utf-8")
+    assert parse_layout(tmp_path / "d.DATA").units is None

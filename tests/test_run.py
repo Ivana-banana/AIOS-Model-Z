@@ -494,3 +494,19 @@ WCONPROD
 """
     with pytest.raises(ValueError, match="шаблон"):
         run.build_case(tmp_path / "run", _deck_with(tmp_path, schedule))
+
+
+def test_a_deck_in_field_units_is_refused(tmp_path):
+    """Промысловые единицы ломают всё молча: числа остаются правдоподобными.
+
+    Дебит пришёл бы в баррелях против нашего предела 500 м³/сут, давление в psi
+    против 300 атм, плотность в фунтах на кубофут против кг/м³. Ни одна проверка
+    не сработала бы — величины выглядят обычными, просто означают другое.
+    """
+    deck = _deck_with(tmp_path, SCHEDULE)
+    data = deck / "FIELD_Y.DATA"
+    data.write_text(data.read_text(encoding="utf-8").replace("METRIC", "FIELD"),
+                    encoding="utf-8")
+
+    with pytest.raises(ValueError, match="FIELD"):
+        run.build_case(tmp_path / "run", deck)
