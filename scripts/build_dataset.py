@@ -64,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    control_start = _control_start(manifest, config.case.control_start)
     controls = {
         scenario["name"]: (
             _periods(scenario),
@@ -111,13 +112,21 @@ def main(argv: list[str] | None = None) -> int:
             for row in rows:
                 producer_multipliers, injector_multipliers = _at(periods, str(row["DATA"]))
                 role = roles.get((str(row["DATA"]), row["well"]))
+                converted_well = row["well"] in converted
+                if str(row["DATA"])[:10] < control_start:
+                    # История до начала управления у всех сценариев пакета одна и
+                    # та же: сценарий меняет расписание только с control_start.
+                    # Приписать ей множители — значит учить суррогат тому, что
+                    # управление на отклик не влияет, на 39 % строк выборки
+                    # (`docs/experiments.md`, ревизия 19.08). Пустые значения
+                    # `_pivot_controls` подставит нейтральной единицей.
+                    role, converted_well = None, False
                 # Роль берётся из опорного расписания, и для переведённой под
                 # закачку скважины она говорит «добывающая» — сценарий-то её и
                 # меняет. Поэтому у переведённых пишутся обе величины: иначе
                 # множитель закачки отбрасывается, колонка `inj:<скважина>` не
                 # появляется, и весь пакет ВНС даёт датасет, неотличимый от
                 # обычного (`aios/neural.py`, `_pivot_controls`).
-                converted_well = row["well"] in converted
                 producer = (
                     producer_multipliers.get(row["well"])
                     if role == "production" or converted_well else None
@@ -195,6 +204,16 @@ def _periods(scenario: dict[str, Any]) -> Periods:
     ]
     periods.sort(key=lambda item: item[0])
     return periods
+
+
+def _control_start(manifest: dict[str, Any], fallback: date) -> str:
+    """Дата начала управления пакета: из манифеста, иначе из конфига.
+
+    Манифест главнее: он описывает, как пакет был сгенерирован на самом деле, а
+    конфиг с тех пор мог измениться.
+    """
+    listed = manifest.get("control_start")
+    return str(listed)[:10] if listed else fallback.isoformat()
 
 
 def _at(periods: Periods, data: str) -> tuple[dict[str, float], dict[str, float]]:

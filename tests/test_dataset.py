@@ -3,6 +3,8 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from scripts.build_dataset import control_roles
 
@@ -316,3 +318,69 @@ def test_a_manifest_without_periods_is_still_read(tmp_path, monkeypatch):
     ]) == 0
     with target.open(encoding="utf-8", newline="") as handle:
         assert next(csv.DictReader(handle))["production_multiplier"] == "1.1"
+
+
+@pytest.mark.parametrize("manifest_controls", [
+    {"periods": [{"from": "2007-01-01", "multipliers": {"1": 0.8}}]},
+    {"multipliers": {"1": 0.8}},
+])
+def test_history_before_control_start_carries_no_scenario_mode(
+    tmp_path, monkeypatch, manifest_controls
+):
+    """История до начала управления не должна нести режим сценария.
+
+    Сценарий DoE меняет расписание только с `control_start`, поэтому история у
+    всех сценариев пакета побайтово одна и отклик на ней один и тот же. Если
+    приписать этим месяцам множители сценария, суррогат учится на них тому, что
+    управление на отклик не влияет — на Модели Z это 14 935 строк из 38 110 на
+    сценарий, 39,2 % выборки (`docs/experiments.md`, ревизия 19.08).
+
+    Проверяются обе схемы манифеста: старая красит историю единственным периодом
+    «с начала времён», новая — режимом первого периода.
+    """
+    import csv
+    import json
+
+    from conftest import make_row
+
+    from scripts import build_dataset
+
+    root = tmp_path / "doe"
+    (root / "doe-000").mkdir(parents=True)
+    (root / "doe.json").write_text(
+        json.dumps({"control_start": "2007-01-01",
+                    "scenarios": [{"name": "doe-000", **manifest_controls}]}),
+        encoding="utf-8",
+    )
+    (root / "doe-000" / "RUN.UNSMRY").write_text("", encoding="utf-8")
+    (root / "doe-000" / ".doe-done").write_text("2026-08-19", encoding="utf-8")
+    rows = [
+        make_row("2005-06-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2006-12-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2007-01-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2007-05-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+    ]
+    monkeypatch.setattr(build_dataset.summary, "monthly_rows", lambda *a, **k: rows)
+
+    config = _tiny_project(tmp_path)
+    # скважина работает с 2005-го: иначе роли на исторических месяцах нет и
+    # множитель не пишется по другой причине — тест прошёл бы, не проверив ничего
+    (tmp_path / "deck" / "h.inc").write_text(
+        DECK_SCHEDULE.replace("01 JAN 2007", "01 JAN 2005"), encoding="utf-8"
+    )
+
+    target = tmp_path / "dataset.csv"
+    assert build_dataset.main([
+        "--run-root", str(root), "--out", str(target), "--config", str(config),
+    ]) == 0
+
+    with target.open(encoding="utf-8", newline="") as handle:
+        written = {row["DATA"]: row for row in csv.DictReader(handle)}
+    for month in ("2005-06-01", "2006-12-01"):
+        assert written[month]["production_multiplier"] == "", (
+            f"{month}: истории приписан режим сценария")
+        assert written[month]["multiplier"] == ""
+        assert written[month]["is_shut"] == ""
+    assert written["2007-01-01"]["production_multiplier"] == "0.8", (
+        "управление начинается со своей даты включительно")
+    assert written["2007-05-01"]["production_multiplier"] == "0.8"
