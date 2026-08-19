@@ -150,3 +150,26 @@ def test_a_non_positive_water_tolerance_is_refused(tmp_path):
 def test_counts_must_be_at_least_one(tmp_path, line, broken, key):
     with pytest.raises(ValueError, match=key):
         config.load(_written(tmp_path, MINIMAL.replace(line, broken)))
+
+
+def test_the_second_doe_config_does_not_repeat_the_seed():
+    """Два пакета DoE с одним seed — это один пакет, растянутый дважды.
+
+    Измерено 19.08 перед постановкой пяти часов счёта: латинский гиперкуб при
+    равном seed разыгрывает один и тот же нормированный узор, поэтому пакет с
+    другими границами повторяет первый — корреляция узоров вышла **0.925**, а
+    средние уровни по сценариям совпали до сотых. С разными seed стало 0.107.
+
+    Ошибка воспроизводится тривиально: конфиг копируют ради других границ и
+    забывают seed. Тогда вторые 2,5 часа машинного времени уходят на почти те же
+    точки, и заметить это можно только по метрикам суррогата.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    main = config.load(root / "config.toml")
+    wide = config.load(root / "config-doe-wide.toml")
+
+    assert wide.run.seed != main.run.seed, (
+        "второй пакет DoE обязан иметь свой seed, иначе он копия первого"
+    )
