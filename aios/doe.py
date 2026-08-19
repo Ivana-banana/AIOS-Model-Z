@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from aios.deck import ScheduleStep
-from aios.optimise import scale, scale_injection
+from aios.optimise import convert_to_injection, scale, scale_injection
 from aios.schedule import assert_valid
 
 #: Диапазон множителей к дебиту базового сценария.
@@ -41,6 +41,21 @@ from aios.schedule import assert_valid
 #: врёт уже сам симулятор (режим не адаптирован), да и физически форсаж упирается
 #: в давление. Выборка должна покрывать то, чем мы реально собираемся управлять.
 DEFAULT_RANGE = (0.0, 1.25)
+
+#: Диапазон приёмистости переведённой скважины — доля от её же бывшего дебита.
+#:
+#: Ноль сюда попасть не может по смыслу: перевод под закачку с нулевой
+#: приёмистостью это просто остановка, а она уже покрыта основным видом
+#: управления. Половина и полтора — вокруг «закачиваем столько, сколько
+#: поднимали», то есть вокруг компенсации, ради которой ВНС и делают.
+CONVERSION_RANGE = (0.5, 1.5)
+
+#: Какая доля добывающего фонда переводится под закачку в одном сценарии.
+#:
+#: Переводить весь фонд бессмысленно — добывать станет нечем; переводить одну
+#: скважину на сотню сценариев значит не увидеть отклика соседей, ради которого
+#: ВНС и делается. Доля разыгрывается отдельной осью, как и общий уровень отбора.
+CONVERSION_SHARE = (0.05, 0.30)
 
 
 @dataclass(frozen=True)
@@ -52,6 +67,16 @@ class Scenario:
     multipliers: dict[str, float]
     steps: tuple[ScheduleStep, ...]
     injector_multipliers: dict[str, float] = field(default_factory=dict)
+
+    converted_wells: tuple[str, ...] = ()
+    """Скважины, переведённые из добычи под закачку в этом сценарии.
+
+    У каждой из них в датасете стоят **обе** величины: `production_multiplier`
+    равен нулю и `injection_multiplier` больше нуля. Это и есть контракт с
+    моделью: колонка `inj:<скважина>` появляется только у той, у кого множитель
+    закачки непустой, — без него предложение перевести скважину под закачку не
+    доходит до входа вообще.
+    """
 
     @property
     def shut_wells(self) -> tuple[str, ...]:
@@ -131,8 +156,12 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     injector_wells = sorted(
         {control.well for step in base_steps for control in step.injectors}, key=_well_key
     )
-    if control_kind not in {"producers", "injectors", "all"}:
+    if control_kind not in {"producers", "injectors", "all", "conversions"}:
         raise ValueError(f"неизвестный тип управления: {control_kind}")
+    if control_kind == "conversions":
+        return _design_conversions(base_steps, producer_wells,
+                                   samples=samples, seed=seed, bounds=bounds)
+
     coordinates = []
     if control_kind in {"producers", "all"}:
         coordinates.extend(("production", well) for well in producer_wells)
@@ -185,6 +214,64 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     return scenarios
 
 
+def _design_conversions(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                        producer_wells: list[str],
+                        *,
+                        samples: int,
+                        seed: int,
+                        bounds: tuple[float, float]) -> list[Scenario]:
+    """Сценарии перевода добывающих скважин под закачку.
+
+    Три оси, и они разделены намеренно: какие скважины переводить, сколько их и с
+    какой приёмистостью. Первое разыгрывается гиперкубом по скважинам — точка
+    задаёт порядок, и переводятся первые в нём. Второе и третье — двумя
+    отдельными осями на сценарий, поэтому «перевели пять скважин с приёмистостью
+    ×1.2» читается прямо и повторяется по seed.
+
+    Приёмистость одна на сценарий, а не своя у каждой скважины. Это осознанное
+    упрощение первого датасета: суррогату сейчас нужен сам факт, что перевод
+    вообще доходит до входа, а не тонкая раскладка по скважинам. Разные
+    приёмистости внутри одного сценария — следующий заход, как и временные
+    профили у основного вида управления.
+    """
+    if not producer_wells:
+        raise ValueError("в базовом расписании нет добывающих скважин")
+    if bounds == DEFAULT_RANGE:
+        bounds = CONVERSION_RANGE
+
+    low, high = bounds
+    if not 0.0 < low < high:
+        raise ValueError(f"приёмистость перевода должна быть больше нуля: {bounds}")
+
+    points = latin_hypercube(samples, len(producer_wells) + 2, seed)
+    share_low, share_high = CONVERSION_SHARE
+    scenarios: list[Scenario] = []
+
+    for index, point in enumerate(points):
+        share = share_low + point[-2] * (share_high - share_low)
+        multiplier = round(low + point[-1] * (high - low), 4)
+        count = max(1, round(share * len(producer_wells)))
+
+        order = sorted(zip(producer_wells, point[:-2], strict=True), key=lambda item: item[1])
+        converted = tuple(sorted((well for well, _ in order[:count]), key=_well_key))
+
+        multipliers = dict.fromkeys(converted, 0.0)
+        injector_multipliers = dict.fromkeys(converted, multiplier)
+        steps = convert_to_injection(base_steps, set(converted), multiplier=multiplier)
+        assert_valid(steps)
+        scenarios.append(
+            Scenario(
+                name=f"doe-{index:03d}",
+                seed=seed,
+                multipliers=multipliers,
+                steps=tuple(steps),
+                injector_multipliers=injector_multipliers,
+                converted_wells=converted,
+            )
+        )
+    return scenarios
+
+
 def write_cases(scenarios: list[Scenario],
                 run_root: str | Path,
                 model_dir: str | Path,
@@ -229,6 +316,7 @@ def coverage(scenarios: list[Scenario]) -> dict[str, Any]:
     return {
         "scenarios": len(scenarios),
         "wells": len(per_well),
+        "converted_total": sum(len(s.converted_wells) for s in scenarios),
         "min_span": min(spans),
         "mean_span": sum(spans) / len(spans),
         "min_shut_share": min(shut_share),

@@ -225,3 +225,56 @@ def test_levels_spread_scenarios_apart_not_just_wells():
         f"уровни не развели сценарии: без уровней {spread(flat):.3f}, "
         f"с уровнями {spread(layered):.3f}"
     )
+
+
+# ── третий вид управления: перевод под закачку ───────────────────────────────
+#
+# Контракт между машинами: сценарий с ВНС обязан записать по переведённой
+# скважине **обе** величины — добычу в ноль и закачку больше нуля. Только тогда
+# у неё появится колонка `inj:` в датасете, и вход суррогата перестанет быть
+# немым. Без этого предложение перевести скважину не искажается, а исчезает.
+
+def test_conversion_scenarios_record_both_multipliers():
+    scenarios = doe.design(plan(["1", "2", "3", "4"]), samples=4, seed=7,
+                           control_kind="conversions")
+
+    converted = [
+        (s, well) for s in scenarios for well in s.converted_wells
+    ]
+    assert converted, "хотя бы один сценарий обязан кого-то перевести"
+    for scenario, well in converted:
+        assert scenario.multipliers[well] == 0.0, "добыча переведённой — ноль"
+        assert scenario.injector_multipliers[well] > 0.0, "а закачка больше нуля"
+
+
+def test_conversion_actually_changes_the_schedule():
+    scenarios = doe.design(plan(["1", "2", "3", "4"]), samples=4, seed=7,
+                           control_kind="conversions")
+    scenario = next(s for s in scenarios if s.converted_wells)
+    well = scenario.converted_wells[0]
+
+    injectors = {c.well for step in scenario.steps for c in step.injectors}
+    assert well in injectors, "переведённая обязана появиться среди нагнетательных"
+    assert all(c.status == "SHUT" for step in scenario.steps
+               for c in step.producers if c.well == well)
+
+
+def test_conversion_scenarios_stay_valid():
+    for scenario in doe.design(plan(["1", "2", "3"]), samples=3, seed=1,
+                               control_kind="conversions"):
+        assert validate(list(scenario.steps)) == []
+
+
+def test_conversion_share_is_reproducible_from_the_seed():
+    first = doe.design(plan(["1", "2", "3", "4"]), samples=4, seed=11,
+                       control_kind="conversions")
+    second = doe.design(plan(["1", "2", "3", "4"]), samples=4, seed=11,
+                        control_kind="conversions")
+    assert [s.converted_wells for s in first] == [s.converted_wells for s in second]
+
+
+def test_coverage_reports_conversions():
+    scenarios = doe.design(plan(["1", "2", "3", "4"]), samples=4, seed=7,
+                           control_kind="conversions")
+    report = doe.coverage(scenarios)
+    assert report["converted_total"] >= 1

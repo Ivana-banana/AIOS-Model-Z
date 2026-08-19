@@ -38,7 +38,7 @@ from typing import Any
 from aios import economics
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.margin import Norms, month_margin
-from aios.schedule import MAX_LIQUID_RATE_M3_PER_DAY
+from aios.schedule import MAX_INJECTION_BHP_ATM, MAX_LIQUID_RATE_M3_PER_DAY
 from aios.surrogate import Surrogate
 
 #: Множители к дебиту базового сценария. Ноль — остановка, это тоже режим.
@@ -294,6 +294,73 @@ def scale_injection(
         )
         result.append(ScheduleStep(step.date, step.producers, injectors))
     return result
+
+
+def convert_to_injection(
+    steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+    wells: set[str],
+    *,
+    multiplier: float = 1.0,
+    since: date | None = None,
+    bhp: float | None = None,
+) -> list[ScheduleStep]:
+    """Перевести добывающие скважины под закачку — ВНС.
+
+    Отличие от `scale` и `scale_injection` принципиальное: те меняют уже
+    существующий режим, а здесь режим появляется. У добывающей скважины записи
+    `WCONINJE` в базовом расписании нет вовсе, поэтому масштабировать нечего.
+
+    Приёмистость берётся из её же дебита на момент перевода, умноженного на
+    `multiplier`: скважина закачивает примерно столько, сколько поднимала. Это
+    единственная величина, которую можно вывести из расписания, ничего не
+    выдумывая; скважина, ни разу не работавшая на добычу, не переводится вовсе.
+
+    Добыча закрывается на **каждом** последующем шаге: дек переоткрывает её
+    своей записью на каждом шаге, и одной остановки не хватит. Запись закачки,
+    наоборот, ставится один раз — Eclipse держит режим до следующей записи.
+
+    Зачем это нужно суррогату. Признаки собираются по ролям, и колонка
+    `inj:<скважина>` появляется только у той, у кого есть непустой множитель
+    закачки. У добывающей его нет ни в одном сценарии DoE, поэтому предложение
+    перевести её под закачку сегодня не искажается, а **исчезает**: модель видит
+    «добыча остановлена» и предсказывает ноль, а прирост по соседям, ради
+    которого ВНС и делается, не оценивается ничем.
+    """
+    if multiplier <= 0:
+        raise ValueError(f"множитель перевода должен быть больше нуля, получено {multiplier:g}")
+
+    pressure = bhp if bhp is not None else _injection_pressure(steps)
+    last_rate: dict[str, float] = {}
+    opened: set[str] = set()
+    result: list[ScheduleStep] = []
+
+    for step in steps:
+        for control in step.producers:
+            if control.well in wells and control.status == "OPEN" and control.liquid_rate:
+                last_rate.setdefault(control.well, control.liquid_rate)
+
+        active = since is None or step.date >= since
+        producers: list[ProducerControl] = []
+        injectors = list(step.injectors)
+        for control in step.producers:
+            if not active or control.well not in wells:
+                producers.append(control)
+                continue
+            producers.append(_scaled(control, 0.0) if control.status == "OPEN" else control)
+            rate = last_rate.get(control.well)
+            if rate and control.well not in opened:
+                opened.add(control.well)
+                injectors.append(InjectorControl(
+                    control.well, "WATER", "OPEN", "RATE", round(rate * multiplier, 4), pressure
+                ))
+        result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
+    return result
+
+
+def _injection_pressure(steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> float:
+    """Предел давления для новой нагнетательной — как у остальных в этом деке."""
+    seen = [control.bhp for step in steps for control in step.injectors if control.bhp]
+    return max(seen) if seen else MAX_INJECTION_BHP_ATM
 
 
 def apply_choices(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
