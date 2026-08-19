@@ -307,3 +307,81 @@ def test_converted_schedule_stays_valid():
     steps = [_producing(date(2007, month, 1), {"1": 40.0, "2": 30.0}) for month in (1, 2, 3)]
     result = optimise.convert_to_injection(steps, {"1"}, multiplier=1.0)
     assert validate(result) == []
+
+
+# ── циклическое заводнение ───────────────────────────────────────────────────
+#
+# Организаторы рекомендуют его прямо. Это не «переменный режим по периодам»:
+# смысл в **перепаде давления** между группами, поэтому одна группа работает,
+# пока другая стоит, и на границе полупериода они меняются местами. Сценарий, где
+# все нагнетатели пульсируют синхронно, физически бессмыслен — он просто снижает
+# среднюю закачку.
+
+
+def _injecting(day: date, wells: dict[str, float]) -> ScheduleStep:
+    return ScheduleStep(
+        day, (),
+        tuple(InjectorControl(w, "WATER", "OPEN", "RATE", rate, 300.0)
+              for w, rate in wells.items()),
+    )
+
+
+def _months(count: int, wells: dict[str, float]) -> list[ScheduleStep]:
+    return [_injecting(date(2007, m + 1, 1), wells) for m in range(count)]
+
+
+def _rate(step: ScheduleStep, well: str) -> float:
+    control = next(c for c in step.injectors if c.well == well)
+    return control.rate or 0.0
+
+
+def test_groups_alternate_and_are_never_on_together():
+    steps = _months(6, {"A": 100.0, "B": 200.0})
+
+    result = optimise.cyclic_injection(steps, {"A"}, {"B"}, half_period=2)
+
+    for step in result:
+        on = [c.well for c in step.injectors if c.status == "OPEN"]
+        assert len(on) == 1, f"на шаге {step.date} работают {on} — противофазы нет"
+
+
+def test_the_half_period_sets_how_long_a_group_stays_on():
+    steps = _months(6, {"A": 100.0, "B": 200.0})
+
+    result = optimise.cyclic_injection(steps, {"A"}, {"B"}, half_period=2)
+
+    working = ["A" if _rate(step, "A") > 0 else "B" for step in result]
+    assert working == ["A", "A", "B", "B", "A", "A"]
+
+
+def test_amplitude_raises_the_rate_of_the_working_group():
+    steps = _months(2, {"A": 100.0, "B": 200.0})
+
+    result = optimise.cyclic_injection(steps, {"A"}, {"B"}, half_period=2, amplitude=1.5)
+
+    assert _rate(result[0], "A") == pytest.approx(150.0)
+    assert _rate(result[0], "B") == 0.0
+
+
+def test_wells_outside_both_groups_are_untouched():
+    steps = _months(2, {"A": 100.0, "B": 200.0, "C": 50.0})
+
+    result = optimise.cyclic_injection(steps, {"A"}, {"B"}, half_period=1)
+
+    assert all(_rate(step, "C") == pytest.approx(50.0) for step in result)
+
+
+def test_a_synchronous_pulse_is_refused():
+    """Общая группа означала бы синхронную пульсацию — это не заводнение."""
+    with pytest.raises(ValueError, match="противофаз"):
+        optimise.cyclic_injection(_months(2, {"A": 100.0}), {"A"}, {"A"}, half_period=1)
+
+
+def test_half_period_must_be_at_least_a_month():
+    with pytest.raises(ValueError, match="полупериод"):
+        optimise.cyclic_injection(_months(2, {"A": 100.0}), {"A"}, set(), half_period=0)
+
+
+def test_cyclic_schedule_stays_valid():
+    steps = _months(6, {"A": 100.0, "B": 200.0})
+    assert validate(optimise.cyclic_injection(steps, {"A"}, {"B"}, half_period=3)) == []
