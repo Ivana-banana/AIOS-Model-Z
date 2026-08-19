@@ -148,4 +148,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Вывод только в UTF-8, как во всех остальных скриптах пакета: умолчание
+    # берётся из локали, и на узкой (`LANG=C`, консоль cp437) печать кириллицы
+    # роняет скрипт — причём уже после того, как всё посчитано. Скрытая
+    # зависимость от локали запрещена п. 3.5 ТЗ.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     raise SystemExit(main())

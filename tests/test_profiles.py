@@ -7,6 +7,12 @@
 
 from __future__ import annotations
 
+import csv
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from conftest import make_row
 
@@ -14,6 +20,7 @@ from aios.summary import Fluids
 from scripts.profiles import buckets, by_well, mass_watercut, volume_watercut
 
 FLUIDS = Fluids()
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def produced(data: str, well: str, oil_m3: float, water_m3: float, rate: float = 30.0):
@@ -70,3 +77,36 @@ def test_negative_rows_are_skipped_as_the_methodology_requires():
 def test_buckets_cover_the_whole_range_without_gaps():
     counts = dict(buckets([0.05, 0.5, 0.75, 0.85, 0.95, 1.0]))
     assert sum(counts.values()) == 6, "ни одно значение не должно потеряться"
+
+
+def test_output_survives_a_narrow_locale(tmp_path: Path):
+    """Печать кириллицы не должна зависеть от локали окружения (п. 3.5 ТЗ).
+
+    Найдено запуском 19.08: при `PYTHONIOENCODING=ascii` скрипт падал
+    `UnicodeEncodeError` на первой же строке вывода — то есть **после** того, как
+    всё посчитано. Остальные десять скриптов пакета от этого защищены явным
+    `reconfigure` на входе, у профилей его не было. Узкая локаль — не экзотика:
+    её даёт `LANG=C` и консоль cp437, в которых решение будет запускать жюри.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    rows = [
+        produced("2014-01-01", "1", oil_m3=500.0, water_m3=500.0),
+        produced("2014-02-01", "1", oil_m3=100.0, water_m3=900.0),
+    ]
+    with (run_dir / "rows.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    environment = dict(os.environ, PYTHONIOENCODING="ascii")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "profiles.py"), str(run_dir), "--months", "1"],
+        cwd=ROOT, env=environment, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=120,
+    )
+
+    assert result.returncode == 0, (
+        "скрипт упал на выдаче уже посчитанного результата:\n" + result.stderr[-600:]
+    )
+    assert "UnicodeEncodeError" not in result.stderr
