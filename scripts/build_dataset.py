@@ -28,6 +28,7 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -65,8 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     controls = {
         scenario["name"]: (
-            scenario.get("multipliers", {}),
-            scenario.get("injector_multipliers", {}),
+            _periods(scenario),
             frozenset(scenario.get("converted_wells", ())),
         )
         for scenario in manifest["scenarios"]
@@ -107,8 +107,9 @@ def main(argv: list[str] | None = None) -> int:
             if problems:
                 print(f"{name}: санити-чеки — нарушений {len(problems)}, первое: {problems[0]}")
 
-            producer_multipliers, injector_multipliers, converted = controls[name]
+            periods, converted = controls[name]
             for row in rows:
+                producer_multipliers, injector_multipliers = _at(periods, str(row["DATA"]))
                 role = roles.get((str(row["DATA"]), row["well"]))
                 # Роль берётся из опорного расписания, и для переведённой под
                 # закачку скважины она говорит «добывающая» — сценарий-то её и
@@ -163,6 +164,48 @@ def main(argv: list[str] | None = None) -> int:
         print("пропущенные сценарии придётся досчитать: суррогат, обученный на дырявой "
               "выборке, врёт именно в дырах")
     return 0 if written else 1
+
+
+#: Периоды управления сценария: `(с какой даты, множители добычи, множители закачки)`,
+#: по возрастанию даты. У пакета со сценарным управлением период ровно один.
+Periods = list[tuple[str, dict[str, float], dict[str, float]]]
+
+
+def _periods(scenario: dict[str, Any]) -> Periods:
+    """Разобрать управление сценария, поддерживая оба вида манифеста.
+
+    Старый вид — одни множители на весь горизонт (`multipliers`,
+    `injector_multipliers`). Новый — список `periods`, где режим меняется внутри
+    сценария по датам. Смысл нового: измерено 19.08, что множитель в DoE
+    постоянен по месяцам, поэтому пакет из 12 прогонов даёт суррогату **12**
+    независимых точек управления, а не 457 320 строк
+    (`docs/experiments.md`). Периоды умножают число точек без новых прогонов.
+
+    Оба вида читаются одним кодом: у старого просто один период «с начала
+    времён», поэтому уже посчитанные пакеты продолжают собираться как были.
+    """
+    listed = scenario.get("periods")
+    if not listed:
+        return [("", dict(scenario.get("multipliers", {}) or {}),
+                 dict(scenario.get("injector_multipliers", {}) or {}))]
+    periods = [
+        (str(entry["from"]), dict(entry.get("multipliers", {}) or {}),
+         dict(entry.get("injector_multipliers", {}) or {}))
+        for entry in listed
+    ]
+    periods.sort(key=lambda item: item[0])
+    return periods
+
+
+def _at(periods: Periods, data: str) -> tuple[dict[str, float], dict[str, float]]:
+    """Множители, действующие в этот месяц: последний период с датой ≤ месяца."""
+    current = periods[0]
+    for period in periods:
+        if period[0] <= data:
+            current = period
+        else:
+            break
+    return current[1], current[2]
 
 
 def control_roles(

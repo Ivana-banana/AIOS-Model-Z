@@ -229,3 +229,90 @@ def test_the_manifest_names_the_converted_wells(tmp_path):
     manifest = json.loads((root / "doe.json").read_text(encoding="utf-8"))
     converted = [well for s in manifest["scenarios"] for well in s.get("converted_wells", ())]
     assert converted, "манифест не назвал ни одной переведённой скважины"
+
+
+def test_control_periods_change_the_multiplier_inside_one_scenario(tmp_path, monkeypatch):
+    """Режим по периодам — способ получить больше точек без новых прогонов.
+
+    Измерено 19.08: множитель в DoE постоянен по месяцам, поэтому пакет из 12
+    прогонов даёт суррогату 12 независимых точек управления, а не 457 320 строк.
+    Периоды внутри сценария умножают число точек на число периодов, а прогон
+    остаётся один.
+
+    Схема закреплена здесь **до** появления генератора: прошлый стык (перевод под
+    закачку) сломался именно потому, что контракт был описан словами, а проверялся
+    только на одной стороне.
+    """
+    import csv
+    import json
+
+    from conftest import make_row
+
+    from scripts import build_dataset
+
+    root = tmp_path / "doe"
+    (root / "doe-000").mkdir(parents=True)
+    (root / "doe.json").write_text(
+        json.dumps({"scenarios": [{
+            "name": "doe-000",
+            "periods": [
+                {"from": "2007-01-01", "multipliers": {"1": 0.8}},
+                {"from": "2010-01-01", "multipliers": {"1": 1.3}},
+            ],
+        }]}),
+        encoding="utf-8",
+    )
+    (root / "doe-000" / "RUN.UNSMRY").write_text("", encoding="utf-8")
+    (root / "doe-000" / ".doe-done").write_text("2026-08-19", encoding="utf-8")
+    rows = [
+        make_row("2007-05-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2009-12-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2010-01-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2014-07-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+    ]
+    monkeypatch.setattr(build_dataset.summary, "monthly_rows", lambda *a, **k: rows)
+
+    target = tmp_path / "dataset.csv"
+    assert build_dataset.main([
+        "--run-root", str(root), "--out", str(target),
+        "--config", str(_tiny_project(tmp_path)),
+    ]) == 0
+
+    with target.open(encoding="utf-8", newline="") as handle:
+        written = {row["DATA"]: row["production_multiplier"] for row in csv.DictReader(handle)}
+    assert written["2007-05-01"] == "0.8"
+    assert written["2009-12-01"] == "0.8", "период закончился раньше своей даты"
+    assert written["2010-01-01"] == "1.3", "новый период начинается со своей даты включительно"
+    assert written["2014-07-01"] == "1.3"
+
+
+def test_a_manifest_without_periods_is_still_read(tmp_path, monkeypatch):
+    """Уже посчитанные пакеты собираются как были — иначе три пакета надо считать заново."""
+    import csv
+    import json
+
+    from conftest import make_row
+
+    from scripts import build_dataset
+
+    root = tmp_path / "doe"
+    (root / "doe-000").mkdir(parents=True)
+    (root / "doe.json").write_text(
+        json.dumps({"scenarios": [{"name": "doe-000", "multipliers": {"1": 1.1}}]}),
+        encoding="utf-8",
+    )
+    (root / "doe-000" / "RUN.UNSMRY").write_text("", encoding="utf-8")
+    (root / "doe-000" / ".doe-done").write_text("2026-08-19", encoding="utf-8")
+    monkeypatch.setattr(
+        build_dataset.summary, "monthly_rows",
+        lambda *a, **k: [make_row("2007-05-01", "1", wlpr=30.0, womr=20.0,
+                                  liquid=900.0, oil=600.0)],
+    )
+
+    target = tmp_path / "dataset.csv"
+    assert build_dataset.main([
+        "--run-root", str(root), "--out", str(target),
+        "--config", str(_tiny_project(tmp_path)),
+    ]) == 0
+    with target.open(encoding="utf-8", newline="") as handle:
+        assert next(csv.DictReader(handle))["production_multiplier"] == "1.1"
