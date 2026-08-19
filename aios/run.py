@@ -25,6 +25,7 @@ from aios.deck import (
     parse_schedule_text,
 )
 from aios.deckfiles import DeckLayout, layout
+from aios.schedule import assert_valid
 from aios.schedule import render as render_steps
 
 _INCLUDE_RE = re.compile(r"(INCLUDE\s*\n\s*)'([^']+)'", re.IGNORECASE)
@@ -104,6 +105,11 @@ def build_case(run_dir: str | Path,
     if steps is not None:
         if control_start is None:
             raise ValueError("Для своих шагов нужна дата начала управления (control_start).")
+        # Р-04: невалидное расписание не доходит до файла. Проверка стоит здесь,
+        # потому что здесь файл и пишется. Проверяются наши шаги, а не склейка с
+        # историей: история задана организаторами, и отвергать их собственный дек
+        # из-за наших правил значило бы не собрать кейс на исправном материале
+        assert_valid(steps)
         schedule_text = (
             history_prefix(schedule_text, control_start)
             + "\n"

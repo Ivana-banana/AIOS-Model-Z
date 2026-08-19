@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep, format_date_record
 
@@ -136,18 +135,6 @@ def render(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             lines.append("/")
             lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
-
-
-def write(path: str | Path,
-          steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-          known_wells: frozenset[str] | None = None,
-          header: str = HEADER) -> Path:
-    """Проверить и записать `wells_schedule.inc`. Невалидное расписание не пишется."""
-    assert_valid(steps, known_wells)
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render(steps, header), encoding="utf-8", newline="\n")
-    return target
 
 
 def _producer_record(control: ProducerControl) -> str:

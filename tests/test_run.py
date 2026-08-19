@@ -510,3 +510,20 @@ def test_a_deck_in_field_units_is_refused(tmp_path):
 
     with pytest.raises(ValueError, match="FIELD"):
         run.build_case(tmp_path / "run", deck)
+
+
+def test_invalid_steps_never_reach_the_deliverable(tmp_path):
+    """Гарантия Р-04 живёт там, где файл пишется, а не в неиспользуемой функции.
+
+    `schedule.write` валидировала перед записью, но её не вызывал никто: сдаваемый
+    `wells_schedule.inc` собирает `build_case`, потому что это история дека плюс
+    наши шаги, а не одни шаги. Значит и проверка должна стоять здесь.
+    """
+    deck = _deck_with(tmp_path, SCHEDULE)
+    bad = [ScheduleStep(date(2007, 1, 1),
+                        (ProducerControl("1", "OPEN", "LRAT", 900.0, 50.0),), ())]
+
+    with pytest.raises(ValueError, match="500"):
+        run.build_case(tmp_path / "run", deck, steps=bad, control_start=date(2007, 1, 1))
+
+    assert not (tmp_path / "run" / "wells_schedule.inc").exists(), "файл не должен появиться"

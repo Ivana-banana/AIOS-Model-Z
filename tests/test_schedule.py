@@ -119,17 +119,23 @@ def test_unknown_well_is_rejected_when_the_fund_is_given():
     assert any("нет в деке" in problem.message for problem in problems)
 
 
-def test_invalid_schedule_is_never_written(tmp_path):
-    target = tmp_path / "wells_schedule.inc"
+def test_invalid_schedule_stops_at_assert_valid():
+    """Проверка отделена от записи намеренно — см. Р-04 в `docs/decisions.md`.
+
+    Записывает сдаваемый файл `aios.run.build_case`: он склеивает историю дека с
+    нашими шагами, а не рендерит одни шаги, поэтому единой функции «проверить и
+    записать» здесь быть не может. Гарантия живёт в двух местах: `assert_valid`
+    отвергает брак, а `build_case` вызывает её до того, как что-либо напишет.
+    """
     with pytest.raises(schedule.ScheduleError):
-        schedule.write(target, [step(producers=[producer(rate=900.0)])])
-    assert not target.exists()
+        schedule.assert_valid([step(producers=[producer(rate=900.0)])])
 
 
-def test_written_file_is_readable_by_the_parser(tmp_path):
-    target = tmp_path / "wells_schedule.inc"
+def test_rendered_text_is_readable_by_the_parser(tmp_path):
+    """Круговая проверка: что отрисовали, то и разбираем обратно."""
     steps = [step(producers=[producer()], injectors=[injector()])]
-    schedule.write(target, steps, known_wells=frozenset({"1", "2"}))
+    target = tmp_path / "wells_schedule.inc"
+    target.write_text(schedule.render(steps), encoding="utf-8")
 
     text = target.read_text(encoding="utf-8")
     assert "DATES" in text and "WCONPROD" in text and "WCONINJE" in text
