@@ -233,9 +233,17 @@ def _design_conversions(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...
     вообще доходит до входа, а не тонкая раскладка по скважинам. Разные
     приёмистости внутри одного сценария — следующий заход, как и временные
     профили у основного вида управления.
+
+    В кандидаты идёт не всякая скважина с записью `WCONPROD`, а только та, что
+    в горизонте управления действительно добывает. В Модели Z 30 скважин
+    переведены под закачку за историю, и у части из них в горизонте остаётся
+    одна закрывающая запись «SHUT, дебит 0» — переводить там нечего, а
+    `converted_wells` при этом называл их переведёнными.
     """
-    if not producer_wells:
-        raise ValueError("в базовом расписании нет добывающих скважин")
+    producing = _producing(base_steps)
+    candidates = [well for well in producer_wells if well in producing]
+    if not candidates:
+        raise ValueError("в горизонте управления нет работающих добывающих скважин")
     if bounds == DEFAULT_RANGE:
         bounds = CONVERSION_RANGE
 
@@ -243,22 +251,29 @@ def _design_conversions(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...
     if not 0.0 < low < high:
         raise ValueError(f"приёмистость перевода должна быть больше нуля: {bounds}")
 
-    points = latin_hypercube(samples, len(producer_wells) + 2, seed)
+    points = latin_hypercube(samples, len(candidates) + 2, seed)
     share_low, share_high = CONVERSION_SHARE
     scenarios: list[Scenario] = []
 
     for index, point in enumerate(points):
         share = share_low + point[-2] * (share_high - share_low)
         multiplier = round(low + point[-1] * (high - low), 4)
-        count = max(1, round(share * len(producer_wells)))
+        count = max(1, round(share * len(candidates)))
 
-        order = sorted(zip(producer_wells, point[:-2], strict=True), key=lambda item: item[1])
-        converted = tuple(sorted((well for well, _ in order[:count]), key=_well_key))
+        order = sorted(zip(candidates, point[:-2], strict=True), key=lambda item: item[1])
+        chosen = {well for well, _ in order[:count]}
 
+        steps = convert_to_injection(base_steps, chosen, multiplier=multiplier)
+        assert_valid(steps)
+
+        # Названа переведённой только та, у которой расписание действительно
+        # стало другим. Сборщик датасета верит этому списку на слово и пишет по
+        # нему `production_multiplier = 0` и `injection_multiplier > 0`; строка
+        # «скважину перевели» с опорным откликом учит сеть тому, что перевод
+        # ничего не даёт, — ровно наоборот тому, ради чего пакет считается.
+        converted = tuple(sorted(_changed_wells(base_steps, steps), key=_well_key))
         multipliers = dict.fromkeys(converted, 0.0)
         injector_multipliers = dict.fromkeys(converted, multiplier)
-        steps = convert_to_injection(base_steps, set(converted), multiplier=multiplier)
-        assert_valid(steps)
         scenarios.append(
             Scenario(
                 name=f"doe-{index:03d}",
@@ -335,6 +350,43 @@ def _apply(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         if multiplier != 1.0:
             steps = scale_injection(steps, multiplier, wells={well})
     return steps
+
+
+def _producing(steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> set[str]:
+    """Скважины, которые в этом горизонте действительно добывают.
+
+    Роль берётся по горизонту управления, а не по всей истории дека: скважина,
+    переведённая под закачку до `control_start`, добывающей уже не является,
+    сколько бы лет она ни качала нефть до того.
+    """
+    return {
+        control.well
+        for step in steps
+        for control in step.producers
+        if control.status == "OPEN" and control.liquid_rate
+    }
+
+
+def _changed_wells(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   steps: list[ScheduleStep]) -> set[str]:
+    """Скважины, у которых записи расписания отличаются от опорных.
+
+    Сравнение прямое, запись к записи по ключу «дата × роль × скважина». Так
+    «перевели» означает ровно то, что видно в файле, а не то, что собирался
+    сделать генератор.
+    """
+    def records(items: Any) -> dict[tuple[date, str, str], Any]:
+        return {
+            (step.date, kind, control.well): control
+            for step in items
+            for kind, controls in (("prod", step.producers), ("inj", step.injectors))
+            for control in controls
+        }
+
+    before = records(base_steps)
+    return {
+        key[-1] for key, control in records(steps).items() if before.get(key) != control
+    }
 
 
 def _well_key(name: str) -> tuple[int, int, str]:

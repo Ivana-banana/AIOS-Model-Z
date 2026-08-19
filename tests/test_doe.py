@@ -278,3 +278,86 @@ def test_coverage_reports_conversions():
                            control_kind="conversions")
     report = doe.coverage(scenarios)
     assert report["converted_total"] >= 1
+
+
+# ── пустые переводы: скважина, уже работающая под закачкой ────────────────────
+#
+# Измерено на настоящем деке 19.08 (`docs/experiments.md`): в кандидаты на ВНС
+# попадает скважина, которая в горизонте управления не добывает ни месяца, — в
+# Модели Z 30 скважин переведены под закачку за историю. Расписание при этом
+# корректно, переводить нечего; портится манифест: сборщик датасета запишет такой
+# скважине `production_multiplier = 0` и `injection_multiplier > 0`, и в обучающей
+# выборке появится строка «скважину перевели», отклик у которой в точности
+# опорный. Сеть выучит, что перевод под закачку не даёт ничего — ровно на том
+# классе решений, ради которого пакет и затевается.
+
+def already_injecting(months: int = 6):
+    """Расписание, где скважина 102 к началу управления уже под закачкой.
+
+    Списано со скважины 102 Модели Z: одна закрывающая запись `WCONPROD` на
+    01.2007 (`SHUT`, дебит 0) и закачка 90 м³/сут во всех месяцах после неё.
+    Скважина 1 рядом — настоящий кандидат на перевод.
+    """
+    steps = []
+    for month in range(1, months + 1):
+        producers = [ProducerControl("1", "OPEN", "LRAT", 40.0, 50.0)]
+        if month == 1:
+            producers.append(ProducerControl("102", "SHUT", "LRAT", 0.0, 50.0))
+        steps.append(ScheduleStep(
+            date(2007, month, 1),
+            tuple(producers),
+            (InjectorControl("102", "WATER", "OPEN", "RATE", 90.0, 300.0),),
+        ))
+    return steps
+
+
+def records_of(steps, well: str):
+    """Все записи расписания по одной скважине — с чем сравнивать «изменилось»."""
+    return [
+        (step.date, kind, control)
+        for step in steps
+        for kind, controls in (("prod", step.producers), ("inj", step.injectors))
+        for control in controls
+        if control.well == well
+    ]
+
+
+def test_a_well_already_under_injection_is_not_offered_for_conversion():
+    """Переводить под закачку ту, что и так качает, нечего."""
+    for scenario in doe.design(already_injecting(), samples=6, seed=SEED,
+                               control_kind="conversions"):
+        assert "102" not in scenario.converted_wells
+        assert "102" not in scenario.multipliers
+        assert "102" not in scenario.injector_multipliers
+
+
+def test_converted_wells_lists_only_wells_whose_schedule_changed():
+    """Контракт манифеста: названа переведённой — значит, расписание другое."""
+    base = already_injecting()
+    for scenario in doe.design(base, samples=4, seed=SEED, control_kind="conversions"):
+        assert scenario.converted_wells, "сценарий обязан кого-то перевести"
+        for well in scenario.converted_wells:
+            assert records_of(scenario.steps, well) != records_of(base, well)
+
+
+def test_coverage_counts_only_real_conversions():
+    """Отчёт о покрытии — число настоящих переводов, а не заявленных."""
+    scenarios = doe.design(already_injecting(), samples=5, seed=SEED,
+                           control_kind="conversions")
+    report = doe.coverage(scenarios)
+
+    assert report["converted_total"] == sum(len(s.converted_wells) for s in scenarios)
+    assert report["converted_total"] == len(scenarios), "кандидат здесь ровно один"
+
+
+def test_conversions_need_a_well_that_actually_produces():
+    """Фонд, целиком работающий под закачкой, — отказ, а не пустой пакет."""
+    steps = [
+        ScheduleStep(
+            date(2007, 1, 1),
+            (ProducerControl("102", "SHUT", "LRAT", 0.0, 50.0),),
+            (InjectorControl("102", "WATER", "OPEN", "RATE", 90.0, 300.0),),
+        ),
+    ]
+    with pytest.raises(ValueError, match="добывающих скважин"):
+        doe.design(steps, samples=2, seed=SEED, control_kind="conversions")
