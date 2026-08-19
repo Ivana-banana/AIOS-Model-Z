@@ -492,3 +492,28 @@ def test_a_model_trained_on_one_kind_of_control_says_so_once():
     assert len(warnings) == 1, warnings
     assert "3" in warnings[0], "число затронутых скважин обязано остаться видимым"
     assert "prod" in warnings[0]
+
+
+def test_a_network_worse_than_the_mean_is_refused_even_if_it_beats_the_baseline():
+    """Порог «лучше бейзлайна» — относительный, и этого мало.
+
+    Измерено 20.08 на полном датасете: MLP выигрывает у линейной модели по MAE на
+    всех пяти целях и потому проходит относительный порог, но `R²` по нефти у него
+    **−0.814** — на невиданных сценариях он предсказывает нефть хуже, чем среднее
+    по этим же сценариям. По скважинам картина ещё резче: `R² > 0` лишь у 7 из 90,
+    медиана −1.38.
+
+    Такая модель не годится вести оптимизацию: `choose_joint_rates` ищет максимум
+    ЧДД по её градиенту. Абсолютный порог `R² > 0` был введён 19.08 только для
+    линейного вида и не применялся к сети — асимметрия проверки, а не заслуга
+    модели.
+    """
+    metrics = {
+        target: TargetMetric(1.0, 2.0, 1.0, 2.0, neural_r2=0.5, linear_r2=0.4)
+        for target in TARGET_COLUMNS
+    }
+    metrics["WOMT_Diff"] = TargetMetric(1.0, 2.0, 1.0, 2.0, neural_r2=-0.814, linear_r2=-2.0)
+    losing = TrainingReport(("train",), ("test",), 1, 2, metrics)
+
+    with pytest.raises(ValueError, match="R²"):
+        assert_quality(losing)
