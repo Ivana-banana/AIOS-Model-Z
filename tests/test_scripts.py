@@ -25,7 +25,8 @@ SCRIPTS = ROOT / "scripts"
 #: Скрипты, на которые ссылаются документация и Dockerfile.
 REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_doe.py", "run_cycle.py",
             "transcribe.py", "build_dataset.py", "train_surrogate.py", "run_all.py",
-            "docx_to_text.py", "profiles.py", "pack_npv.py")
+            "docx_to_text.py", "profiles.py", "pack_npv.py",
+            "surrogate_warnings.py")
 
 
 @pytest.mark.parametrize("name", REQUIRED)
@@ -313,3 +314,43 @@ def _tiny_pack_config(tmp_path) -> Path:
     from test_dataset import _tiny_project
 
     return _tiny_project(tmp_path)
+
+
+def test_surrogate_warnings_counts_reasons_not_just_lines(tmp_path, capsys):
+    """Пометки надо считать по причинам, а не по строкам.
+
+    «188 строк» и «188 разных причин» — разные новости: первое означает, что одна
+    и та же причина повторена по скважино-месяцам, второе — что модель не знает
+    почти ничего. Свёртка причин (`7163c71`) сделана ровно поэтому, и проверка
+    здесь на том, что счётчик её показывает.
+
+    Порог качества скриптом намеренно не применяется: мерить пометки надо и у
+    модели, которая в цикл не попадёт, иначе про неё нечего сказать.
+    """
+    import joblib
+    import pandas as pd
+    from test_dataset import _tiny_project
+
+    from aios.neural import NeuralBundle, TargetMetric, TrainingReport
+    from aios.surrogate import NumericRange, TrainingEnvelope
+    from scripts import surrogate_warnings
+
+    metrics = {target: TargetMetric(3.0, 1.0) for target in ("WLPT_Diff", "WOMT_Diff",
+                                                            "WWIT_Diff", "THP", "BHP")}
+    bundle = NeuralBundle(
+        ("prod:1",), {}, pd.Timestamp("2007-01-01"), 12,
+        TrainingEnvelope({}, {}, NumericRange(0.0, 1e9), NumericRange(0.0, 1e9)),
+        # метрики заведомо проигрышные: скрипт обязан работать и на такой модели
+        TrainingReport(("a",), ("b",), 1, 2, metrics),
+    )
+    model = tmp_path / "surrogate.joblib"
+    joblib.dump(bundle, model)
+
+    code = surrogate_warnings.main(
+        ["--model", str(model), "--config", str(_tiny_project(tmp_path))]
+    )
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert "опорное расписание" in printed
+    assert "строк:" in printed
