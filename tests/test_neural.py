@@ -284,10 +284,6 @@ def test_cycle_loader_rejects_an_unknown_artifact(tmp_path):
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="запуск из простоя кодируется тем же 0.0, что и остановка — находка ревизии 18.08",
-)
 def test_starting_an_idle_well_is_not_encoded_as_a_shutdown():
     """Остановить скважину и запустить её из простоя — это не одно и то же.
 
@@ -298,11 +294,14 @@ def test_starting_an_idle_well_is_not_encoded_as_a_shutdown():
     запустить скважину подаётся модели как её остановка.
 
     `CLAUDE.md` называет «запуск из простоя» одним из случаев, где суррогат врёт
-    по построению и должен мериться отдельно. Сейчас он не врёт, а получает
+    по построению и должен мериться отдельно. До 19.08 он не врал, а получал
     перевёрнутый вход.
 
-    Тест помечен `xfail(strict=True)`: он держит находку исполняемой и упадёт
-    как XPASS, когда кодирование починят, — тогда пометку надо снять.
+    Закрыто 19.08: запуск кодируется `RESTART_MULTIPLIER`, спутать который с
+    остановкой нельзя, потому что множители неотрицательны по построению. Само по
+    себе это правильного числа не даёт — обучающая выборка запусков не содержит, —
+    поэтому в паре с кодированием обязана срабатывать пометка
+    `in_training_range`; она проверяется отдельным тестом ниже.
     """
     from datetime import date
 
@@ -325,6 +324,50 @@ def test_starting_an_idle_well_is_not_encoded_as_a_shutdown():
 
     assert shutdown == 0.0, "остановка обязана кодироваться нулём"
     assert start_up != shutdown, "запуск из простоя не должен выглядеть как остановка"
+    assert start_up < 0.0, (
+        "значение обязано быть вне области множителей, а не ещё одним правдоподобным"
+    )
+
+
+def test_starting_an_idle_well_is_reported_as_outside_the_training_set():
+    """Кодирование без пометки — замена одного неверного ответа другим.
+
+    Обучающая выборка запусков не содержит вовсе (DoE масштабирует режимы и умеет
+    их обнулять, но не запускает), поэтому любое число здесь — экстраполяция.
+    Диапазонный детектор молчит по устройству: границы `producer_rates` собраны по
+    скважине за весь датасет, и режим 30 м³/сут попадает внутрь них. Значит,
+    сказать «не оценивал» обязан именно этот признак — иначе решение будет принято
+    по прогнозу, а не отправлено на полный расчёт (принцип 6 `CLAUDE.md`).
+    """
+    idle = ScheduleStep(pd.Timestamp("2014-01-01").date(),
+                        (ProducerControl("1", "SHUT", "LRAT", None, 50.0),), ())
+    surrogate = NeuralSurrogate.create(bundle(), [idle])
+
+    warnings = surrogate.in_training_range([step(30.0)])
+
+    assert any("без опорного режима" in warning for warning in warnings), warnings
+
+
+def test_conversion_to_injection_is_reported_as_not_covered_by_the_model():
+    """Перевод под закачку не искажается, а пропадает — это надо сказать вслух.
+
+    Признаки собираются по ролям: колонка `inj:<скважина>` появляется только у
+    той, у которой в датасете есть непустой множитель закачки. У добывающей её нет
+    ни в одном сценарии DoE, поэтому предложение перевести скважину под закачку до
+    модели не доходит вовсе, а прогноз выглядит обычным.
+    """
+    trained = bundle()
+    trained.control_wells = ("prod:1",)
+    surrogate = NeuralSurrogate.create(trained, [step(30.0)])
+    converted = ScheduleStep(
+        pd.Timestamp("2014-01-01").date(), (),
+        (InjectorControl("1", "WATER", "OPEN", "RATE", 120.0, 250.0),),
+    )
+
+    warnings = surrogate.in_training_range([converted])
+
+    assert any("inj:1" in warning and "нет в обучающем датасете" in warning
+               for warning in warnings), warnings
 
 
 def test_training_script_reports_the_quality_verdict_next_to_the_metrics():
