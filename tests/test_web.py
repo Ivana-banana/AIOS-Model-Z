@@ -297,6 +297,28 @@ def test_a_rejected_model_answer_is_shown_not_hidden(project, monkeypatch):
     assert "2500.0" in text
 
 
+def test_a_failed_model_call_names_the_reason(project, monkeypatch):
+    """Слой на живом API не работал ни разу: молчаливый шаблон нечем чинить."""
+    from aios import explain as explain_module
+
+    def failing(evidence, settings, **kwargs):
+        base = real_explain(evidence, explain_module.Settings(enabled=False))
+        return explain_module.Explanation(
+            text=base.text,
+            source="template-failed",
+            fingerprint=base.fingerprint,
+            model="claude-opus-5",
+            failure="NotFoundError: model claude-opus-5 not found",
+        )
+
+    real_explain = explain_module.explain
+    monkeypatch.setattr("aios.web.app.explain_module.explain", failing)
+    text = TestClient(create_app(project)).get("/run/base/cycle").text
+
+    assert "вызов модели не состоялся" in text
+    assert "model claude-opus-5 not found" in text
+
+
 def test_the_explanation_never_breaks_the_page(project, monkeypatch):
     """Отказ слоя — это отчётность о решении, а не само решение. Страница живёт.
 

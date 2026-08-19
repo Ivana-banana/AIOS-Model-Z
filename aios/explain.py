@@ -148,12 +148,20 @@ class Explanation:
 
     text: str
     source: str
-    """`llm`, `cache`, `template` или `template-rejected`."""
+    """`llm`, `cache`, `template`, `template-rejected` или `template-failed`."""
 
     fingerprint: str
     model: str = ""
     rejected_numbers: tuple[str, ...] = ()
     """Числа, которых не было в фактах. Непусто только при отказе от ответа модели."""
+
+    failure: str = ""
+    """Почему вызов не состоялся. Непусто только при `template-failed`.
+
+    Слой не роняет цикл, но и молчать о причине не должен: без неё «шаблон»
+    из-за выключённой настройки и «шаблон» из-за неверного имени модели или
+    просроченного ключа выглядят одинаково, а чинятся по-разному.
+    """
 
     @property
     def from_model(self) -> bool:
@@ -363,8 +371,14 @@ def explain(evidence: Evidence,
             messages=[{"role": "user", "content": evidence.prompt()}],
         )
         text = _compose(json.loads(_first_text(response)))
-    except Exception:  # noqa: BLE001 — любая проблема слоя не должна ронять цикл
-        return Explanation(text=template_text(evidence), source="template", fingerprint=fingerprint)
+    except Exception as error:  # noqa: BLE001 — любая проблема слоя не должна ронять цикл
+        return Explanation(
+            text=template_text(evidence),
+            source="template-failed",
+            fingerprint=fingerprint,
+            model=settings.model,
+            failure=_failure_text(error),
+        )
 
     rejected = unverified_numbers(text, evidence)
     if rejected:
@@ -388,6 +402,16 @@ def explain(evidence: Evidence,
         )
 
     return Explanation(text=text, source="llm", fingerprint=fingerprint, model=settings.model)
+
+
+def _failure_text(error: Exception) -> str:
+    """Причина отказа одной строкой — для интерфейса, а не для трассировки.
+
+    Длина обрезается: сообщения API бывают в несколько абзацев, а на странице
+    нужна причина, по которой понятно, что чинить.
+    """
+    text = " ".join(f"{type(error).__name__}: {error}".split())
+    return text if len(text) <= 300 else text[:299] + "…"
 
 
 def _first_text(response: Any) -> str:

@@ -138,7 +138,35 @@ def test_answer_with_an_invented_number_is_rejected_whole():
 def test_api_failure_does_not_break_the_cycle():
     client = _FakeClient(RuntimeError("нет сети"))
     result = explain(evidence(), Settings(enabled=True), client=client)
-    assert result.source == "template"
+    assert result.source == "template-failed"
+    assert not result.from_model
+
+
+def test_the_reason_for_a_failed_call_is_kept():
+    """Слой ни разу не работал на живом API: молчаливый откат к шаблону нечинибельный.
+
+    «Шаблон, потому что выключено» и «шаблон, потому что модели с таким именем
+    нет» выглядят на странице одинаково, а чинятся по-разному.
+    """
+    client = _FakeClient(RuntimeError("model: claude-opus-5 not found"))
+    result = explain(evidence(), Settings(enabled=True), client=client)
+
+    assert "RuntimeError" in result.failure
+    assert "claude-opus-5 not found" in result.failure
+
+
+def test_a_disabled_layer_reports_no_failure():
+    """Выключенный слой — не отказ: причины у него нет и быть не должно."""
+    assert explain(evidence(), Settings(enabled=False)).failure == ""
+
+
+def test_a_long_api_message_is_cut_for_the_page():
+    """Ответ API бывает в несколько абзацев, а на странице нужна причина."""
+    client = _FakeClient(RuntimeError("подробности " * 100))
+    result = explain(evidence(), Settings(enabled=True), client=client)
+
+    assert len(result.failure) <= 300
+    assert result.failure.endswith("…")
 
 
 def test_temperature_is_never_sent():

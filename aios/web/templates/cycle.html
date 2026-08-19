@@ -88,11 +88,24 @@
       Детерминизма у вызова нет, воспроизводимость даёт кэш.
     {% elif explanation.source == 'template-rejected' %}
       <strong>шаблоном: ответ модели отвергнут.</strong>
+    {% elif explanation.source == 'template-failed' %}
+      <strong>шаблоном: вызов модели не состоялся.</strong>
     {% else %}
       <strong>шаблоном</strong> — слой выключен в конфигурации либо недоступен.
     {% endif %}
     Отпечаток фактов: <code>{{ explanation.fingerprint }}</code>.
   </p>
+
+  {% if explanation.failure %}
+  <div class="warn">
+    <p>
+      Вызов языковой модели не состоялся: <code>{{ explanation.failure }}</code>.
+      Показано шаблонное объяснение — цикл от этого не страдает, но слой
+      интерпретируемости сейчас работает без модели, и причина названа здесь,
+      а не только в логе сервера.
+    </p>
+  </div>
+  {% endif %}
 
   {% if explanation.rejected_numbers %}
   <div class="warn">
