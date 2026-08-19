@@ -603,3 +603,120 @@ def test_dry_run_shows_the_coverage_of_every_period(tmp_path, capsys):
     assert "периодов:" in output
     for start in ("2007-01-01", "2007-03-01", "2007-05-01"):
         assert start in output
+
+
+# ── покрытие остановок: отдельная ось, а не побочный эффект границ ───────────
+#
+# Доля нулей в выборке была следствием арифметики: множитель ниже `snap_to_zero`
+# округляется до нуля, значит на остановку приходится snap_to_zero / (high - low)
+# — при границах по умолчанию около 4 % точек на скважину, а по части скважин
+# ноль. Отключение убыточной скважины при этом — эвристика первого уровня
+# (`CLAUDE.md`, принцип 3), то есть класс решений, который оптимизатор предложит
+# раньше всех. Суррогат обязан видеть отклик на него, а не угадывать.
+
+def shut_counts(scenario) -> list[int]:
+    """Сколько скважин остановлено в каждом периоде сценария."""
+    return [
+        sum(1 for value in (*period.multipliers.values(),
+                            *period.injector_multipliers.values()) if value == 0.0)
+        for period in scenario.periods
+    ]
+
+
+def test_the_shut_axis_puts_the_requested_share_of_wells_on_zero():
+    wells = [str(number) for number in range(11, 21)]  # 9 занята нагнетателем в plan()
+    scenarios = doe.design(plan(wells), samples=10, seed=SEED,
+                           bounds=(0.5, 1.25), shut_share=(0.2, 0.4))
+
+    counts = [count for scenario in scenarios for count in shut_counts(scenario)]
+
+    assert min(counts) >= 2, "нижняя граница доли не соблюдена"
+    assert max(counts) <= 4, "верхняя граница доли не соблюдена"
+    assert len(set(counts)) > 1, "доля разыгрывается осью, а не задана числом"
+
+
+def test_without_the_axis_some_well_never_sees_a_shutdown():
+    """Ради чего ось и заведена: на границах по умолчанию нулей почти нет."""
+    wells = [str(number) for number in range(11, 21)]  # 9 занята нагнетателем в plan()
+    steps = plan(wells)
+
+    without = doe.coverage(doe.design(steps, samples=8, seed=SEED))
+    with_axis = doe.coverage(doe.design(steps, samples=8, seed=SEED,
+                                        shut_share=(0.2, 0.4)))
+
+    assert without["min_shut_share"] == 0.0
+    assert with_axis["min_shut_share"] > 0.0, (
+        "по каждой скважине в выборке обязан быть хотя бы один месяц остановки"
+    )
+
+
+def test_the_shut_axis_works_inside_every_period():
+    """Остановка в одном периоде и работа в следующем — это пуск из простоя.
+
+    Экономика считает остановку и пуск двумя отдельными событиями по 1,0 млн руб.
+    (`docs/method/`), и отклик на такую пару суррогату нужен не меньше, чем на
+    ровный режим.
+    """
+    wells = [str(number) for number in range(11, 21)]  # 9 занята нагнетателем в plan()
+    scenarios = doe.design(plan(wells, months=12), samples=8, seed=SEED,
+                           bounds=(0.5, 1.25), shut_share=(0.1, 0.4), periods=3)
+
+    restarted = [
+        scenario for scenario in scenarios
+        if any(scenario.periods[0].multipliers[well] == 0.0
+               and scenario.periods[1].multipliers[well] > 0.0 for well in wells)
+    ]
+
+    assert all(len(shut_counts(scenario)) == 3 for scenario in scenarios)
+    assert restarted, "ни в одном сценарии скважина не запускается из простоя"
+
+
+def test_shut_wells_from_the_axis_are_really_shut_in_the_schedule():
+    wells = [str(number) for number in range(11, 21)]  # 9 занята нагнетателем в plan()
+    scenario = doe.design(plan(wells), samples=6, seed=SEED,
+                          bounds=(0.5, 1.25), shut_share=(0.2, 0.4))[0]
+
+    assert scenario.shut_wells
+    for step in scenario.steps:
+        for control in step.producers:
+            if control.well in set(scenario.shut_wells):
+                assert control.status == "SHUT"
+                assert control.liquid_rate is None
+    assert validate(list(scenario.steps)) == []
+
+
+def test_shut_share_rejects_a_broken_range():
+    with pytest.raises(ValueError, match="доля остановок"):
+        doe.design(plan(["1", "2"]), samples=3, seed=SEED, shut_share=(0.6, 0.2))
+
+
+def test_shut_share_rejects_a_share_above_the_whole_fund():
+    with pytest.raises(ValueError, match="доля остановок"):
+        doe.design(plan(["1", "2"]), samples=3, seed=SEED, shut_share=(0.5, 1.5))
+
+
+def test_conversions_do_not_take_the_shut_axis():
+    """У перевода множители заданы самим переводом: ноль добычи и закачка."""
+    with pytest.raises(ValueError, match="доля остановок"):
+        doe.design(plan(["1", "2", "3"]), samples=3, seed=SEED,
+                   control_kind="conversions", shut_share=(0.2, 0.4))
+
+
+def test_the_shut_axis_does_not_change_the_design_when_it_is_off():
+    """Умолчание не трогается: три посчитанных пакета остаются воспроизводимыми."""
+    steps = plan(["1", "2", "3"])
+    assert ([s.multipliers for s in doe.design(steps, samples=5, seed=SEED)]
+            == [s.multipliers for s in doe.design(steps, samples=5, seed=SEED,
+                                                  shut_share=None)])
+
+
+def test_the_cli_needs_both_shut_bounds(tmp_path, capsys):
+    from scripts import build_doe
+
+    status = build_doe.main([
+        "--samples", "3", "--shut-low", "0.2", "--dry-run",
+        "--config", str(tiny_project(tmp_path)),
+    ])
+
+    assert status == 1
+    assert "задаются вместе" in capsys.readouterr().err

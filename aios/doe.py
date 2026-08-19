@@ -163,7 +163,8 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
            snap_to_zero: float = 0.05,
            levels: tuple[float, float] | None = None,
            control_kind: str = "producers",
-           periods: int = 1) -> list[Scenario]:
+           periods: int = 1,
+           shut_share: tuple[float, float] | None = None) -> list[Scenario]:
     """Собрать `samples` сценариев управления вокруг базового.
 
     `snap_to_zero` — множители ниже этого порога округляются до нуля: дебит в
@@ -179,13 +180,17 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     множителях от 0 до 1.25 (`docs/experiments.md`). С `levels` уровень
     разыгрывается отдельной осью, а раскладка по скважинам ложится вокруг него.
 
-    Про покрытие остановок. При диапазоне по умолчанию на ноль приходится всего
-    `snap_to_zero / (high − low)` — около 4 % сценариев на скважину. Для обучения
-    отклика на остановку этого мало: `coverage()` покажет долю честно, и если она
-    нужна выше, стоит отдельным заходом сделать выборку в узком диапазоне
-    (`bounds=(0.0, 0.3)`) и слить её с основной. Разбираться с этим надо до
-    прогонов, а не после: сотня расчётов по несколько часов — слишком дорогая
-    цена за дыру в датасете.
+    `shut_share` — доля управляемых скважин, останавливаемых в периоде, и это
+    отдельная ось выборки. Без неё доля нулей — побочный эффект арифметики:
+    на ноль приходится `snap_to_zero / (high − low)`, около 4 % точек на скважину
+    при границах по умолчанию, а по части скважин ноль. Между тем отключение
+    убыточной скважины — эвристика первого уровня, и отклик на неё суррогату
+    нужен наверняка, а не по остаточному принципу. Останавливаются те скважины,
+    у которых координата гиперкуба в этом периоде наименьшая: у них и множитель
+    вышел бы наименьшим, поэтому стратификация остальных не рушится.
+    `coverage()` показывает достигнутую долю честно — смотреть до прогонов, а не
+    после: сотня расчётов по несколько часов — слишком дорогая цена за дыру в
+    датасете.
 
     `periods` — на сколько кусков делится горизонт. Внутри куска режим постоянен,
     на границе меняется, и каждый кусок разыгрывается своей частью гиперкуба
@@ -203,6 +208,11 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     if control_kind not in {"producers", "injectors", "all", "conversions"}:
         raise ValueError(f"неизвестный тип управления: {control_kind}")
     if control_kind == "conversions":
+        if shut_share is not None:
+            raise ValueError(
+                "доля остановок к переводу под закачку неприменима: множители "
+                "там заданы самим переводом — ноль добычи и закачка"
+            )
         if periods != 1:
             raise ValueError(
                 "перевод под закачку — разовое событие, делить его на периодов "
@@ -231,6 +241,11 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         if not 0.0 <= level_low < level_high:
             raise ValueError(f"некорректный диапазон уровней: {levels}")
 
+    if shut_share is not None:
+        shut_low, shut_high = shut_share
+        if not 0.0 <= shut_low < shut_high <= 1.0:
+            raise ValueError(f"некорректная доля остановок: {shut_share}")
+
     # +1 ось под общий уровень сценария: без неё гиперкуб независимо разыгрывает
     # каждую скважину, среднее по 70+ осям садится в середину диапазона, и все
     # сценарии оказываются на одном уровне отбора. Разнообразие получается внутри
@@ -238,7 +253,7 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     #
     # Своя такая пачка осей на каждый период: иначе режим на границе не изменится,
     # и периоды станут записью в манифесте, за которой ничего не стоит.
-    width = len(coordinates) + 1
+    width = len(coordinates) + (1 if shut_share is None else 2)
     points = latin_hypercube(samples, width * periods, seed)
     scenarios: list[Scenario] = []
 
@@ -246,15 +261,28 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         control: list[ControlPeriod] = []
         for number, start in enumerate(starts):
             axes = point[number * width:(number + 1) * width]
+            wells_axes = axes[:len(coordinates)]
+
             level = 1.0
             if levels is not None:
                 level_low, level_high = levels
-                level = level_low + axes[-1] * (level_high - level_low)
+                level = level_low + axes[len(coordinates)] * (level_high - level_low)
+
+            # Останавливаются те, у кого координата наименьшая: у них и множитель
+            # вышел бы наименьшим, поэтому стратификация остальных не рушится
+            forced: set[int] = set()
+            if shut_share is not None:
+                shut_low, shut_high = shut_share
+                share = shut_low + axes[len(coordinates) + 1] * (shut_high - shut_low)
+                ranked = sorted(range(len(coordinates)), key=lambda axis: wells_axes[axis])
+                forced = set(ranked[:round(share * len(coordinates))])
 
             multipliers: dict[str, float] = {}
             injector_multipliers: dict[str, float] = {}
-            for (kind, well), value in zip(coordinates, axes[:-1], strict=True):
-                multiplier = (low + value * (high - low)) * level
+            for axis, ((kind, well), value) in enumerate(
+                zip(coordinates, wells_axes, strict=True)
+            ):
+                multiplier = 0.0 if axis in forced else (low + value * (high - low)) * level
                 target = multipliers if kind == "production" else injector_multipliers
                 target[well] = 0.0 if multiplier < snap_to_zero else round(multiplier, 4)
             control.append(ControlPeriod(start, multipliers, injector_multipliers))

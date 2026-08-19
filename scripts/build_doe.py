@@ -41,6 +41,12 @@ def main(argv: list[str] | None = None) -> int:
         default="producers",
         help="какие режимы варьировать (по умолчанию только добывающие)",
     )
+    parser.add_argument("--shut-low", type=float, default=None,
+                        help="нижняя граница доли остановленных скважин в периоде")
+    parser.add_argument("--shut-high", type=float, default=None,
+                        # %% — argparse разворачивает help как формат-строку
+                        help="верхняя граница доли остановленных: без этой оси на "
+                             "остановку приходится около 4 %% точек на скважину")
     parser.add_argument("--periods", type=int, default=1,
                         help="на сколько периодов делить горизонт: режим меняется на их "
                              "границах, и один прогон даёт столько точек управления, "
@@ -64,6 +70,13 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.level_low is not None:
         levels = (arguments.level_low, arguments.level_high)
 
+    shut_share = None
+    if (arguments.shut_low is None) != (arguments.shut_high is None):
+        print("--shut-low и --shut-high задаются вместе", file=sys.stderr)
+        return 1
+    if arguments.shut_low is not None:
+        shut_share = (arguments.shut_low, arguments.shut_high)
+
     scenarios = doe.design(
         control_steps,
         samples=arguments.samples,
@@ -72,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         levels=levels,
         control_kind=arguments.control_kind,
         periods=arguments.periods,
+        shut_share=shut_share,
     )
     report = doe.coverage(scenarios)
 
@@ -140,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
                 "bounds": [arguments.low, arguments.high],
                 "control_kind": arguments.control_kind,
                 "periods": arguments.periods,
+                "shut_share": list(shut_share) if shut_share else None,
                 "control_start": config.case.control_start.isoformat(),
                 "coverage": report,
                 "scenarios": [
