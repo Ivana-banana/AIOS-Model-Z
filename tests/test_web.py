@@ -162,7 +162,8 @@ def test_index_shows_surrogate_metrics(project):
     assert "0.91" in text
     assert "20260817" in text
     assert "abcdef123456" in text
-    assert "Запустить MLP" in TestClient(create_app(project)).get("/run/base").text
+    # обученная модель предлагается в форме запуска МАС только когда она есть
+    assert 'value="neural"' in TestClient(create_app(project)).get("/run/base").text
 
 
 def test_index_survives_invalid_surrogate_report(project):
@@ -228,7 +229,7 @@ def test_run_without_results_is_404(client):
 
 
 def test_cycle_runs_and_reports_a_forecast(client):
-    response = client.post("/run/base/cycle")
+    response = client.get("/run/base/cycle")
 
     assert response.status_code == 200
     assert "ЧДД базового сценария" in response.text
@@ -242,34 +243,34 @@ def test_invalid_neural_artifact_is_a_controlled_error(project):
     artifacts.mkdir()
     (artifacts / "surrogate.joblib").write_bytes(b"not a joblib model")
 
-    response = TestClient(create_app(project)).post("/run/base/cycle?model=neural")
+    response = TestClient(create_app(project)).get("/run/base/cycle?model=neural")
 
     assert response.status_code == 409
     assert "не удалось загрузить" in response.text
 
 
 def test_cycle_explains_each_decision(client):
-    text = client.post("/run/base/cycle").text
+    text = client.get("/run/base/cycle").text
     assert "Принятые решения" in text
     assert "обводнённость" in text or "Действий нет" in text
 
 
 def test_cycle_page_shows_the_interpretability_layer(client):
     """ТЗ п. 3.1: интерфейс должен быть достаточен для интерпретации результатов."""
-    text = client.post("/run/base/cycle").text
+    text = client.get("/run/base/cycle").text
     assert "Почему система решила так" in text
 
 
 def test_the_origin_of_the_explanation_is_visible(client):
     """Читателю обязано быть видно, объяснение от модели или шаблонное."""
-    text = client.post("/run/base/cycle").text
+    text = client.get("/run/base/cycle").text
     assert "Чем получено" in text
     assert "Отпечаток фактов" in text
 
 
 def test_template_explanation_is_labelled_as_such(client):
     """Слой выключен в конфигурации тестов — значит, шаблон, и так и написано."""
-    text = client.post("/run/base/cycle").text
+    text = client.get("/run/base/cycle").text
     assert "слой выключен в конфигурации" in text
 
 
@@ -290,7 +291,7 @@ def test_a_rejected_model_answer_is_shown_not_hidden(project, monkeypatch):
         )
 
     monkeypatch.setattr("aios.web.app.explain_module.explain", rejected)
-    text = TestClient(create_app(project)).post("/run/base/cycle").text
+    text = TestClient(create_app(project)).get("/run/base/cycle").text
 
     assert "ответ модели отвергнут" in text
     assert "2500.0" in text
@@ -306,7 +307,7 @@ def test_the_explanation_never_breaks_the_page(project, monkeypatch):
         raise RuntimeError("слой сломался")
 
     monkeypatch.setattr("aios.web.app.explain_module.explain", broken)
-    response = TestClient(create_app(project)).post("/run/base/cycle")
+    response = TestClient(create_app(project)).get("/run/base/cycle")
 
     assert response.status_code == 200
     assert "ЧДД базового сценария" in response.text
@@ -413,3 +414,181 @@ def test_pages_pull_nothing_from_the_network():
             if marker in text:
                 offenders.append(f"{page.name}: {marker}")
     assert not offenders, "страницы тянут внешние ресурсы:\n" + "\n".join(offenders)
+
+
+# --- запуск МАС из интерфейса: режимы и сборка кейса -------------------------
+
+DECK_DATA = """\
+RUNSPEC
+METRIC
+
+GRID
+INCLUDE
+'Model_Z_grid.inc' /
+
+SUMMARY
+INCLUDE
+'Model_Z_summary.inc' /
+
+SCHEDULE
+INCLUDE
+'Model_Z_sch.inc' /
+
+END
+"""
+
+DECK_SCHEDULE = """\
+WELSPECS
+ 'good' 'GROUP' 23 17 1* 'OIL' /
+ 'bad' 'GROUP' 24 18 1* 'OIL' /
+/
+
+DATES
+ 01 NOV 2013 /
+/
+
+COMPDATMD
+ 'good' 1* 1326.0 1329.3 MD OPEN 2* 0.146 1* 2 1* 1 /
+ 'bad' 1* 1301.0 1305.0 MD OPEN 2* 0.146 1* 2 1* 1 /
+/
+
+WCONPROD
+ 'good' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+ 'bad' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+/
+"""
+
+
+@pytest.fixture
+def project_with_deck(project):
+    """Тот же проект, но с деком организаторов: без него кейс не собрать."""
+    deck = project / "vendor" / "Model_Z_OPM"
+    deck.mkdir(parents=True)
+    (deck / "Model_Z.data").write_text(DECK_DATA, encoding="utf-8")
+    (deck / "Model_Z_sch.inc").write_text(DECK_SCHEDULE, encoding="utf-8")
+    (deck / "Model_Z_summary.inc").write_text("", encoding="utf-8")
+    (deck / "Model_Z_grid.inc").write_text("-- сетка\n", encoding="utf-8")
+    return project
+
+
+def test_cycle_page_names_the_launch_parameters(client):
+    """Числа подписаны запуском: по странице видно, чем именно её посчитали."""
+    text = client.get("/run/base/cycle?model=decline&mode=stops&lookback=9").text
+
+    assert "только остановка убыточных" in text
+    assert "окно диагноза 9 мес." in text
+
+
+def test_stops_only_mode_skips_rate_tuning(client):
+    """Режим «только остановки» обязан выключать подбор режимов, а не подписывать его."""
+    full = client.get("/run/base/cycle?mode=full").text
+    stops = client.get("/run/base/cycle?mode=stops").text
+
+    assert "Подбор режимов" in full
+    assert "Подбор режимов" not in stops
+
+
+def test_the_address_repeats_the_launch(client):
+    """Ссылка на страницу цикла несёт все параметры: прогон повторяется по адресу."""
+    text = client.get("/run/base/cycle?model=decline&mode=stops&lookback=9").text
+
+    # ссылка пересчёта несёт все три параметра, а не одно имя прогона
+    assert "model=decline&amp;mode=full&amp;lookback=9" in text
+
+
+def test_unknown_launch_parameters_are_rejected(client):
+    """Молча подставить умолчание — значит показать не тот прогон, что просили."""
+    assert client.get("/run/base/cycle?mode=назад").status_code == 400
+    assert client.get("/run/base/cycle?model=gpt").status_code == 400
+    assert client.get("/run/base/cycle?lookback=0").status_code == 400
+    assert client.get("/run/base/cycle?lookback=600").status_code == 400
+
+
+def test_saving_the_cycle_builds_a_case(project_with_deck):
+    """МАС из интерфейса обязана давать артефакт, а не только картинку."""
+    client = TestClient(create_app(project_with_deck))
+
+    response = client.post("/run/base/cycle/save?model=decline&mode=full&lookback=6")
+
+    assert response.status_code == 200
+    case_dir = project_with_deck / "runs" / "base-mas-decline"
+    assert (case_dir / "wells_schedule.inc").is_file()
+    assert (case_dir / "RUN.DATA").is_file()
+    # история дека до начала управления сохраняется дословно — в ней вскрытия
+    assert "01 NOV 2013" in (case_dir / "wells_schedule.inc").read_text(encoding="utf-8")
+
+
+def test_the_saved_case_is_called_a_forecast(project_with_deck):
+    """Прирост собранного кейса — прогноз суррогата, пока нет полного расчёта."""
+    client = TestClient(create_app(project_with_deck))
+
+    text = client.post("/run/base/cycle/save").text
+
+    assert "прогноз суррогата" in text
+    assert "run_flow.sh" in text
+    assert "--confirm runs/base-mas-decline" in text
+
+
+def test_two_launch_modes_do_not_share_a_directory(project_with_deck):
+    """Разные режимы запуска — разные кейсы: иначе один тихо затирает другой."""
+    client = TestClient(create_app(project_with_deck))
+
+    client.post("/run/base/cycle/save?mode=full")
+    client.post("/run/base/cycle/save?mode=stops")
+
+    assert (project_with_deck / "runs" / "base-mas-decline").is_dir()
+    assert (project_with_deck / "runs" / "base-mas-decline-stops").is_dir()
+
+
+def test_an_existing_run_is_never_overwritten(project_with_deck):
+    """Прогон стоит часов расчёта: сборка кейса не смеет его затирать."""
+    client = TestClient(create_app(project_with_deck))
+    assert client.post("/run/base/cycle/save").status_code == 200
+
+    response = client.post("/run/base/cycle/save")
+
+    assert response.status_code == 409
+    assert "уже есть" in response.text
+
+
+def test_without_the_deck_the_case_is_refused_with_a_reason(client):
+    """Кейс собирается поверх дека организаторов; без него — отказ, а не пустышка."""
+    response = client.post("/run/base/cycle/save")
+
+    assert response.status_code == 409
+    assert "дек модели недоступен" in response.text
+
+
+def test_a_broken_schedule_never_reaches_the_disk(project_with_deck, monkeypatch):
+    """Расписание с нарушениями не должно доходить до файла, который мы отправляем."""
+    from dataclasses import replace
+
+    from aios import loop as loop_module
+
+    real = loop_module.run_cycle
+
+    def with_problems(*args, **kwargs):
+        return replace(real(*args, **kwargs), problems=("дебит 700 м3/сут выше предела",))
+
+    monkeypatch.setattr("aios.web.app.loop.run_cycle", with_problems)
+    response = TestClient(create_app(project_with_deck)).post("/run/base/cycle/save")
+
+    assert response.status_code == 409
+    assert "нарушает ограничения" in response.text
+    assert not (project_with_deck / "runs" / "base-mas-decline").exists()
+
+
+def test_the_cycle_page_offers_the_case_when_the_deck_is_there(project_with_deck):
+    """Кейс собирается с той же страницы, где показаны решения цикла."""
+    text = TestClient(create_app(project_with_deck)).get("/run/base/cycle").text
+
+    assert "Собрать кейс в runs/base-mas-decline" in text
+    assert "/run/base/cycle/save?model=decline&amp;mode=full" in text
+
+
+def test_without_the_deck_the_page_says_why_there_is_no_button(client):
+    """Кнопка сборки не предлагается там, где сборка заведомо не выйдет."""
+    text = client.get("/run/base/cycle").text
+
+    assert "Собрать кейс в runs/" not in text
+    assert "Дек модели недоступен" in text

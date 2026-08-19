@@ -31,6 +31,30 @@
     </div>
   </div>
 
+  <p class="muted" style="margin-top:12px">
+    Запуск: суррогат «{{ surrogate_name }}»,
+    {{ 'подбор режимов и остановка убыточных' if options.tune_rates
+       else 'только остановка убыточных, режимы не трогаем' }},
+    окно диагноза {{ options.lookback_months }} мес. Нормативы и лимиты объекта —
+    из <code>{{ settings.source.name }}</code>. Адрес этой страницы повторяет
+    запуск целиком.
+  </p>
+
+  <p class="muted" style="margin-top:8px">
+    Пересчитать:
+    {% if options.tune_rates %}
+      <a href="/run/{{ run.name }}/cycle?model={{ options.model }}&amp;mode=stops&amp;lookback={{ options.lookback_months }}">только остановка убыточных</a>
+    {% else %}
+      <a href="/run/{{ run.name }}/cycle?model={{ options.model }}&amp;mode=full&amp;lookback={{ options.lookback_months }}">с подбором режимов</a>
+    {% endif %}
+    {% if options.model == 'decline' and neural_available %}
+      · <a href="/run/{{ run.name }}/cycle?model=neural&amp;mode={{ options.mode }}&amp;lookback={{ options.lookback_months }}">обученным суррогатом</a>
+    {% elif options.model == 'neural' %}
+      · <a href="/run/{{ run.name }}/cycle?model=decline&amp;mode={{ options.mode }}&amp;lookback={{ options.lookback_months }}">на бейзлайне</a>
+    {% endif %}
+    · <a href="/run/{{ run.name }}">к прогону</a>
+  </p>
+
   {% if not result.confirmed %}
   <div class="warn" style="margin-top:12px">
     <p>
@@ -211,6 +235,37 @@
   </div>
 </section>
 {% endif %}
+
+<section>
+  <h2>Собрать кейс с этим расписанием</h2>
+  <p class="muted">
+    Решения цикла превращаются в <code>wells_schedule.inc</code> и кейс под полный
+    расчёт — тот же файл, что собирает <code>scripts/run_cycle.py --out</code>.
+    Прирост остаётся прогнозом суррогата, пока кейс не посчитан на ГГДМ: заявлять
+    можно только подтверждённое число.
+  </p>
+  {% if case_ready %}
+  <form method="post" action="/run/{{ run.name }}/cycle/save?{{ options.query }}">
+    <button type="submit">Собрать кейс в runs/{{ case_dir }}</button>
+  </form>
+  {% elif result.problems %}
+  <div class="warn">
+    <p>
+      Расписание нарушает ограничения — кейс не собирается. Брак не должен
+      доходить до файла, который мы отправляем организаторам.
+    </p>
+  </div>
+  {% else %}
+  <div class="warn">
+    <p>
+      Дек модели недоступен по пути <code>{{ settings.case.model_dir }}</code>, а
+      кейс собирается поверх него: история до
+      {{ settings.case.control_start }} и вскрытия пласта берутся из дека
+      организаторов, а не из нашего расписания.
+    </p>
+  </div>
+  {% endif %}
+</section>
 
 <section>
   <h2>Отчёт целиком</h2>

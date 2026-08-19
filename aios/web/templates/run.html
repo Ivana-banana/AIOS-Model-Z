@@ -141,12 +141,31 @@
     Состояние → диагноз → решения → прогноз → ЧДД. Прогноз считается суррогатной
     моделью и результатом не является, пока не подтверждён полным расчётом ГГДМ.
   </p>
-  <form method="post" action="/run/{{ run.name }}/cycle" style="display:flex; gap:10px; flex-wrap:wrap">
-    <button type="submit">Запустить на бейзлайне</button>
-    {% if neural_available %}
-    <button type="submit" formaction="/run/{{ run.name }}/cycle?model=neural">Запустить MLP</button>
-    {% endif %}
+  <form method="get" action="/run/{{ run.name }}/cycle"
+        style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end">
+    <label>Суррогат<br>
+      <select name="model">
+        <option value="decline">бейзлайн (спад по обводнённости)</option>
+        {% if neural_available %}<option value="neural">обученный суррогат</option>{% endif %}
+      </select>
+    </label>
+    <label>Что делает МАС<br>
+      <select name="mode">
+        <option value="full">подбор режимов и остановка убыточных</option>
+        <option value="stops">только остановка убыточных</option>
+      </select>
+    </label>
+    <label>Окно диагноза, мес.<br>
+      <input type="number" name="lookback" min="1" max="60"
+             value="{{ settings.policy.lookback_months }}" style="width:90px">
+    </label>
+    <button type="submit">Запустить МАС</button>
   </form>
+  <p class="muted" style="margin-top:10px">
+    Нормативы, лимиты объекта и границы дисконтирования отсюда не меняются —
+    они приходят из <code>{{ settings.source.name }}</code>, иначе число из
+    интерфейса нельзя было бы повторить командой.
+  </p>
 </section>
 
 {% endblock %}

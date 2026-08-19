@@ -34,6 +34,7 @@ from aios import explain as explain_module
 from aios.deck import ScheduleStep, parse_schedule
 from aios.margin import Norms, screen
 from aios.model import SurrogateLoadError, for_cycle
+from aios.run import build_case
 from aios.web.charts import Series, bar_chart, line_chart
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -95,6 +96,44 @@ class SurrogateStatus:
     sklearn_version: str | None = None
     pandas_version: str | None = None
     datasets: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class CycleOptions:
+    """Чем именно запускали цикл. Всё остальное берётся из `config.toml`.
+
+    Вынесены наружу ровно те три параметра, которые задают режим работы МАС, а
+    не экономику: нормативы, лимиты объекта и границы дисконтирования остаются в
+    конфигурации, иначе число из интерфейса нельзя было бы повторить командой.
+    """
+
+    model: str
+    """`decline` — тривиальный суррогат, `neural` — обученная модель."""
+
+    tune_rates: bool
+    """Подбор режимов. Выключенный оставляет только остановку убыточных."""
+
+    lookback_months: int
+    """Окно, по которому ставится диагноз скважине."""
+
+    @property
+    def mode(self) -> str:
+        return "full" if self.tune_rates else "stops"
+
+    @property
+    def query(self) -> str:
+        """Параметры в виде строки запроса: адрес страницы повторяет запуск."""
+        return f"model={self.model}&mode={self.mode}&lookback={self.lookback_months}"
+
+
+@dataclass(frozen=True)
+class CycleRun:
+    """Результат прохода цикла вместе с тем, что понадобится для сборки кейса."""
+
+    result: loop.CycleResult
+    surrogate_name: str
+    deck_wells: tuple[str, ...] | None
+    """Фонд из дека организаторов. `None` — дек недоступен, кейс не собрать."""
 
 
 def load_surrogate_status(path: Path) -> SurrogateStatus:
@@ -316,15 +355,124 @@ def create_app(root: Path | None = None) -> FastAPI:
             },
         )
 
-    @application.post("/run/{name}/cycle", response_class=HTMLResponse)
-    def cycle_page(request: Request, name: str, model: str = "decline") -> HTMLResponse:
+    @application.get("/run/{name}/cycle", response_class=HTMLResponse)
+    def cycle_page(request: Request, name: str, model: str = "decline",
+                   mode: str = "full", lookback: int | None = None) -> HTMLResponse:
+        """Прогнать цикл МАС и показать решения.
+
+        Запрос ничего не пишет на диск, поэтому он GET, а параметры запуска
+        живут в адресе: ссылка повторяет прогон целиком — вместе с режимом и
+        окном диагноза, а не только с именем прогона.
+        """
         run = _find(runs(), name)
         configuration = settings()
+        options = _cycle_options(model, mode, lookback, configuration)
+        cycle = run_cycle_on(run, configuration, options)
+
+        # слой интерпретируемости: модель излагает уже принятое решение по
+        # посчитанным фактам. Отказ слоя не должен ронять страницу — при любой
+        # проблеме возвращается шаблонное объяснение (ТЗ п. 3.1)
+        try:
+            explanation = explain_module.explain(
+                explain_module.evidence_from_cycle(cycle.result, cycle.surrogate_name),
+                configuration.explain,
+            )
+        except Exception:  # noqa: BLE001 — объяснение не должно уносить результат цикла
+            explanation = None
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="cycle.html",
+            context={
+                "run": run,
+                "result": cycle.result,
+                "settings": configuration,
+                "surrogate_name": cycle.surrogate_name,
+                "explanation": explanation,
+                "options": options,
+                "case_dir": _case_directory(run.name, options),
+                "case_ready": cycle.deck_wells is not None and not cycle.result.problems,
+                "neural_available": _neural_available(project_root),
+            },
+        )
+
+    @application.post("/run/{name}/cycle/save", response_class=HTMLResponse)
+    def save_cycle(request: Request, name: str, model: str = "decline",
+                   mode: str = "full", lookback: int | None = None) -> HTMLResponse:
+        """Собрать кейс с расписанием, которое предложил цикл.
+
+        Цикл считается заново теми же параметрами: он детерминирован, а держать
+        результат предыдущего запроса между двумя обращениями значило бы завести
+        в UI состояние, которого больше нигде в проекте нет.
+
+        ЧДД собранного кейса остаётся прогнозом суррогата, пока кейс не посчитан
+        на ГГДМ, — команда полного расчёта печатается на странице.
+        """
+        run = _find(runs(), name)
+        configuration = settings()
+        options = _cycle_options(model, mode, lookback, configuration)
+        cycle = run_cycle_on(run, configuration, options)
+
+        if cycle.deck_wells is None:
+            raise HTTPException(
+                409,
+                "дек модели недоступен: кейс собирается поверх дека организаторов, "
+                f"а по пути {configuration.case.model_dir} его нет",
+            )
+        if cycle.result.problems:
+            # то же правило, что в scripts/run_cycle.py: расписание с нарушениями
+            # до файла не доходит, иначе нарушение уедет в сдаваемый пакет
+            raise HTTPException(
+                409,
+                "расписание нарушает ограничения, кейс не собран: "
+                + "; ".join(str(problem) for problem in cycle.result.problems[:3]),
+            )
+
+        target = project_root / "runs" / _case_directory(run.name, options)
+        if target.exists():
+            raise HTTPException(
+                409,
+                f"каталог runs/{target.name} уже есть. Прогон не перезаписывается: "
+                "удалите или переименуйте его, если нужно пересобрать",
+            )
+        try:
+            case = build_case(
+                target,
+                configuration.case.model_dir,
+                steps=list(cycle.result.steps),
+                control_start=configuration.case.control_start,
+                wells=cycle.deck_wells,
+                case_name=configuration.case.case_name,
+            )
+        except (ValueError, OSError) as error:
+            raise HTTPException(409, f"кейс собрать не удалось: {error}") from error
+
+        data_file = case.data_file.resolve()
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="saved.html",
+            context={
+                "run": run,
+                "result": cycle.result,
+                "settings": configuration,
+                "surrogate_name": cycle.surrogate_name,
+                "options": options,
+                "case": case,
+                "case_dir": target.name,
+                "data_path": (
+                    data_file.relative_to(project_root)
+                    if data_file.is_relative_to(project_root) else data_file
+                ).as_posix(),
+                "processes": configuration.run.processes,
+            },
+        )
+
+    def run_cycle_on(run: Run, configuration, options: CycleOptions) -> CycleRun:
+        """Пройти цикл МАС на прогоне — общее для показа и для сборки кейса."""
         rows = load_rows(run, configuration.fluids, deck_fluids().by_well)
         if not rows:
-            raise HTTPException(404, f"В прогоне «{name}» нет результатов расчёта")
+            raise HTTPException(404, f"В прогоне «{run.name}» нет результатов расчёта")
         if not run.schedule.is_file():
-            raise HTTPException(404, f"В прогоне «{name}» нет wells_schedule.inc")
+            raise HTTPException(404, f"В прогоне «{run.name}» нет wells_schedule.inc")
 
         assumptions, _ = economics.load_norms(configuration.economics.norms_file)
         base_steps = _steps_from(run.schedule, configuration)
@@ -333,18 +481,23 @@ def create_app(root: Path | None = None) -> FastAPI:
         try:
             reference_schedule = deckfiles.layout(configuration.case.model_dir).one("SCHEDULE")
         except (ValueError, OSError):
-            reference_schedule = run.schedule
-        reference_steps = _steps_from(
-            reference_schedule if reference_schedule.is_file() else run.schedule,
-            configuration,
-        )
-        if model not in {"decline", "neural"}:
-            raise HTTPException(400, "неизвестный тип суррогата")
+            reference_schedule = None
+
+        deck_wells: tuple[str, ...] | None = None
+        if reference_schedule is not None and reference_schedule.is_file():
+            parsed = parse_schedule(reference_schedule)
+            reference_steps = [
+                step for step in parsed.steps if step.date >= configuration.case.control_start
+            ]
+            deck_wells = parsed.wells
+        else:
+            reference_steps = _steps_from(run.schedule, configuration)
+
         try:
             selected = for_cycle(
                 neural_path=(
                     project_root / "artifacts" / "surrogate.joblib"
-                    if model == "neural" else None
+                    if options.model == "neural" else None
                 ),
                 history=rows,
                 reference_steps=reference_steps,
@@ -359,32 +512,16 @@ def create_app(root: Path | None = None) -> FastAPI:
             Norms.from_assumptions(assumptions),
             control_start=configuration.case.control_start,
             start_date=configuration.economics.start_date,
-            lookback_months=configuration.policy.lookback_months,
+            lookback_months=options.lookback_months,
+            # фонд берётся из дека: расписание со скважиной, которой в модели
+            # нет, симулятор не примет. Дека нет — сверять не с чем
+            known_wells=frozenset(deck_wells) if deck_wells is not None else None,
+            tune_rates=options.tune_rates,
             joint_rate_search=selected.joint_rate_search,
             limits=configuration.limits,
             fluids=configuration.fluids,
         )
-        # слой интерпретируемости: модель излагает уже принятое решение по
-        # посчитанным фактам. Отказ слоя не должен ронять страницу — при любой
-        # проблеме возвращается шаблонное объяснение (ТЗ п. 3.1)
-        try:
-            explanation = explain_module.explain(
-                explain_module.evidence_from_cycle(result, selected.name),
-                configuration.explain,
-            )
-        except Exception:  # noqa: BLE001 — объяснение не должно уносить результат цикла
-            explanation = None
-        return TEMPLATES.TemplateResponse(
-            request=request,
-            name="cycle.html",
-            context={
-                "run": run,
-                "result": result,
-                "settings": configuration,
-                "surrogate_name": selected.name,
-                "explanation": explanation,
-            },
-        )
+        return CycleRun(result=result, surrogate_name=selected.name, deck_wells=deck_wells)
 
     return application
 
@@ -432,6 +569,36 @@ def _find(items: list[Run], name: str) -> Run:
         if item.name == name:
             return item
     raise HTTPException(404, f"Прогон «{name}» не найден")
+
+
+def _cycle_options(model: str, mode: str, lookback: int | None, configuration) -> CycleOptions:
+    """Разобрать параметры запуска цикла, отвергнув то, чего мы не умеем.
+
+    Молча подставлять умолчание вместо непонятого значения нельзя: страница
+    показала бы прогон не тем, чем его просили запустить, и разница осталась бы
+    только в адресе.
+    """
+    if model not in {"decline", "neural"}:
+        raise HTTPException(400, "неизвестный тип суррогата")
+    if mode not in {"full", "stops"}:
+        raise HTTPException(400, "неизвестный режим цикла: бывает full или stops")
+    months = configuration.policy.lookback_months if lookback is None else lookback
+    if not 1 <= months <= 60:
+        raise HTTPException(400, "окно диагноза задаётся в месяцах, от 1 до 60")
+    return CycleOptions(model=model, tune_rates=mode == "full", lookback_months=months)
+
+
+def _case_directory(run_name: str, options: CycleOptions) -> str:
+    """Имя каталога под кейс цикла — производная от прогона и режима запуска.
+
+    Имя собирается сервером, а не приходит из формы: путь на диске из
+    пользовательского ввода — это запись куда угодно. Режим в имени нужен,
+    чтобы два запуска на одном прогоне не претендовали на один каталог.
+    """
+    parts = [run_name, "mas", options.model]
+    if not options.tune_rates:
+        parts.append("stops")
+    return "-".join(parts)
 
 
 def _neural_available(project_root: Path) -> bool:

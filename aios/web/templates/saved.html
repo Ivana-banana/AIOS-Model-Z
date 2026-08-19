@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Кейс {{ case_dir }} · AIOS{% endblock %}
+{% block content %}
+
+<section>
+  <h2>Кейс «{{ case_dir }}» собран</h2>
+  <div class="grid">
+    <div class="tile">
+      <div class="label">Расписание</div>
+      <div class="value" style="font-size:14px"><code>runs/{{ case_dir }}/wells_schedule.inc</code></div>
+    </div>
+    <div class="tile">
+      <div class="label">Шагов в расписании</div>
+      <div class="value">{{ result.steps|length }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Прогноз прироста, млн руб.</div>
+      <div class="value {{ 'good' if result.gain_m > 0 else 'bad' }}">
+        {{ '%+.1f'|format(result.gain_m) }}
+      </div>
+    </div>
+    <div class="tile">
+      <div class="label">Модель прогноза</div>
+      <div class="value" style="font-size:16px">{{ surrogate_name }}</div>
+    </div>
+  </div>
+
+  <p class="muted" style="margin-top:12px">
+    Кейс собран поверх дека организаторов: история до
+    {{ settings.case.control_start }} взята из него дословно, дальше идут шаги,
+    которые предложил цикл. Запуск: {{ surrogate_name }},
+    {{ 'подбор режимов и остановка убыточных' if options.tune_rates
+       else 'только остановка убыточных' }},
+    окно диагноза {{ options.lookback_months }} мес.
+  </p>
+
+  <div class="warn" style="margin-top:12px">
+    <p>
+      Прирост {{ '%+.1f'|format(result.gain_m) }} млн руб. — прогноз суррогата, а
+      не результат. Заявлять организаторам можно только число, посчитанное
+      эталонным расчётчиком из выгрузки полного расчёта этого самого кейса.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2>Что дальше</h2>
+  <p class="muted">
+    Полный расчёт на ГГДМ, затем подтверждение прироста — без этого шага
+    страница цикла показывает прогноз, а не результат.
+  </p>
+  <pre>docker run --rm -v "$PWD:$PWD" -w "$PWD" aios \
+    scripts/run_flow.sh {{ data_path }} {{ processes }} --parsing-strictness=low
+python scripts/run_cycle.py --confirm runs/{{ case_dir }} --from runs/{{ run.name }}</pre>
+</section>
+
+{% if case.unsupported_controls or case.wells_without_completions %}
+<section>
+  <h2>На что смотреть в собранном кейсе</h2>
+  <div class="warn">
+    {% if case.unsupported_controls %}
+    <p>
+      Управляющие слова, которых наш разбор не понимает:
+      {{ case.unsupported_controls|join(', ') }}. В дек они попадут дословно и
+      симулятор их применит, а маржа и подбор режимов их не видят — оценка
+      приблизительна ровно на их величину.
+    </p>
+    {% endif %}
+    {% if case.wells_without_completions %}
+    <p>
+      Скважины без вскрытий ({{ case.wells_without_completions|length }}):
+      {{ case.wells_without_completions[:10]|join(', ') }}. Симулятор оставит их
+      закрытыми и посчитает дальше — молча, нулём на весь горизонт.
+    </p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+<section>
+  <h2>Отчёт цикла целиком</h2>
+  <pre>{{ result.summary() }}</pre>
+  <p style="margin-top:14px">
+    <a href="/run/{{ run.name }}/cycle?{{ options.query }}">← к решениям цикла</a>
+    · <a href="/">к списку прогонов</a>
+  </p>
+</section>
+
+{% endblock %}
