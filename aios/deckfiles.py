@@ -31,6 +31,14 @@ _INCLUDE_RE = re.compile(r"^\s*INCLUDE\s*$", re.IGNORECASE)
 _QUOTED_RE = re.compile(r"'([^']+)'")
 _DIMENS_RE = re.compile(r"^\s*DIMENS\s*$", re.IGNORECASE)
 
+#: Системы единиц Eclipse. Всё в проекте построено на метрической: дебиты в
+#: м³/сут, давления в атм, плотности в кг/м³, нормативы в руб/т. Дек в
+#: промысловых единицах дал бы баррели, psi и фунты — и ни одна наша проверка
+#: этого бы не заметила, потому что числа остались бы правдоподобными.
+UNIT_KEYWORDS = ("METRIC", "FIELD", "LAB", "PVT-M")
+_UNITS_RE = re.compile(rf"^\s*({'|'.join(re.escape(u) for u in UNIT_KEYWORDS)})\s*$",
+                       re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class DeckLayout:
@@ -46,6 +54,15 @@ class DeckLayout:
     Может быть `None`: `DIMENS` иногда лежит во включаемом файле RUNSPEC. Размеры
     нужны только тем, кто адресует ячейку (`aios.pvt`), — там отсутствие и
     становится ошибкой, а сборке кейса они не нужны вовсе.
+    """
+
+    units: str | None = None
+    """Система единиц, объявленная в корневом `.DATA`, или `None`.
+
+    `None` не означает «метрическая»: объявление может лежать во включаемом
+    RUNSPEC, и тогда мы просто не знаем. Отказывать в этом случае нельзя, а вот
+    на явно объявленной непеметрической — нужно: весь проект считает в м³, атм и
+    кг/м³, и подмена единиц не сломала бы ничего заметно, только все числа.
     """
 
     def one(self, section: str) -> Path:
@@ -105,6 +122,7 @@ def parse_layout(data_file: str | Path) -> DeckLayout:
 
     includes: dict[str, list[Path]] = {}
     dimensions: tuple[int, int, int] | None = None
+    units: str | None = None
     section: str | None = None
     expect_include = False
     expect_dimens = False
@@ -129,6 +147,11 @@ def parse_layout(data_file: str | Path) -> DeckLayout:
             expect_dimens = False
             continue
 
+        units_line = _UNITS_RE.match(line)
+        if units_line:
+            units = units_line.group(1).upper()
+            continue
+
         matched = _SECTION_RE.match(line)
         if matched:
             section = matched.group(1).upper()
@@ -143,6 +166,7 @@ def parse_layout(data_file: str | Path) -> DeckLayout:
     return DeckLayout(
         data_file=path,
         includes={name: tuple(paths) for name, paths in includes.items()},
+        units=units,
         dimensions=dimensions,
     )
 
