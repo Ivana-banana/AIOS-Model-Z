@@ -41,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
         default="producers",
         help="какие режимы варьировать (по умолчанию только добывающие)",
     )
+    parser.add_argument("--periods", type=int, default=1,
+                        help="на сколько периодов делить горизонт: режим меняется на их "
+                             "границах, и один прогон даёт столько точек управления, "
+                             "сколько в нём периодов (по умолчанию 1)")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     parser.add_argument("--dry-run", action="store_true",
                         help="только покрытие, без сборки кейсов на диск")
@@ -67,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         bounds=(arguments.low, arguments.high),
         levels=levels,
         control_kind=arguments.control_kind,
+        periods=arguments.periods,
     )
     report = doe.coverage(scenarios)
 
@@ -101,6 +106,17 @@ def main(argv: list[str] | None = None) -> int:
             print("\nвнимание: по какой-то скважине выборка покрыла меньше половины диапазона — "
                   "суррогат будет экстраполировать именно там")
 
+    # Периоды — это и есть число точек управления с одного прогона, поэтому в
+    # dry-run они печатаются поимённо: провал покрытия в отдельном периоде общий
+    # размах по пакету не показывает
+    if report.get("periods"):
+        print(f"периодов:        {len(report['periods'])} "
+              f"(столько точек управления даёт один прогон)")
+        for entry in report["periods"]:
+            print(f"  с {entry['from']}: размах {entry['min_span']:.3f} (мин) / "
+                  f"{entry['mean_span']:.3f} (средний), "
+                  f"остановок {entry['min_shut_share']:.3f}—{entry['max_shut_share']:.3f}")
+
     if arguments.dry_run:
         return 0
 
@@ -123,11 +139,23 @@ def main(argv: list[str] | None = None) -> int:
                 "samples": arguments.samples,
                 "bounds": [arguments.low, arguments.high],
                 "control_kind": arguments.control_kind,
+                "periods": arguments.periods,
                 "control_start": config.case.control_start.isoformat(),
                 "coverage": report,
                 "scenarios": [
                     {
                         "name": s.name,
+                        # Режим по периодам: сборщик датасета берёт множители
+                        # последнего периода с датой ≤ месяца строки. Старые поля
+                        # рядом — по ним собираются уже посчитанные пакеты
+                        "periods": [
+                            {
+                                "from": period.start.isoformat(),
+                                "multipliers": period.multipliers,
+                                "injector_multipliers": period.injector_multipliers,
+                            }
+                            for period in s.periods
+                        ],
                         "multipliers": s.multipliers,
                         "injector_multipliers": s.injector_multipliers,
                         "shut_wells": list(s.shut_wells),

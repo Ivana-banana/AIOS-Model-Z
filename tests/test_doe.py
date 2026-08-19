@@ -361,3 +361,245 @@ def test_conversions_need_a_well_that_actually_produces():
     ]
     with pytest.raises(ValueError, match="добывающих скважин"):
         doe.design(steps, samples=2, seed=SEED, control_kind="conversions")
+
+
+# ── режим по периодам внутри сценария ────────────────────────────────────────
+#
+# Измерено 19.08 на собранном датасете: множитель постоянен по месяцам, поэтому
+# пакет из 12 прогонов даёт суррогату 12 независимых точек управления, а не
+# 457 320 строк. Периоды — способ получить N точек с одного прогона: режим
+# меняется внутри сценария, и один расчёт даёт столько точек, сколько в нём
+# периодов. Схема манифеста закреплена со стороны сборщика (`tests/test_dataset.py`),
+# здесь проверяется, что генератор её соблюдает.
+
+def rates_of(steps, well: str) -> list[float | None]:
+    return [
+        control.liquid_rate
+        for step in steps
+        for control in step.producers
+        if control.well == well
+    ]
+
+
+def test_periods_split_the_horizon_and_start_at_the_first_step():
+    """Первый период совпадает с началом управления — это контракт манифеста."""
+    scenario = doe.design(plan(["1", "2"], months=12), samples=4, seed=SEED,
+                          bounds=(0.5, 1.5), periods=3)[0]
+
+    starts = [period.start for period in scenario.periods]
+
+    assert starts == [date(2007, 1, 1), date(2007, 5, 1), date(2007, 9, 1)]
+    assert starts == sorted(starts)
+
+
+def test_periods_actually_change_the_regime_inside_one_scenario():
+    """Иначе периоды — запись в манифесте, за которой ничего не стоит."""
+    scenario = doe.design(plan(["1", "2"], months=12), samples=4, seed=SEED,
+                          bounds=(0.5, 1.5), periods=3)[0]
+
+    rates = rates_of(scenario.steps, "1")
+
+    assert len(rates) == 12
+    assert len(set(rates[:4])) == 1, "внутри периода режим постоянен"
+    assert len(set(rates[4:8])) == 1
+    assert len({rates[0], rates[4], rates[8]}) > 1, "на границе периода режим тот же"
+
+
+def test_every_period_has_its_own_multipliers_for_every_well():
+    scenario = doe.design(plan(["1", "2"], months=12), samples=4, seed=SEED,
+                          bounds=(0.5, 1.5), periods=4)[0]
+
+    assert len(scenario.periods) == 4
+    for period in scenario.periods:
+        assert set(period.multipliers) == {"1", "2"}
+
+
+def test_one_period_covers_the_whole_horizon():
+    """Умолчание не меняется: пакеты без периодов собираются как были."""
+    scenario = doe.design(plan(["1", "2"]), samples=4, seed=SEED)[0]
+
+    assert len(scenario.periods) == 1
+    assert scenario.periods[0].start == date(2007, 1, 1)
+    assert scenario.periods[0].multipliers == scenario.multipliers
+
+
+def test_periods_stay_inside_the_schedule_validator():
+    for scenario in doe.design(plan(["1", "2"], months=12, rate=450.0), samples=6,
+                               seed=SEED, bounds=(0.5, 1.1), periods=3):
+        assert validate(list(scenario.steps)) == []
+        assert len(scenario.steps) == 12, "куски периодов обязаны сойтись в целое"
+
+
+def test_more_periods_than_steps_is_a_refusal():
+    with pytest.raises(ValueError, match="периодов"):
+        doe.design(plan(["1"], months=3), samples=2, seed=SEED, periods=5)
+
+
+def test_conversions_do_not_take_periods():
+    """Перевод под закачку — разовое событие, дробить его по периодам нечем."""
+    with pytest.raises(ValueError, match="периодов"):
+        doe.design(plan(["1", "2"], months=12), samples=2, seed=SEED,
+                   control_kind="conversions", periods=3)
+
+
+def test_coverage_reports_every_period_separately():
+    """Без разбивки по периодам dry-run не показывает, где выборка дырявая."""
+    scenarios = doe.design(plan(["1", "2"], months=12), samples=20, seed=SEED,
+                           bounds=(0.0, 1.25), periods=3)
+    report = doe.coverage(scenarios)
+
+    assert len(report["periods"]) == 3
+    assert [entry["from"] for entry in report["periods"]] == [
+        "2007-01-01", "2007-05-01", "2007-09-01",
+    ]
+    for entry in report["periods"]:
+        assert entry["min_span"] > 0.9 * (doe.DEFAULT_RANGE[1] - doe.DEFAULT_RANGE[0])
+
+
+def test_coverage_without_periods_says_nothing_about_them():
+    report = doe.coverage(doe.design(plan(["1", "2"]), samples=6, seed=SEED))
+    assert "periods" not in report
+
+
+# ── манифест пакета: схему читает сборщик датасета, а не человек ─────────────
+
+DECK_DATA = """RUNSPEC
+
+DIMENS
+ 2 2 2 /
+
+PROPS
+INCLUDE
+'p.inc' /
+
+REGIONS
+INCLUDE
+'r.inc' /
+
+SUMMARY
+INCLUDE
+'s.inc' /
+
+SCHEDULE
+INCLUDE
+'h.inc' /
+
+END
+"""
+
+DECK_SCHEDULE = """WELSPECS
+ '1' 'G' 1 1 1* 'OIL' /
+ '2' 'G' 2 2 1* 'OIL' /
+/
+""" + "".join(
+    f"""
+DATES
+ 01 {month} 2007 /
+/
+
+WCONPROD
+ '1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+ '2' 'OPEN' 'LRAT' 1* 1* 1* 20.0 1* 50 1* 1* /
+/
+"""
+    for month in ("JAN", "FEB", "MAR", "APR", "MAY", "JUN")
+)
+
+
+TINY_CONFIG = """[case]
+model_dir = "deck"
+run_dir = "runs"
+case_name = "RUN"
+control_start = 2007-01-01
+
+[economics]
+start_date = 2007-01-01
+norms_file = "norms.xlsx"
+
+[fluids]
+oil_density = 913.0765883224138
+water_density = 1172.0
+
+[limits]
+max_field_liquid_m3_per_day = 0
+max_field_injection_m3_per_day = 0
+enforce_water_balance = true
+water_tolerance = 1.0
+
+[explain]
+enabled = false
+model = "claude-opus-5"
+max_tokens = 1024
+effort = "low"
+cache_dir = "artifacts"
+
+[policy]
+lookback_months = 6
+
+[run]
+seed = 20260817
+processes = 1
+"""
+
+
+def tiny_project(tmp_path):
+    """Крошечный дек и конфиг под него — шесть месячных шагов и две скважины.
+
+    Модель Z в репозиторий не кладётся (`GIT.md`), а проверяющий запускает тесты
+    на чистом клоне: тест, берущий дек из корневого `config.toml`, у него упадёт.
+    """
+    deck = tmp_path / "deck"
+    deck.mkdir()
+    (deck / "FIELD.DATA").write_text(DECK_DATA, encoding="utf-8")
+    (deck / "p.inc").write_text("-- пусто", encoding="utf-8")
+    (deck / "r.inc").write_text("-- пусто", encoding="utf-8")
+    (deck / "h.inc").write_text(DECK_SCHEDULE, encoding="utf-8")
+
+    config = tmp_path / "config.toml"
+    config.write_text(TINY_CONFIG, encoding="utf-8")
+    return config
+
+
+def test_the_manifest_carries_the_periods_the_dataset_builder_expects(tmp_path):
+    """Схема стыка: `from` ISO-датой, периоды по возрастанию, первый — control_start.
+
+    Читает её `scripts/build_dataset.py` (`_periods`, `_at`), и она уже закреплена
+    с той стороны. Прошлый стык — перевод под закачку — сломался ровно потому, что
+    контракт проверялся только на одной стороне.
+    """
+    import json
+
+    from scripts import build_doe
+
+    root = tmp_path / "pack"
+    status = build_doe.main([
+        "--samples", "3", "--periods", "3", "--run-root", str(root),
+        "--config", str(tiny_project(tmp_path)),
+    ])
+
+    assert status == 0
+    manifest = json.loads((root / "doe.json").read_text(encoding="utf-8"))
+    assert manifest["periods"] == 3
+    for scenario in manifest["scenarios"]:
+        periods = scenario["periods"]
+        assert [entry["from"] for entry in periods] == ["2007-01-01", "2007-03-01", "2007-05-01"]
+        for entry in periods:
+            assert set(entry["multipliers"]) == {"1", "2"}
+            assert "injector_multipliers" in entry
+        # старые поля остаются: уже посчитанные пакеты собираются по-прежнему
+        assert scenario["multipliers"] == periods[0]["multipliers"]
+
+
+def test_dry_run_shows_the_coverage_of_every_period(tmp_path, capsys):
+    from scripts import build_doe
+
+    status = build_doe.main([
+        "--samples", "6", "--periods", "3", "--dry-run",
+        "--config", str(tiny_project(tmp_path)),
+    ])
+    output = capsys.readouterr().out
+
+    assert status == 0
+    assert "периодов:" in output
+    for start in ("2007-01-01", "2007-03-01", "2007-05-01"):
+        assert start in output

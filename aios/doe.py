@@ -16,16 +16,18 @@
 получилось 96 %» через неделю невоспроизводимо.
 
 Роль управления выбирается явно: добывающие, нагнетательные или оба типа.
-Режим каждой скважины остаётся постоянным на всём
-горизонте. Это сознательное упрощение первого датасета — оно даёт чистую связь
-«уровень отбора → отклик», на которой суррогат учится базовой физике. Временны́е
-профили (циклическое заводнение, переводы под закачку) — следующий датасет, и
-делать его надо, когда первый уже показал, что контур работает.
+
+Горизонт делится на **периоды**, и внутри сценария режим меняется на их границах.
+Без этого один прогон даёт суррогату ровно одну точку управления, сколько бы
+месяцев в нём ни было: множитель постоянен, и 457 320 строк датасета несут
+информацию двенадцати точек (измерено 19.08, `docs/experiments.md`). Пять
+периодов вместо одного — пятикратный рост выборки при том же счёте, а расчёт
+остаётся один. По умолчанию период один: так собраны уже посчитанные пакеты.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -59,14 +61,26 @@ CONVERSION_SHARE = (0.05, 0.30)
 
 
 @dataclass(frozen=True)
+class ControlPeriod:
+    """Режим, действующий с `start` и до начала следующего периода.
+
+    `start` — первый месяц периода включительно; так же его читает сборщик
+    датасета (`scripts/build_dataset.py`, поле `from` манифеста).
+    """
+
+    start: date
+    multipliers: dict[str, float]
+    injector_multipliers: dict[str, float]
+
+
+@dataclass(frozen=True)
 class Scenario:
     """Один сценарий управления: что покрутили и во что это собралось."""
 
     name: str
     seed: int
-    multipliers: dict[str, float]
+    periods: tuple[ControlPeriod, ...]
     steps: tuple[ScheduleStep, ...]
-    injector_multipliers: dict[str, float] = field(default_factory=dict)
 
     converted_wells: tuple[str, ...] = ()
     """Скважины, переведённые из добычи под закачку в этом сценарии.
@@ -76,7 +90,24 @@ class Scenario:
     моделью: колонка `inj:<скважина>` появляется только у той, у кого множитель
     закачки непустой, — без него предложение перевести скважину под закачку не
     доходит до входа вообще.
+
+    Список собирается по факту: в нём та скважина, у которой расписание
+    действительно изменилось, а не та, которую генератор собирался перевести.
     """
+
+    @property
+    def multipliers(self) -> dict[str, float]:
+        """Множители первого периода — режим на начало управления.
+
+        Оставлено ради манифеста: старые поля `multipliers` /
+        `injector_multipliers` читаются сборщиком датасета до сих пор, и пакеты,
+        посчитанные без периодов, обязаны собираться по-прежнему.
+        """
+        return self.periods[0].multipliers
+
+    @property
+    def injector_multipliers(self) -> dict[str, float]:
+        return self.periods[0].injector_multipliers
 
     @property
     def shut_wells(self) -> tuple[str, ...]:
@@ -89,13 +120,18 @@ class Scenario:
         )
 
     def summary(self) -> str:
-        values = [*self.multipliers.values(), *self.injector_multipliers.values()]
+        values = [
+            value
+            for period in self.periods
+            for value in (*period.multipliers.values(), *period.injector_multipliers.values())
+        ]
         wells = set(self.multipliers) | set(self.injector_multipliers)
         average = sum(values) / len(values) if values else 0.0
+        periods = f", периодов {len(self.periods)}" if len(self.periods) > 1 else ""
         return (
             f"{self.name}: скважин {len(wells)}, "
             f"средний множитель {average:.2f}, остановлено {len(self.shut_wells)}, "
-            f"нагнетателей {len(self.injector_multipliers)}"
+            f"нагнетателей {len(self.injector_multipliers)}{periods}"
         )
 
 
@@ -126,7 +162,8 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
            bounds: tuple[float, float] = DEFAULT_RANGE,
            snap_to_zero: float = 0.05,
            levels: tuple[float, float] | None = None,
-           control_kind: str = "producers") -> list[Scenario]:
+           control_kind: str = "producers",
+           periods: int = 1) -> list[Scenario]:
     """Собрать `samples` сценариев управления вокруг базового.
 
     `snap_to_zero` — множители ниже этого порога округляются до нуля: дебит в
@@ -149,6 +186,13 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     (`bounds=(0.0, 0.3)`) и слить её с основной. Разбираться с этим надо до
     прогонов, а не после: сотня расчётов по несколько часов — слишком дорогая
     цена за дыру в датасете.
+
+    `periods` — на сколько кусков делится горизонт. Внутри куска режим постоянен,
+    на границе меняется, и каждый кусок разыгрывается своей частью гиперкуба
+    вместе со своим уровнем отбора. Отсюда весь смысл: один прогон даёт суррогату
+    `periods` точек управления вместо одной. Куски равны по числу месячных шагов,
+    а не по календарю: шаги в деке месячные, разница несущественна, зато точки
+    распределены по выборке ровно.
     """
     producer_wells = sorted(
         {control.well for step in base_steps for control in step.producers}, key=_well_key
@@ -159,8 +203,15 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     if control_kind not in {"producers", "injectors", "all", "conversions"}:
         raise ValueError(f"неизвестный тип управления: {control_kind}")
     if control_kind == "conversions":
+        if periods != 1:
+            raise ValueError(
+                "перевод под закачку — разовое событие, делить его на периодов "
+                f"больше одного нечем (запрошено {periods})"
+            )
         return _design_conversions(base_steps, producer_wells,
                                    samples=samples, seed=seed, bounds=bounds)
+
+    starts = _period_starts(base_steps, periods)
 
     coordinates = []
     if control_kind in {"producers", "all"}:
@@ -184,31 +235,38 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # каждую скважину, среднее по 70+ осям садится в середину диапазона, и все
     # сценарии оказываются на одном уровне отбора. Разнообразие получается внутри
     # сценария, но не между ними — а суррогату нужно именно второе.
-    points = latin_hypercube(samples, len(coordinates) + 1, seed)
+    #
+    # Своя такая пачка осей на каждый период: иначе режим на границе не изменится,
+    # и периоды станут записью в манифесте, за которой ничего не стоит.
+    width = len(coordinates) + 1
+    points = latin_hypercube(samples, width * periods, seed)
     scenarios: list[Scenario] = []
 
     for index, point in enumerate(points):
-        level = 1.0
-        if levels is not None:
-            level_low, level_high = levels
-            level = level_low + point[-1] * (level_high - level_low)
+        control: list[ControlPeriod] = []
+        for number, start in enumerate(starts):
+            axes = point[number * width:(number + 1) * width]
+            level = 1.0
+            if levels is not None:
+                level_low, level_high = levels
+                level = level_low + axes[-1] * (level_high - level_low)
 
-        multipliers: dict[str, float] = {}
-        injector_multipliers: dict[str, float] = {}
-        for (kind, well), value in zip(coordinates, point[:-1], strict=True):
-            multiplier = (low + value * (high - low)) * level
-            target = multipliers if kind == "production" else injector_multipliers
-            target[well] = 0.0 if multiplier < snap_to_zero else round(multiplier, 4)
+            multipliers: dict[str, float] = {}
+            injector_multipliers: dict[str, float] = {}
+            for (kind, well), value in zip(coordinates, axes[:-1], strict=True):
+                multiplier = (low + value * (high - low)) * level
+                target = multipliers if kind == "production" else injector_multipliers
+                target[well] = 0.0 if multiplier < snap_to_zero else round(multiplier, 4)
+            control.append(ControlPeriod(start, multipliers, injector_multipliers))
 
-        steps = _apply(base_steps, multipliers, injector_multipliers)
+        steps = _apply_periods(base_steps, control)
         assert_valid(steps)
         scenarios.append(
             Scenario(
                 name=f"doe-{index:03d}",
                 seed=seed,
-                multipliers=multipliers,
+                periods=tuple(control),
                 steps=tuple(steps),
-                injector_multipliers=injector_multipliers,
             )
         )
     return scenarios
@@ -278,9 +336,8 @@ def _design_conversions(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...
             Scenario(
                 name=f"doe-{index:03d}",
                 seed=seed,
-                multipliers=multipliers,
+                periods=(ControlPeriod(steps[0].date, multipliers, injector_multipliers),),
                 steps=tuple(steps),
-                injector_multipliers=injector_multipliers,
                 converted_wells=converted,
             )
         )
@@ -317,26 +374,84 @@ def coverage(scenarios: list[Scenario]) -> dict[str, Any]:
     if not scenarios:
         return {"scenarios": 0}
 
-    per_well: dict[str, list[float]] = {}
+    pooled: dict[str, list[float]] = {}
+    by_period: list[dict[str, list[float]]] = [{} for _ in scenarios[0].periods]
     for scenario in scenarios:
-        for well, multiplier in scenario.multipliers.items():
-            per_well.setdefault(f"prod:{well}", []).append(multiplier)
-        for well, multiplier in scenario.injector_multipliers.items():
-            per_well.setdefault(f"inj:{well}", []).append(multiplier)
+        for number, period in enumerate(scenario.periods):
+            for well, multiplier in period.multipliers.items():
+                pooled.setdefault(f"prod:{well}", []).append(multiplier)
+                by_period[number].setdefault(f"prod:{well}", []).append(multiplier)
+            for well, multiplier in period.injector_multipliers.items():
+                pooled.setdefault(f"inj:{well}", []).append(multiplier)
+                by_period[number].setdefault(f"inj:{well}", []).append(multiplier)
 
+    report = {
+        "scenarios": len(scenarios),
+        "converted_total": sum(len(s.converted_wells) for s in scenarios),
+        **_spans(pooled),
+    }
+    # Общий размах по пакету скрывает провал в отдельном периоде: сценариев в
+    # каждом столько же, сколько во всём пакете, а точек по скважине в нём — свои
+    if len(by_period) > 1:
+        report["periods"] = [
+            {"from": scenarios[0].periods[number].start.isoformat(), **_spans(values)}
+            for number, values in enumerate(by_period)
+        ]
+    return report
+
+
+def _spans(per_well: dict[str, list[float]]) -> dict[str, Any]:
+    """Размах и доля остановок по каждой скважине — свёрнутые в минимум и среднее."""
     spans = [max(values) - min(values) for values in per_well.values()]
     shut_share = [
         sum(1 for value in values if value == 0.0) / len(values) for values in per_well.values()
     ]
     return {
-        "scenarios": len(scenarios),
         "wells": len(per_well),
-        "converted_total": sum(len(s.converted_wells) for s in scenarios),
         "min_span": min(spans),
         "mean_span": sum(spans) / len(spans),
         "min_shut_share": min(shut_share),
         "max_shut_share": max(shut_share),
     }
+
+
+def _period_starts(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   periods: int) -> list[date]:
+    """Даты начала периодов: горизонт делится на равные по числу шагов куски.
+
+    Первый период начинается на первом же шаге, то есть на `control_start`, —
+    этого требует контракт манифеста: сборщик датасета берёт множители первого
+    периода для всех месяцев до начала второго.
+    """
+    if periods < 1:
+        raise ValueError(f"периодов должно быть хотя бы один, запрошено {periods}")
+
+    dates = sorted({step.date for step in base_steps})
+    if periods > len(dates):
+        raise ValueError(
+            f"периодов больше, чем шагов в горизонте: {periods} > {len(dates)}"
+        )
+    size = len(dates) / periods
+    return [dates[int(number * size)] for number in range(periods)]
+
+
+def _apply_periods(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   periods: list[ControlPeriod]) -> list[ScheduleStep]:
+    """Применить режим каждого периода к его куску расписания.
+
+    Период действует с своей даты и до начала следующего; последний — до конца
+    горизонта. Куски собираются обратно в одно расписание по порядку.
+    """
+    ordered = sorted(base_steps, key=lambda step: step.date)
+    result: list[ScheduleStep] = []
+    for number, period in enumerate(periods):
+        end = periods[number + 1].start if number + 1 < len(periods) else None
+        chunk = [
+            step for step in ordered
+            if step.date >= period.start and (end is None or step.date < end)
+        ]
+        result.extend(_apply(chunk, period.multipliers, period.injector_multipliers))
+    return result
 
 
 def _apply(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
