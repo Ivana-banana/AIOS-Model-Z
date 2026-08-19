@@ -26,6 +26,20 @@ from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.summary import Fluids, sanity_problems
 from aios.surrogate import NumericRange, TrainingEnvelope, expand
 
+#: Чем кодируется «режим назначен там, где опорного режима не было» — запуск
+#: скважины из простоя и перевод под закачку. Значение выбрано отрицательным
+#: намеренно: множители по построению неотрицательны, ноль означает буквально
+#: «скважина остановлена» (`aios/doe.py`, `Scenario.shut_wells`), и до 19.08 запуск
+#: кодировался тем же нулём — то есть предложение запустить подавалось модели как
+#: остановка. Отрицательное значение спутать не с чем.
+#:
+#: Числом это решение не становится: обучающая выборка запусков не содержит вовсе,
+#: поэтому вход заведомо вне обученной области. Ровно поэтому кодирование идёт в
+#: паре с обязательной пометкой такого месяца в `NeuralSurrogate.in_training_range`
+#: — принцип 6 `CLAUDE.md`: сеть не падает, а тихо врёт, и решение обязано уйти на
+#: полный расчёт, а не быть принятым по прогнозу.
+RESTART_MULTIPLIER = -1.0
+
 TARGET_COLUMNS = ("WLPT_Diff", "WOMT_Diff", "WWIT_Diff", "THP", "BHP")
 REQUIRED_COLUMNS = frozenset(
     {"scenario", "DATA", "well", "multiplier", "WLPR", "WWIR", *TARGET_COLUMNS}
@@ -150,10 +164,55 @@ class NeuralSurrogate:
                     f"{step.date.isoformat()}: дата вне обучающего горизонта "
                     f"0..{self.bundle.month_span} месяцев"
                 )
+        warnings.extend(self._unlearned_controls(steps))
         warnings.extend(
             f"прогноз нарушает физические проверки: {problem}"
             for problem in sanity_problems(self.predict(steps))
         )
+        return warnings
+
+    def _unlearned_controls(
+        self, steps: list[ScheduleStep] | tuple[ScheduleStep, ...]
+    ) -> list[str]:
+        """Решения, которых в обучающей выборке не было ни одного.
+
+        Диапазонный детектор их не ловит по устройству: `producer_rates` хранит
+        границы по скважине **за весь датасет**, поэтому запуск скважины,
+        простаивающей именно в этом месяце, попадает внутрь её же диапазона и
+        проходит молча. А перевод под закачку не ловится и подавно: у добывающей
+        скважины колонки `inj:` в обучающем наборе нет вовсе, и предложение
+        перевести её не искажается, а пропадает по дороге к модели.
+
+        DoE масштабирует существующие режимы и умеет их обнулять, но запусков не
+        содержит. Значит, оба класса — экстраполяция, и единственный честный ответ
+        суррогата здесь: «не оценивал, считайте полностью».
+        """
+        planned = _expand_role_controls(steps)
+        reference = _expand_role_controls(self.reference_steps)
+        known = set(self.bundle.control_wells)
+        seen: set[str] = set()
+        warnings: list[str] = []
+
+        for month_start, controls in planned.items():
+            for (role, well), control in controls.items():
+                if _role_rate(control, role) <= 0:
+                    continue
+                key = f"{'prod' if role == 'production' else 'inj'}:{well}"
+                if key not in known and well not in known:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    warnings.append(
+                        f"{month_start.isoformat()}: управления {key} нет в обучающем "
+                        f"датасете — прогноз этого решения не учитывает вовсе"
+                    )
+                    continue
+                base = _role_rate(reference.get(month_start, {}).get((role, well)), role)
+                if base <= 0:
+                    warnings.append(
+                        f"{month_start.isoformat()}: {key} запускается без опорного "
+                        f"режима — обучающая выборка таких решений не содержит"
+                    )
         return warnings
 
 
@@ -399,9 +458,10 @@ def _schedule_multipliers(
             if base > 0:
                 last[control_key] = planned / base
             elif planned > 0:
-                # Диапазонный детектор пометит запуск без опорного режима. В MLP
-                # передаём конечное значение: sklearn справедливо отвергает inf.
-                last[control_key] = 0.0
+                # Опорного режима нет: это запуск из простоя или перевод под
+                # закачку. Отношение не определено, inf sklearn справедливо
+                # отвергает, а ноль занят остановкой — поэтому отдельное значение.
+                last[control_key] = RESTART_MULTIPLIER
             values.append(last[control_key])
         result[month_start] = np.asarray(values, dtype=float)
     return result
@@ -436,6 +496,12 @@ def _relative_rate(
     if base_injection > 0:
         return planned_injection, base_injection
     return max(planned_liquid, planned_injection), 0.0
+
+
+def _role_rate(control: ProducerControl | InjectorControl | None, role: str) -> float:
+    """Режим, сопоставимый с ролью: добыча с добычей, закачка с закачкой."""
+    liquid, injection = _rates(control)
+    return liquid if role == "production" else injection
 
 
 def _control_key(value: str) -> tuple[str | None, str]:
