@@ -354,3 +354,37 @@ def test_surrogate_warnings_counts_reasons_not_just_lines(tmp_path, capsys):
     assert code == 0, printed
     assert "опорное расписание" in printed
     assert "строк:" in printed
+
+
+def test_every_warning_kind_is_recognised_not_lumped_into_other():
+    """Счётчик причин обязан знать все причины, которые система порождает.
+
+    Иначе он молча сваливает самую многочисленную группу в «прочее» и
+    показывает `20925 прочее` — то есть ровно ту бесполезную сводку, ради
+    замены которой писался. Проверяется не список маркеров, а само свойство:
+    ни одна настоящая пометка не должна остаться неопознанной.
+    """
+    from datetime import date
+
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.surrogate import TrainingEnvelope
+    from scripts.surrogate_warnings import _kind
+
+    rows = [
+        {"scenario": "s", "DATA": "2007-01-01", "well": "1", "WLPR": 40.0, "WWIR": 0.0},
+        {"scenario": "s", "DATA": "2007-02-01", "well": "1", "WLPR": 50.0, "WWIR": 0.0},
+        {"scenario": "s", "DATA": "2007-01-01", "well": "9", "WLPR": 0.0, "WWIR": 30.0},
+    ]
+    envelope = TrainingEnvelope.fit(rows)
+    steps = [ScheduleStep(
+        date(2007, 1, 1),
+        (ProducerControl("1", "OPEN", "LRAT", 90.0, 50.0),      # вне диапазона
+         ProducerControl("НОВАЯ", "OPEN", "LRAT", 30.0, 50.0)),  # такой скважины не было
+        (InjectorControl("9", "WATER", "OPEN", "RATE", 300.0, 300.0),),
+    )]
+
+    produced = envelope.warnings(steps)
+    assert produced, "проверка бессмысленна, если предупреждений нет"
+
+    unrecognised = sorted({warning for warning in produced if _kind(warning) == "прочее"})
+    assert not unrecognised, "неопознанные причины:\n" + "\n".join(unrecognised)
