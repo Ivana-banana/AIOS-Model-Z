@@ -65,7 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     controls = {
         scenario["name"]: (
-            scenario.get("multipliers", {}), scenario.get("injector_multipliers", {})
+            scenario.get("multipliers", {}),
+            scenario.get("injector_multipliers", {}),
+            frozenset(scenario.get("converted_wells", ())),
         )
         for scenario in manifest["scenarios"]
     }
@@ -105,16 +107,32 @@ def main(argv: list[str] | None = None) -> int:
             if problems:
                 print(f"{name}: санити-чеки — нарушений {len(problems)}, первое: {problems[0]}")
 
-            producer_multipliers, injector_multipliers = controls[name]
+            producer_multipliers, injector_multipliers, converted = controls[name]
             for row in rows:
                 role = roles.get((str(row["DATA"]), row["well"]))
+                # Роль берётся из опорного расписания, и для переведённой под
+                # закачку скважины она говорит «добывающая» — сценарий-то её и
+                # меняет. Поэтому у переведённых пишутся обе величины: иначе
+                # множитель закачки отбрасывается, колонка `inj:<скважина>` не
+                # появляется, и весь пакет ВНС даёт датасет, неотличимый от
+                # обычного (`aios/neural.py`, `_pivot_controls`).
+                converted_well = row["well"] in converted
                 producer = (
-                    producer_multipliers.get(row["well"]) if role == "production" else None
+                    producer_multipliers.get(row["well"])
+                    if role == "production" or converted_well else None
                 )
                 injector = (
-                    injector_multipliers.get(row["well"]) if role == "injection" else None
+                    injector_multipliers.get(row["well"])
+                    if role == "injection" or converted_well else None
                 )
-                multiplier = producer if producer is not None else injector
+                # Старая одиночная колонка описывает «что с этой скважиной
+                # сделали». У переведённой это закачка, а не ноль по добыче:
+                # иначе `is_shut` объявил бы работающую нагнетательную скважину
+                # остановленной.
+                if converted_well and injector is not None:
+                    multiplier = injector
+                else:
+                    multiplier = producer if producer is not None else injector
                 writer.writerow({
                     "scenario": name,
                     "multiplier": "" if multiplier is None else multiplier,

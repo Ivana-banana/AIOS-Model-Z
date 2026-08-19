@@ -132,6 +132,10 @@ def main(argv: list[str] | None = None) -> int:
                         "injector_multipliers": s.injector_multipliers,
                         "shut_wells": list(s.shut_wells),
                         "shut_injectors": list(s.shut_injectors),
+                        # Без этого списка сборщик датасета не отличит перевод
+                        # под закачку от остановки: роль скважины он берёт из
+                        # опорного расписания, а там она добывающая.
+                        "converted_wells": list(s.converted_wells),
                     }
                     for s in scenarios
                 ],

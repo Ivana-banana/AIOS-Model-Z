@@ -75,6 +75,10 @@ REGIONS
 INCLUDE
 'r.inc' /
 
+SUMMARY
+INCLUDE
+'s.inc' /
+
 SCHEDULE
 INCLUDE
 'h.inc' /
@@ -150,3 +154,78 @@ def _tiny_project(tmp_path) -> Path:
     config = tmp_path / "config.toml"
     config.write_text(TINY_CONFIG, encoding="utf-8")
     return config
+
+
+def test_a_converted_well_carries_both_multipliers(tmp_path, monkeypatch):
+    """Перевод под закачку обязан доехать до датасета обеими величинами.
+
+    Ради этого и делался третий вид DoE: колонка `inj:<скважина>` появляется у
+    скважины только тогда, когда у неё непустой множитель закачки, а иначе
+    предложение перевести её под закачку до модели не доходит вовсе
+    (`aios/neural.py`, `_pivot_controls`).
+
+    Разрыв на стыке, найденный 19.08: роль скважины сборщик берёт из **опорного**
+    расписания, а там переведённая скважина — добывающая. Множитель закачки
+    отбрасывался, и пакет ВНС дал бы датасет, неотличимый от обычного, — молча,
+    после двух с половиной часов счёта.
+    """
+    import csv
+    import json
+
+    from conftest import make_row
+
+    from scripts import build_dataset
+
+    root = tmp_path / "doe"
+    (root / "doe-000").mkdir(parents=True)
+    (root / "doe.json").write_text(
+        json.dumps({"scenarios": [{
+            "name": "doe-000",
+            "multipliers": {"1": 0.0},
+            "injector_multipliers": {"1": 1.4},
+            "converted_wells": ["1"],
+        }]}),
+        encoding="utf-8",
+    )
+    (root / "doe-000" / "RUN.UNSMRY").write_text("", encoding="utf-8")
+    (root / "doe-000" / ".doe-done").write_text("2026-08-19", encoding="utf-8")
+    rows = [make_row("2007-01-01", "1", wwir=40.0, injection=1200.0)]
+    monkeypatch.setattr(build_dataset.summary, "monthly_rows", lambda *a, **k: rows)
+
+    target = tmp_path / "dataset.csv"
+    status = build_dataset.main([
+        "--run-root", str(root), "--out", str(target),
+        "--config", str(_tiny_project(tmp_path)),
+    ])
+
+    assert status == 0
+    with target.open(encoding="utf-8", newline="") as handle:
+        written = list(csv.DictReader(handle))
+    assert written[0]["production_multiplier"] == "0.0", written[0]
+    assert float(written[0]["injection_multiplier"]) == 1.4, (
+        "множитель закачки переведённой скважины потерян — колонка inj: не появится"
+    )
+
+
+def test_the_manifest_names_the_converted_wells(tmp_path):
+    """Вторая половина того же стыка: список обязан быть в `doe.json`.
+
+    Сборщик датасета читает манифест, а не объекты в памяти. Пока `doe.json` не
+    нёс `converted_wells`, знание о переводе терялось между генератором и
+    сборщиком целиком — и обнаружилось бы только метриками суррогата, который
+    ничему по этим сценариям не научился.
+    """
+    import json
+
+    from scripts import build_doe
+
+    root = tmp_path / "pack"
+    status = build_doe.main([
+        "--control-kind", "conversions", "--samples", "3",
+        "--run-root", str(root), "--config", str(_tiny_project(tmp_path)),
+    ])
+
+    assert status == 0
+    manifest = json.loads((root / "doe.json").read_text(encoding="utf-8"))
+    converted = [well for s in manifest["scenarios"] for well in s.get("converted_wells", ())]
+    assert converted, "манифест не назвал ни одной переведённой скважины"
