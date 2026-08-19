@@ -25,7 +25,7 @@ SCRIPTS = ROOT / "scripts"
 #: Скрипты, на которые ссылаются документация и Dockerfile.
 REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_doe.py", "run_cycle.py",
             "transcribe.py", "build_dataset.py", "train_surrogate.py", "run_all.py",
-            "docx_to_text.py", "profiles.py")
+            "docx_to_text.py", "profiles.py", "pack_npv.py")
 
 
 @pytest.mark.parametrize("name", REQUIRED)
@@ -267,3 +267,49 @@ def test_export_rows_labels_two_different_totals_blocks(tmp_path, monkeypatch, c
     assert "итоги по всей выгрузке" in printed, "верхний блок обязан назвать свой период"
     assert printed.count("жидкость") >= 2, "жидкости не было в блоке ЧДД вовсе"
     assert printed.count("закачка") >= 2, "закачки не было в блоке ЧДД вовсе"
+
+
+def test_pack_npv_skips_an_unfinished_scenario(tmp_path, monkeypatch, capsys):
+    """Оборванный сценарий обязан выпасть из таблицы, а не встать в неё числом.
+
+    У прогона, убитого на середине, `.UNSMRY` читается — он просто короче. ЧДД по
+    нему посчитается и будет выглядеть настоящим, хотя это ЧДД начала истории.
+    Отметка `.doe-done` — единственное, что отличает досчитанный сценарий от
+    обрезка (`scripts/run_doe.py`), поэтому таблица опирается на неё.
+    """
+    import json
+
+    from conftest import make_row
+
+    from scripts import pack_npv
+
+    root = tmp_path / "pack"
+    for name, done in (("doe-000", True), ("doe-001", False)):
+        (root / name).mkdir(parents=True)
+        (root / name / "RUN.UNSMRY").write_text("", encoding="utf-8")
+        if done:
+            (root / name / ".doe-done").write_text("2026-08-19", encoding="utf-8")
+    (root / "doe.json").write_text(
+        json.dumps({"scenarios": [
+            {"name": "doe-000", "multipliers": {"1": 1.2}},
+            {"name": "doe-001", "multipliers": {"1": 0.8}},
+        ]}),
+        encoding="utf-8",
+    )
+    rows = [make_row("2007-01-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0)]
+    monkeypatch.setattr(pack_npv.summary, "monthly_rows", lambda *a, **k: rows)
+
+    code = pack_npv.main([str(root), "--config", str(_tiny_pack_config(tmp_path))])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert "doe-000" in printed
+    assert "досчитано 1 из 2" in printed
+    assert "пропущен doe-001" in printed
+
+
+def _tiny_pack_config(tmp_path) -> Path:
+    """Конфиг с крошечным деком: таблица ЧДД к содержимому дека не привязана."""
+    from test_dataset import _tiny_project
+
+    return _tiny_project(tmp_path)
