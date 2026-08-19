@@ -234,3 +234,76 @@ def test_joint_search_can_change_injection_and_apply_the_choice():
     assert injection.multiplier == 1.5
     assert tuned[0].injectors[0].rate == pytest.approx(60.0)
     assert validate(tuned) == []
+
+
+# ── перевод под закачку (ВНС) ────────────────────────────────────────────────
+#
+# Механизм нужен не сам по себе: суррогат сегодня не видит ВНС вовсе. Признаки
+# собираются по ролям, и колонка `inj:<скважина>` появляется только у той, у кого
+# в датасете есть непустой множитель закачки. У добывающей его нет ни в одном
+# сценарии, поэтому предложение перевести её под закачку не искажается, а
+# исчезает. Чтобы вход перестал быть немым, сценарий обязан записать по
+# переведённой скважине **обе** величины: добычу в ноль и закачку больше нуля.
+
+
+def _producing(day: date, wells: dict[str, float]) -> ScheduleStep:
+    return ScheduleStep(
+        day,
+        tuple(ProducerControl(w, "OPEN", "LRAT", rate, 50.0) for w, rate in wells.items()),
+        (),
+    )
+
+
+def test_conversion_shuts_production_and_opens_injection():
+    steps = [_producing(date(2007, 1, 1), {"1": 40.0, "2": 30.0}),
+             _producing(date(2007, 2, 1), {"1": 40.0, "2": 30.0})]
+
+    result = optimise.convert_to_injection(steps, {"1"}, multiplier=1.0)
+
+    first = result[0]
+    shut = [c for c in first.producers if c.well == "1"]
+    assert shut and shut[0].status == "SHUT", "добыча обязана закрыться"
+    assert [c.well for c in first.injectors] == ["1"], "и открыться закачка"
+    assert first.injectors[0].rate == pytest.approx(40.0), "по её же дебиту"
+    # соседняя скважина не тронута
+    assert [c.well for c in first.producers if c.status == "OPEN"] == ["2"]
+
+
+def test_conversion_holds_for_every_later_step():
+    """Дек переоткрывает добычу на каждом шаге — закрывать надо на всех."""
+    steps = [_producing(date(2007, month, 1), {"1": 40.0}) for month in (1, 2, 3)]
+
+    result = optimise.convert_to_injection(steps, {"1"}, multiplier=1.0)
+
+    assert all(c.status == "SHUT" for step in result for c in step.producers)
+
+
+def test_conversion_writes_the_injector_once():
+    """Eclipse держит режим до следующей записи — дублировать её незачем."""
+    steps = [_producing(date(2007, month, 1), {"1": 40.0}) for month in (1, 2, 3)]
+
+    result = optimise.convert_to_injection(steps, {"1"}, multiplier=1.0)
+
+    assert sum(len(step.injectors) for step in result) == 1
+
+
+def test_conversion_multiplier_scales_the_injection_rate():
+    steps = [_producing(date(2007, 1, 1), {"1": 40.0})]
+    result = optimise.convert_to_injection(steps, {"1"}, multiplier=1.5)
+    assert result[0].injectors[0].rate == pytest.approx(60.0)
+
+
+def test_a_well_that_never_produced_is_not_converted():
+    """Приёмистость выводится из её же дебита — без него выдумывать нечего."""
+    steps = [ScheduleStep(date(2007, 1, 1),
+                          (ProducerControl("1", "SHUT", "LRAT", None, 50.0),), ())]
+
+    result = optimise.convert_to_injection(steps, {"1"}, multiplier=1.0)
+
+    assert all(not step.injectors for step in result)
+
+
+def test_converted_schedule_stays_valid():
+    steps = [_producing(date(2007, month, 1), {"1": 40.0, "2": 30.0}) for month in (1, 2, 3)]
+    result = optimise.convert_to_injection(steps, {"1"}, multiplier=1.0)
+    assert validate(result) == []

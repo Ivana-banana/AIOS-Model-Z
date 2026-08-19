@@ -37,7 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--level-high", type=float, default=None,
                         help="верхняя граница общего уровня отбора сценария")
     parser.add_argument(
-        "--control-kind", choices=("producers", "injectors", "all"), default="producers",
+        "--control-kind", choices=("producers", "injectors", "all", "conversions"),
+        default="producers",
         help="какие режимы варьировать (по умолчанию только добывающие)",
     )
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
@@ -70,17 +71,35 @@ def main(argv: list[str] | None = None) -> int:
     report = doe.coverage(scenarios)
 
     print(f"seed:            {config.run.seed} (из {config.source})")
-    print(f"диапазон:        {arguments.low} — {arguments.high}")
+    # для переводов диапазон свой: множитель здесь — доля от бывшего дебита
+    # скважины, и ноль в нём смысла не имеет. Печатаем то, что применено
+    effective = doe.CONVERSION_RANGE if (
+        arguments.control_kind == "conversions"
+        and (arguments.low, arguments.high) == doe.DEFAULT_RANGE
+    ) else (arguments.low, arguments.high)
+    print(f"диапазон:        {effective[0]} — {effective[1]}")
     print(f"управление:      {arguments.control_kind}")
     print(f"сценариев:       {report['scenarios']}")
     print(f"скважин:         {report['wells']}")
-    print(f"размах, мин:     {report['min_span']:.3f}")
-    print(f"размах, средний: {report['mean_span']:.3f}")
-    print(f"доля остановок:  {report['min_shut_share']:.3f} — {report['max_shut_share']:.3f}")
+    if arguments.control_kind == "conversions":
+        # размах множителей здесь ничего не значит: скважина либо переведена,
+        # либо её в сценарии нет вовсе. Смотреть надо на охват фонда переводами
+        converted = sorted({well for s in scenarios for well in s.converted_wells})
+        per_scenario = [len(s.converted_wells) for s in scenarios]
+        print(f"переводов всего: {report['converted_total']}")
+        print(f"в сценарии:      от {min(per_scenario)} до {max(per_scenario)}")
+        print(f"разных скважин:  {len(converted)}")
+        if len(converted) < 2:
+            print("\nвнимание: переводится слишком мало разных скважин — "
+                  "отклик соседей суррогату выучить не на чем")
+    else:
+        print(f"размах, мин:     {report['min_span']:.3f}")
+        print(f"размах, средний: {report['mean_span']:.3f}")
+        print(f"доля остановок:  {report['min_shut_share']:.3f} — {report['max_shut_share']:.3f}")
 
-    if report["min_span"] < 0.5 * (arguments.high - arguments.low):
-        print("\nвнимание: по какой-то скважине выборка покрыла меньше половины диапазона — "
-              "суррогат будет экстраполировать именно там")
+        if report["min_span"] < 0.5 * (arguments.high - arguments.low):
+            print("\nвнимание: по какой-то скважине выборка покрыла меньше половины диапазона — "
+                  "суррогат будет экстраполировать именно там")
 
     if arguments.dry_run:
         return 0
