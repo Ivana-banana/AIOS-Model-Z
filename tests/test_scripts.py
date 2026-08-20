@@ -389,3 +389,47 @@ def test_every_warning_kind_is_recognised_not_lumped_into_other():
 
     unrecognised = sorted({warning for warning in produced if _kind(warning) == "прочее"})
     assert not unrecognised, "неопознанные причины:\n" + "\n".join(unrecognised)
+
+
+def test_pack_npv_shows_the_whole_scenario_not_only_its_first_period(tmp_path, monkeypatch,
+                                                                    capsys):
+    """Колонка множителей обязана описывать сценарий целиком, а не его начало.
+
+    `Scenario.multipliers` — это множители **первого периода**: поле оставлено
+    ради совместимости манифеста и так и описано в `aios/doe.py`. Таблица брала
+    его как «средний отбор сценария». На 4-периодном сценарии генератора это
+    давало 0,384 при среднем по сценарию 0,453 и размахе 0,326…0,743 (замер
+    20.08); на пакете с десятью периодами колонка описывала бы десятую часть
+    прогона, а читалась бы как весь.
+    """
+    import json
+
+    from conftest import make_row
+
+    from scripts import pack_npv
+
+    root = tmp_path / "pack"
+    (root / "doe-000").mkdir(parents=True)
+    (root / "doe-000" / "RUN.UNSMRY").write_text("", encoding="utf-8")
+    (root / "doe-000" / ".doe-done").write_text("2026-08-20", encoding="utf-8")
+    (root / "doe.json").write_text(
+        json.dumps({"scenarios": [{
+            "name": "doe-000",
+            "periods": [
+                {"from": "2007-01-01", "multipliers": {"1": 0.80}, "injector_multipliers": {}},
+                {"from": "2012-01-01", "multipliers": {"1": 1.30}, "injector_multipliers": {}},
+            ],
+            "multipliers": {"1": 0.80},
+            "injector_multipliers": {},
+        }]}),
+        encoding="utf-8",
+    )
+    rows = [make_row("2007-01-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0)]
+    monkeypatch.setattr(pack_npv.summary, "monthly_rows", lambda *a, **k: rows)
+
+    code = pack_npv.main([str(root), "--config", str(_tiny_pack_config(tmp_path))])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert "0.80…1.30" in printed, "показан только первый период"
+    assert "период" in printed, "не сказано, что режим внутри сценария меняется"

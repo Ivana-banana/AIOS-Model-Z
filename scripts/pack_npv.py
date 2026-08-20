@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"пакет:     {arguments.run_root}")
     print()
 
-    rows_out: list[tuple[str, float, float, float, float, float, float]] = []
+    rows_out: list[tuple[str, float, str, str, float, float, float]] = []
     skipped: list[str] = []
     for scenario in manifest["scenarios"]:
         name = scenario["name"]
@@ -72,8 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         rows_out.append((
             name, result.chdd_m,
-            _mean(scenario.get("multipliers", {})),
-            _mean(scenario.get("injector_multipliers", {})),
+            _multiplier_cell(scenario, "multipliers"),
+            _multiplier_cell(scenario, "injector_multipliers"),
             result.oil_kt, result.liquid_kt, result.injection_km3,
         ))
 
@@ -94,28 +94,47 @@ def main(argv: list[str] | None = None) -> int:
         line = f"{name:<10}{chdd:>11.1f}"
         if arguments.base is not None:
             line += f"{chdd - arguments.base:>+12.1f}"
-        line += (f"{_cell(produce):>10}{_cell(inject):>12}"
+        line += (f"{produce:>10}{inject:>12}"
                  f"{oil:>10.1f}{liquid:>11.1f}{injection:>11.1f}")
         print(line)
 
     print()
     print(f"досчитано {len(rows_out)} из {len(manifest['scenarios'])}, "
           f"нефть и жидкость — тыс. т, закачка — тыс. м3")
+    periods = max((len(item.get("periods") or ()) for item in manifest["scenarios"]),
+                  default=0)
+    if periods > 1:
+        print(f"режим меняется внутри сценария: периодов {periods}, в колонках "
+              "множителей показан размах средних по периодам, а не одно число")
     for line in skipped:
         print(f"  пропущен {line}")
     return 0
 
 
-def _mean(values: dict[str, float]) -> float | None:
-    """Средний множитель сценария; `None`, если этот вид управления не менялся."""
-    return statistics.fmean(values.values()) if values else None
+def _multiplier_cell(scenario: dict, key: str) -> str:
+    """Множитель сценария: одно число при одном периоде, размах — при нескольких.
 
+    Брать `scenario["multipliers"]` нельзя: это множители **первого периода**,
+    поле оставлено ради совместимости манифеста и так и описано в `aios/doe.py`.
+    На 4-периодном сценарии генератора оно давало 0,384 при среднем по сценарию
+    0,453 и размахе 0,326…0,743 — то есть колонка описывала начало прогона, а
+    читалась как весь прогон (замер 20.08).
 
-def _cell(value: float | None) -> str:
-    """Прочерк вместо нуля: пакет по нагнетателям не трогает отбор вовсе, и
-    «0.00» в этой клетке читается как «отбор остановлен» — прямо противоположно
-    тому, что было в сценарии."""
-    return "—" if value is None else f"{value:.2f}"
+    Размах, а не среднее: сценарий, идущий 0,7 → 1,3, в среднем равен единице,
+    то есть «режим не менялся», — прямо противоположно тому, что в нём было.
+
+    Прочерк вместо нуля: пакет по нагнетателям не трогает отбор вовсе, и «0.00»
+    в этой клетке читается как «отбор остановлен».
+    """
+    periods = scenario.get("periods") or [scenario]
+    means = [statistics.fmean(values.values())
+             for period in periods
+             if (values := period.get(key) or {})]
+    if not means:
+        return "—"
+    if min(means) == max(means):
+        return f"{means[0]:.2f}"
+    return f"{min(means):.2f}…{max(means):.2f}"
 
 
 if __name__ == "__main__":
