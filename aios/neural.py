@@ -64,6 +64,16 @@ class TrainingReport:
     rows: int
     metrics: dict[str, TargetMetric]
 
+    targets: str = "raw"
+    """Как модель представляет нефть: `raw` — отдельной величиной, `watercut` —
+    через долю воды, а нефть восстанавливается как `жидкость × (1 − доля)`.
+
+    Прямое предсказание нефти ничем не связано с предсказанием жидкости, поэтому
+    прогноз умеет нарушать физику: 20.08 на настоящем расписании 33 пометки из
+    34 были «нефти больше, чем жидкости». Через обводнённость это невозможно по
+    построению, а не ловится постфактум.
+    """
+
     metric_rows: int = 0
     """Сколько строк отложенной выборки реально участвовало в метриках.
 
@@ -129,7 +139,7 @@ class NeuralSurrogate:
             for month_start in months
         ])
         predictions = {
-            well: model.predict(feature_matrix)
+            well: _raw_space(model.predict(feature_matrix), self.bundle.report.targets)
             for well, model in self.bundle.models.items()
         }
         cumulative: dict[str, list[float]] = {}
@@ -365,7 +375,8 @@ class NeuralSurrogate:
 
 def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
           hidden_layers: tuple[int, ...] = (32, 16), max_iter: int = 300,
-          kind: str = "mlp", control_start: date | None = None) -> NeuralBundle:
+          kind: str = "mlp", control_start: date | None = None,
+          targets: str = "raw") -> NeuralBundle:
     """Обучить модель на каждую скважину и измерить held-out ошибку.
 
     `kind` выбирает, какая из двух обученных моделей поедет в цикл: `mlp` или
@@ -381,6 +392,8 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     """
     if kind not in ("mlp", "linear"):
         raise ValueError(f"неизвестный вид модели: {kind}")
+    if targets not in ("raw", "watercut"):
+        raise ValueError(f"неизвестное представление целей: {targets}")
     _validate(frame, test_fraction)
     data = frame.copy()
     data["scenario"] = data["scenario"].astype(str)
@@ -413,8 +426,10 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
 
         x_train = _features(train_rows, controls, start_month, month_span)
         x_test = _features(test_rows, controls, start_month, month_span)
-        y_train = train_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy()
         y_test = test_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy()
+        y_train = _model_space(
+            train_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy(), targets
+        )
 
         neural = _regressor(MLPRegressor(
             hidden_layer_sizes=hidden_layers,
@@ -429,8 +444,10 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         neural.fit(x_train, y_train)
         baseline.fit(x_train, y_train)
 
-        neural_prediction = neural.predict(x_test)
-        linear_prediction = baseline.predict(x_test)
+        # метрики считаются в исходных единицах при любом представлении целей,
+        # иначе сравнение параметризаций перестаёт быть сравнением
+        neural_prediction = _raw_space(neural.predict(x_test), targets)
+        linear_prediction = _raw_space(baseline.predict(x_test), targets)
         neural_errors.append(np.abs(neural_prediction - y_test))
         linear_errors.append(np.abs(linear_prediction - y_test))
         neural_predictions.append(neural_prediction)
@@ -463,6 +480,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         wells=len(models),
         rows=len(data),
         metrics=metrics,
+        targets=targets,
         metric_rows=int(sum(len(part) for part in test_targets)),
         metric_start="" if control_start is None else control_start.isoformat(),
         kind=kind,
@@ -728,6 +746,34 @@ def _rates(control: ProducerControl | InjectorControl | None) -> tuple[float, fl
     if isinstance(control, ProducerControl):
         return float(control.liquid_rate or 0.0), 0.0
     return 0.0, float(control.rate or 0.0)
+
+
+def _model_space(values: np.ndarray, targets: str) -> np.ndarray:
+    """Перевести цели в то представление, которому учится модель."""
+    if targets != "watercut":
+        return values
+    converted = values.copy()
+    liquid, oil = values[:, 0], values[:, 1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        watercut = np.where(liquid > 0, 1.0 - oil / liquid, 0.0)
+    converted[:, 1] = np.clip(watercut, 0.0, 1.0)
+    return converted
+
+
+def _raw_space(values: np.ndarray, targets: str) -> np.ndarray:
+    """Вернуть предсказание в единицы контракта: тонны нефти вместо доли воды.
+
+    Нефть здесь не может превысить жидкость и не может стать отрицательной —
+    это следует из формулы, а не из проверки после.
+    """
+    if targets != "watercut":
+        return values
+    converted = values.copy()
+    liquid = np.maximum(values[:, 0], 0.0)
+    watercut = np.clip(values[:, 1], 0.0, 1.0)
+    converted[:, 0] = liquid
+    converted[:, 1] = liquid * (1.0 - watercut)
+    return converted
 
 
 def _contract_row(month_start: date, well: str, liquid_rate: float,

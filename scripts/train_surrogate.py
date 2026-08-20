@@ -34,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", default="artifacts/surrogate-metrics.json")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     parser.add_argument(
+        "--targets", choices=("raw", "watercut"), default="raw",
+        help="как представлять нефть: своей величиной или через долю воды",
+    )
+    parser.add_argument(
         "--model", choices=("mlp", "linear"), default="mlp",
         help="какая из двух обученных моделей поедет в цикл; меряются обе в любом случае",
     )
@@ -44,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     # метрики считаются только на управляемой части горизонта: история у всех
     # сценариев одна и по входу, и по отклику, поэтому по ней меряется память
     bundle = train(frame, seed=settings.run.seed, kind=arguments.model,
-                   control_start=settings.case.control_start)
+                   control_start=settings.case.control_start,
+                   targets=arguments.targets)
     metadata = {
         "seed": settings.run.seed,
         "datasets": dataset_fingerprints(arguments.dataset),
@@ -65,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"отчёт:  {report_path}")
     print(f"train/test сценариев: {len(bundle.report.train_scenarios)}/"
           f"{len(bundle.report.test_scenarios)}")
-    print(f"в модель сохранён: {bundle.report.kind}")
+    print(f"в модель сохранён: {bundle.report.kind}, цели: {bundle.report.targets}")
     print(f"метрики считаны на {bundle.report.metric_rows} строках"
           + (f" с {bundle.report.metric_start}" if bundle.report.metric_start else ""))
     for dataset in metadata["datasets"]:
