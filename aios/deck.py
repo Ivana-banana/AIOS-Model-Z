@@ -173,7 +173,13 @@ def parse_keywords(text: str) -> list[Keyword]:
 #: `UNSUPPORTED_CONTROL_KEYWORDS`: там рядом лежат `TSTEP` и `INCLUDE`, которые
 #: режима не задают. Список тот же, по которому машина А разбирала преамбулу
 #: настоящего `Model_Z_sch.inc` (20.08): там их ноль.
-CONTROL_KEYWORDS = frozenset({
+#:
+#: Имя намеренно длиннее очевидного `CONTROL_KEYWORDS`: такое имя уже занято в
+#: `aios/run.py` под другой смысл — «что наш генератор перепишет сам, а значит
+#: переносить дословно не надо», и туда входит `DATES`. Совпадение имён при
+#: перекрёстных импортах этих двух модулей означало бы, что `carried_keywords`
+#: начнёт переносить блоки дат дословно и продублирует шаги.
+WELL_CONTROL_KEYWORDS = frozenset({
     "WCONPROD", "WCONINJE", "WCONHIST", "WCONINJH", "WELOPEN", "WELTARG",
 })
 
@@ -218,7 +224,7 @@ def parse_schedule_text(text: str) -> Schedule:
             producers.extend(_producer(record) for record in keyword.records)
         elif keyword.name == "WCONINJE" and current_date is not None:
             injectors.extend(_injector(record) for record in keyword.records)
-        elif keyword.name in CONTROL_KEYWORDS and current_date is None:
+        elif keyword.name in WELL_CONTROL_KEYWORDS and current_date is None:
             # Режим до первой даты действует с начала расчёта (`START` в RUNSPEC),
             # а этого файла мы не читаем — датировать его здесь нечем. Молча
             # потерять нельзя: скважина, чей единственный режим стоит тут, не

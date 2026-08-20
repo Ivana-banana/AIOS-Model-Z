@@ -202,3 +202,38 @@ def test_an_include_inside_the_schedule_is_named():
 
     assert len(schedule.steps) == 1, "включение мы действительно не раскрываем"
     assert "INCLUDE" in schedule.unsupported_controls, "и обязаны об этом сказать"
+
+
+def test_control_keyword_sets_of_deck_and_run_do_not_share_a_name():
+    """Два разных набора под одним именем — ловушка, а не стиль.
+
+    В `aios/run.py` имя `CONTROL_KEYWORDS` занято под смысл «что наш генератор
+    перепишет сам, переносить дословно не надо», и туда входит `DATES`. В
+    `aios/deck.py` набор про другое — «что назначает скважине режим», и `DATES`
+    там быть не должно. Модули импортируют друг из друга; совпади имена, и
+    добавление его в список импорта молча подменило бы локальный набор, а
+    `carried_keywords` начал бы переносить блоки дат дословно и продублировал
+    шаги расписания.
+
+    Проверяется само свойство, а не текущие имена: наборы обязаны либо
+    называться по-разному, либо совпадать по составу.
+    """
+    from aios import run as run_module
+
+    deck_names = {name for name in dir(deck)
+                  if name.endswith("CONTROL_KEYWORDS") and not name.startswith("_")}
+    run_names = {name for name in dir(run_module)
+                 if name.endswith("CONTROL_KEYWORDS") and not name.startswith("_")}
+
+    for shared in deck_names & run_names:
+        assert getattr(deck, shared) == getattr(run_module, shared), (
+            f"«{shared}» значит разное в aios/deck.py и aios/run.py: "
+            f"{sorted(getattr(deck, shared))} против {sorted(getattr(run_module, shared))}"
+        )
+
+    assert "DATES" not in deck.WELL_CONTROL_KEYWORDS, (
+        "DATES не назначает режим скважине"
+    )
+    assert "DATES" in run_module.CONTROL_KEYWORDS, (
+        "carried_keywords обязан считать DATES своим и не переносить его дословно"
+    )
