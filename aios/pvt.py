@@ -267,6 +267,39 @@ class DeckFluids:
         """Все ли скважины получили плотность из дека."""
         return bool(self.by_well) and not self.without_region
 
+    def write_note(self, rows_csv: str | Path, *, fluids: Fluids,
+                   model_dir: str | Path) -> Path:
+        """Положить пометку рядом с выгрузкой: `rows.csv` → `rows.source.txt`.
+
+        До 20.08 `note` печаталась только в stdout. Прокрутка терминала не
+        источник: `rows.csv` уезжает на другую машину, читается расчётчиком и
+        веб-платформой, а чем именно посчитаны тонны — не видно нигде. Заявляемое
+        число обязано быть подписано источником (`CLAUDE.md`), поэтому подпись
+        лежит рядом с самим числом, а не в памяти о прогоне.
+
+        Когда плотности взяты не из дека, названа подставленная величина, а не
+        «общая»: на чужом пласте (ТЗ п. 4.3) это просто другое число, и по
+        пометке должно быть видно, какое.
+        """
+        target = Path(rows_csv).with_suffix(".source.txt")
+        lines = [
+            f"выгрузка: {Path(rows_csv).name}",
+            f"дек: {model_dir}",
+            f"плотности: {self.note}",
+        ]
+        if not self.complete:
+            whose = ("весь фонд" if not self.by_well else
+                     f"скважин без региона: {len(self.without_region)} из "
+                     f"{len(self.by_well) + len(self.without_region)}")
+            lines.append(
+                f"ВНИМАНИЕ: {whose} — тонны посчитаны по общей плотности из "
+                f"конфигурации (нефть {fluids.oil_density:.4f} кг/м3, "
+                f"вода {fluids.water_density:.1f} кг/м3)"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return target
+
 
 def fluids_by_well(model_dir: str | Path,
                    wells: tuple[str, ...] | list[str] | None = None) -> DeckFluids:
