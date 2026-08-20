@@ -50,4 +50,14 @@ def for_cycle(
         ) from error
     label = ("линейный суррогат по сценариям DoE" if bundle.report.kind == "linear"
              else "MLP по сценариям DoE")
+    # Порог качества терпит отсутствующий R² намеренно: None — это «не измерено»,
+    # а не «плохо». Но у линейной модели относительная проверка неприменима по
+    # построению, и при пустом R² её не судит вообще ничто — а в цикл с 20.08
+    # идёт именно она. Ворота не трогаем, подписываем: человек, читающий, чем
+    # посчитан прирост, должен видеть разницу между проверенным и непроверенным.
+    if any(bundle.report.metrics[target].linear_r2 is None
+           and bundle.report.metrics[target].neural_r2 is None
+           for target in ("WLPT_Diff", "WOMT_Diff")
+           if target in bundle.report.metrics):
+        label += ", качество не измерено"
     return CycleSurrogate(surrogate, label, True)
