@@ -112,6 +112,20 @@ class JointRateChoice:
     chosen_chdd_m: float
     kind: str = "production"
 
+    outside_training: bool = False
+    """Выбранный режим уводит расписание за пределы обучающей выборки.
+
+    Считается **до** выбора, а не после: раньше диапазон проверялся в
+    `aios/loop.py` по итоговому расписанию, то есть когда решение уже принято.
+    Прогноз за границей обучения — экстраполяция, и она систематически
+    оптимистична, потому что оптимизатор ищет максимум и тянет решение именно
+    туда (`CLAUDE.md`).
+
+    Сравнение идёт с базовым расписанием, а не с нулём: детектор сегодня шумит и
+    на самой истории — 9 594 пометки на опорном расписании (замер 20.08). Флаг
+    поднимают только те пометки, которых у базового расписания нет.
+    """
+
     @property
     def gain_m(self) -> float:
         return self.chosen_chdd_m - self.baseline_chdd_m
@@ -233,6 +247,9 @@ def choose_joint_rates(
     selected = dict.fromkeys(controls, 1.0)
     current_steps = _scale_individually(base_steps, selected)
     current_chdd = _chdd(surrogate.predict(current_steps), start_date)
+    # то, о чём суррогат жалуется и без наших изменений: вычитается из пометок
+    # каждого кандидата, иначе за границей окажутся все, включая базовый режим
+    baseline_complaints = frozenset(surrogate.in_training_range(current_steps))
     choices: list[JointRateChoice] = []
 
     for kind, well in controls:
@@ -240,19 +257,30 @@ def choose_joint_rates(
         best_multiplier = selected[(kind, well)]
         best_steps = current_steps
         best_chdd = current_chdd
+        best_outside = False
         for multiplier in multipliers:
             candidate_multipliers = selected | {(kind, well): multiplier}
             candidate = _scale_individually(base_steps, candidate_multipliers)
             candidate_chdd = _chdd(surrogate.predict(candidate), start_date)
-            if candidate_chdd > best_chdd + 1e-9:
+            outside = bool(
+                frozenset(surrogate.in_training_range(candidate)) - baseline_complaints
+            )
+            better = candidate_chdd > best_chdd + 1e-9
+            # при равном прогнозе выигрывает тот, что внутри обучения: между
+            # измеренным и экстраполированным при прочих равных выбирается
+            # измеренное
+            same_money = abs(candidate_chdd - best_chdd) <= 1e-9
+            if better or (same_money and best_outside and not outside):
                 best_multiplier = multiplier
                 best_steps = candidate
                 best_chdd = candidate_chdd
+                best_outside = outside
 
         selected[(kind, well)] = best_multiplier
         current_steps = best_steps
         current_chdd = best_chdd
-        choices.append(JointRateChoice(well, best_multiplier, before, best_chdd, kind))
+        choices.append(JointRateChoice(well, best_multiplier, before, best_chdd, kind,
+                                       outside_training=best_outside))
     return choices
 
 
@@ -457,6 +485,13 @@ def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
         f"(из них остановок {stopped}); {objective} {gain:+.1f} млн руб.",
         "",
     ]
+    extrapolated = [c for c in changed if getattr(c, "outside_training", False)]
+    if extrapolated:
+        # Это не то же самое, что «прогноз неточен»: за границей обучения ошибка
+        # систематически в нашу пользу, потому что максимум ищут именно там
+        lines.insert(1, f"  из них вне обучающей выборки: {len(extrapolated)} из "
+                        f"{len(changed)} — прогноз по ним экстраполяция, "
+                        "подтверждать полным расчётом обязательно")
     lines.extend(f"  {choice}" for choice in sorted(changed, key=lambda item: -item.gain_m))
     return "\n".join(lines)
 
