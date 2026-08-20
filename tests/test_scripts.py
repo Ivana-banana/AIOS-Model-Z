@@ -530,3 +530,92 @@ def test_pack_npv_skips_a_case_without_our_summary_section(tmp_path, monkeypatch
     assert code == 0, printed
     assert "досчитано 1 из 2" in printed
     assert "SUMMARY-секция не подключена" in printed
+
+
+def _dotted(node) -> str | None:
+    """Имя вызываемого через точку: `loop.run_cycle`, `summary.monthly_rows`."""
+    import ast
+
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
+
+
+def _keyword_mismatches(path: Path) -> list[str]:
+    """Ключевые аргументы вызовов в `aios`, которых нет в сигнатуре вызываемого."""
+    import ast
+    import importlib
+    import inspect
+
+    def signature_of(dotted: str):
+        parts = dotted.split(".")
+        for split in range(len(parts) - 1, 0, -1):
+            try:
+                target = importlib.import_module(".".join(parts[:split]))
+            except Exception:  # noqa: BLE001 — не наш модуль, судить не о чем
+                continue
+            try:
+                for attr in parts[split:]:
+                    target = getattr(target, attr)
+                return inspect.signature(target)
+            except (AttributeError, TypeError, ValueError):
+                return None
+        return None
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("aios"):
+            aliases.update({a.asname or a.name: f"{node.module}.{a.name}" for a in node.names})
+        elif isinstance(node, ast.Import):
+            aliases.update({a.asname or a.name.split(".")[0]: a.name
+                            for a in node.names if a.name.startswith("aios")})
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted(node.func)
+        head = name.split(".")[0] if name else None
+        if head not in aliases:
+            continue
+        signature = signature_of(aliases[head] + name[len(head):])
+        if signature is None:
+            continue
+        parameters = signature.parameters
+        if any(p.kind == p.VAR_KEYWORD for p in parameters.values()):
+            continue
+        found.extend(
+            f"{path.name}:{node.lineno}: {name}(...) не принимает «{keyword.arg}»"
+            for keyword in node.keywords
+            if keyword.arg and keyword.arg not in parameters
+        )
+    return found
+
+
+def test_no_call_passes_an_argument_the_callee_does_not_accept():
+    """Склейка «скрипт → aios» обязана сходиться по именам аргументов.
+
+    Дефект `aa88244`: `run_cycle.py` звал `for_cycle(..., well_fluids=…)` и
+    `loop.run_cycle(..., well_fluids=…)` — такого параметра нет ни у той, ни у
+    другой. `TypeError` прилетал **после одиннадцати минут** расчёта базового
+    сценария, и прожил дефект двое суток: юнит-тесты проверяли обе стороны
+    порознь, но ни один не звал `main` скрипта, то есть ровно ту склейку, которая
+    и разошлась.
+
+    Дозваться до всех склеек тестами дорого — на рабочем пути нужен симулятор.
+    Эта проверка статическая и потому дешёвая: она смотрит ключевые аргументы
+    каждого вызова против настоящей сигнатуры. Проверена на том самом коммите до
+    правки — находит оба вызова.
+    """
+    modules = sorted(Path(__file__).resolve().parent.parent.glob("aios/**/*.py"))
+    # скрипты берём списком, а не маской: на Windows каталог venv `Scripts/` —
+    # для файловой системы тот же путь, что наш `scripts/`
+    scripts = [SCRIPTS / name for name in REQUIRED if name.endswith(".py")]
+
+    mismatches = [line for path in modules + scripts for line in _keyword_mismatches(path)]
+
+    assert mismatches == [], "\n".join(mismatches)
