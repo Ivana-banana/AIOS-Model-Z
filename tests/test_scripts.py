@@ -339,7 +339,8 @@ def test_surrogate_warnings_counts_reasons_not_just_lines(tmp_path, capsys):
                                                             "WWIT_Diff", "THP", "BHP")}
     bundle = NeuralBundle(
         ("prod:1",), {}, pd.Timestamp("2007-01-01"), 12,
-        TrainingEnvelope({}, {}, NumericRange(0.0, 1e9), NumericRange(0.0, 1e9)),
+        TrainingEnvelope({"prod:1": NumericRange(0.5, 1.5)},
+                         NumericRange(0.5, 1.5), NumericRange(0.0, 0.0)),
         # метрики заведомо проигрышные: скрипт обязан работать и на такой модели
         TrainingReport(("a",), ("b",), 1, 2, metrics),
     )
@@ -366,24 +367,24 @@ def test_every_warning_kind_is_recognised_not_lumped_into_other():
     """
     from datetime import date
 
-    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
-    from aios.surrogate import TrainingEnvelope
+    from aios.surrogate import NumericRange, TrainingEnvelope
     from scripts.surrogate_warnings import _kind
 
-    rows = [
-        {"scenario": "s", "DATA": "2007-01-01", "well": "1", "WLPR": 40.0, "WWIR": 0.0},
-        {"scenario": "s", "DATA": "2007-02-01", "well": "1", "WLPR": 50.0, "WWIR": 0.0},
-        {"scenario": "s", "DATA": "2007-01-01", "well": "9", "WLPR": 0.0, "WWIR": 30.0},
-    ]
-    envelope = TrainingEnvelope.fit(rows)
-    steps = [ScheduleStep(
-        date(2007, 1, 1),
-        (ProducerControl("1", "OPEN", "LRAT", 90.0, 50.0),      # вне диапазона
-         ProducerControl("НОВАЯ", "OPEN", "LRAT", 30.0, 50.0)),  # такой скважины не было
-        (InjectorControl("9", "WATER", "OPEN", "RATE", 300.0, 300.0),),
-    )]
-
-    produced = envelope.warnings(steps)
+    envelope = TrainingEnvelope.fit([
+        {"prod:1": 1.0, "prod:2": 1.0, "inj:9": 1.0},
+        {"prod:1": 0.8, "prod:2": 1.2, "inj:9": 1.2},
+        {"prod:1": 1.2, "prod:2": 0.8, "inj:9": 0.8},
+    ])
+    produced = envelope.warnings({date(2007, 1, 1): {
+        "prod:1": 1.9,        # вне своего диапазона
+        "prod:2": 1.2,        # внутри своего, но фонд целиком — уже нет
+        "inj:9": 1.0,
+        "prod:НОВАЯ": 1.0,    # такого управления в обучении не было
+    }})
+    # артефакт, обученный до перевода детектора на множители, — тоже причина
+    produced += TrainingEnvelope(
+        {}, NumericRange(0.0, 0.0), NumericRange(0.0, 0.0)
+    ).warnings({date(2007, 1, 1): {"prod:1": 1.0}})
     assert produced, "проверка бессмысленна, если предупреждений нет"
 
     unrecognised = sorted({warning for warning in produced if _kind(warning) == "прочее"})

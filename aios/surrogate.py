@@ -90,72 +90,111 @@ class NumericRange:
 
 @dataclass(frozen=True)
 class TrainingEnvelope:
-    """Область применимости суррогата по скважинам и объекту целиком."""
+    """Область применимости суррогата — в тех же величинах, что и вход модели.
 
-    producer_rates: dict[str, NumericRange]
-    injector_rates: dict[str, NumericRange]
-    field_liquid_rate: NumericRange
-    field_injection_rate: NumericRange
+    Границы снимаются с **управляющих множителей** обучающей выборки, а не с
+    достигнутых дебитов. До 20.08 было наоборот: границы брались из `WLPR`/`WWIR`
+    датасета — то, что скважина фактически выдала, — а проверялся
+    `control.liquid_rate`, то есть то, что расписание запрашивает. Величины
+    разные: симулятор переводит скважину с `LRAT` на `BHP`, и запрошенное сплошь
+    выше достигнутого. На опорном историческом расписании Модели Z это давало
+    4 796 пометок «режим вне диапазона» при ожидаемом нуле
+    (`docs/experiments.md`, 20.08) — то есть защита срабатывала всегда и потому
+    не отличала опасное решение от безобидного.
+
+    Ключ — ключ управляющего признака (`prod:<скважина>`, `inj:<скважина>`),
+    ровно тот, в котором модель принимает вход; у датасетов старого вида, с одной
+    колонкой множителя на скважину, ключ — имя скважины.
+    """
+
+    control_multipliers: dict[str, NumericRange]
+    field_production: NumericRange
+    """Диапазон среднего множителя добычи по фонду за месяц одного сценария.
+
+    Нужен отдельно от поскважинного: DoE двигает скважины вразнобой, поэтому
+    расписание, поднявшее разом весь фонд, остаётся поскважинно внутри границ и
+    всё равно является экстраполяцией — связей такой силы модель не видела.
+    """
+
+    field_injection: NumericRange
 
     @classmethod
     def fit(cls, rows: list[dict[str, Any]]) -> TrainingEnvelope:
-        """Собрать границы из строк `scenario x well x month` датасета DoE."""
+        """Собрать границы по строкам матрицы управления: `сценарий × месяц`."""
         if not rows:
             raise ValueError("обучающий датасет пуст")
 
-        producers: dict[str, list[float]] = {}
-        injectors: dict[str, list[float]] = {}
-        field: dict[tuple[str, str], tuple[float, float]] = {}
+        seen: dict[str, list[float]] = {}
+        production: list[float] = []
+        injection: list[float] = []
         for row in rows:
-            scenario = str(row.get("scenario", ""))
-            month = str(row["DATA"])
-            well = str(row["well"])
-            liquid = max(float(row["WLPR"]), 0.0)
-            injection = max(float(row["WWIR"]), 0.0)
-            if liquid > 0:
-                producers.setdefault(well, []).append(liquid)
-            if injection > 0:
-                injectors.setdefault(well, []).append(injection)
-            total_liquid, total_injection = field.get((scenario, month), (0.0, 0.0))
-            field[(scenario, month)] = (total_liquid + liquid, total_injection + injection)
+            values = {str(key): float(value) for key, value in row.items()
+                      if float(value) >= 0}
+            for key, value in values.items():
+                seen.setdefault(key, []).append(value)
+            production.append(_prefix_mean(values, "inj:", invert=True))
+            injection.append(_prefix_mean(values, "inj:"))
 
         return cls(
-            producer_rates={well: _numeric_range(values) for well, values in producers.items()},
-            injector_rates={well: _numeric_range(values) for well, values in injectors.items()},
-            field_liquid_rate=_numeric_range([value[0] for value in field.values()]),
-            field_injection_rate=_numeric_range([value[1] for value in field.values()]),
+            control_multipliers={key: _multiplier_range(values)
+                                 for key, values in seen.items()},
+            field_production=_multiplier_range([value for value in production
+                                                if value is not None]),
+            field_injection=_multiplier_range([value for value in injection
+                                               if value is not None]),
         )
 
-    def warnings(self,
-                 steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> list[str]:
-        """Объяснить, чем расписание выходит за область обучающих прогонов."""
+    def covers(self, key: str, value: float) -> bool:
+        """Был ли такой множитель у этого управления в обучении.
+
+        Запрос для поиска: кандидата надо проверять **до** выбора, а не после —
+        оптимизатор целенаправленно тянет решение туда, где суррогат ошибается в
+        нашу пользу (`CLAUDE.md`). Пустая область применимости (артефакт обучен
+        до 20.08) отвечает «покрыто»: судить не по чему, а тихо запретить поиску
+        все режимы хуже, чем громкая пометка, которую в этом случае даёт
+        `warnings`.
+        """
+        if not self.control_multipliers:
+            return True
+        bounds = self.control_multipliers.get(key)
+        return bounds is not None and bounds.contains(value)
+
+    def warnings(self, multipliers: dict[date, dict[str, float]]) -> list[str]:
+        """Объяснить, чем управление выходит за область обучающих прогонов.
+
+        На вход — те же множители, что уходят в модель признаками, по месяцам.
+        """
+        if not self.control_multipliers:
+            return ["область применимости не записана в артефакте: модель обучена "
+                    "до перевода детектора на множители, и покрытие прогноза ничем "
+                    "не подтверждено"]
+
         warnings: list[str] = []
-        for month_start, controls in expand(steps).items():
-            total_liquid = 0.0
-            total_injection = 0.0
-            for well, control in controls.items():
-                if control.status != "OPEN":
-                    continue
-                if isinstance(control, ProducerControl):
-                    rate = max(control.liquid_rate or 0.0, 0.0)
-                    total_liquid += rate
-                    warnings.extend(
-                        _range_warning(month_start, well, "дебит", rate,
-                                       self.producer_rates.get(well))
+        for month_start, values in multipliers.items():
+            # Отрицательный множитель — метка «опорного режима не было» (запуск из
+            # простоя, перевод под закачку). Это не режим, и говорит о нём
+            # отдельная пометка; диапазонная повторила бы её другими словами.
+            known = {key: value for key, value in values.items() if value >= 0}
+            for key, value in sorted(known.items()):
+                bounds = self.control_multipliers.get(key)
+                if bounds is None:
+                    warnings.append(
+                        f"{month_start.isoformat()} {key}: такое управление "
+                        f"отсутствует в обучающих прогонах"
                     )
-                else:
-                    rate = max(control.rate or 0.0, 0.0)
-                    total_injection += rate
-                    warnings.extend(
-                        _range_warning(month_start, well, "закачка", rate,
-                                       self.injector_rates.get(well))
+                elif not bounds.contains(value):
+                    warnings.append(
+                        f"{month_start.isoformat()} {key}: множитель {value:g} вне "
+                        f"обучающего диапазона {bounds.minimum:g}..{bounds.maximum:g}"
                     )
 
             warnings.extend(_field_range_warning(
-                month_start, "суммарный дебит", total_liquid, self.field_liquid_rate
+                month_start, "суммарный множитель добычи",
+                _prefix_mean(known, "inj:", invert=True), self.field_production,
             ))
             warnings.extend(_field_range_warning(
-                month_start, "суммарная закачка", total_injection, self.field_injection_rate
+                month_start, "суммарный множитель закачки",
+                _prefix_mean(known, "inj:"), self.field_injection,
             ))
         return warnings
 
@@ -405,34 +444,45 @@ def _slope(points: list[tuple[float, float]]) -> float:
     return covariance / variance
 
 
+def _multiplier_range(values: list[float]) -> NumericRange:
+    """Границы множителя, в которые нейтральный режим входит по построению.
+
+    Единица — это опорное расписание: от него DoE отсчитывает отклонения, на нём
+    же стоит история каждого сценария до начала управления. Без явного включения
+    покрытие единицы держится на случайности выборки: DoE в каждом сценарии часть
+    фонда останавливает, поэтому средний множитель по фонду ни в одном сценарии
+    до единицы не дотягивает. На настоящем расписании Модели Z это давало 450
+    пометок «суммарный режим объекта вне диапазона» — та же ложная тревога, ради
+    которой переписан весь детектор, только на уровне фонда (замер 20.08).
+    """
+    return NumericRange(min([*values, 1.0]), max([*values, 1.0]))
+
+
 def _numeric_range(values: list[float]) -> NumericRange:
     if not values:
         return NumericRange(0.0, 0.0)
     return NumericRange(min(values), max(values))
 
 
-def _range_warning(month_start: date, well: str, label: str, value: float,
-                   bounds: NumericRange | None) -> list[str]:
-    if value <= 0:
-        return []
-    prefix = f"{month_start.isoformat()} скв. {well}: {label} {value:g} м3/сут"
-    if bounds is None:
-        return [f"{prefix}, такой режим отсутствует в обучающих прогонах"]
-    if not bounds.contains(value):
-        return [
-            f"{prefix} вне обучающего диапазона "
-            f"{bounds.minimum:g}..{bounds.maximum:g} м3/сут"
-        ]
-    return []
+def _prefix_mean(values: dict[str, float], prefix: str,
+                 *, invert: bool = False) -> float | None:
+    """Средний множитель по половине фонда: закачка при `invert=False`, добыча при True.
+
+    Ключи датасетов старого вида (одна колонка на скважину, без роли) считаются
+    добычей: другой роли в тех пакетах не было.
+    """
+    chosen = [value for key, value in values.items()
+              if key.startswith(prefix) is not invert]
+    return sum(chosen) / len(chosen) if chosen else None
 
 
-def _field_range_warning(month_start: date, label: str, value: float,
+def _field_range_warning(month_start: date, label: str, value: float | None,
                          bounds: NumericRange) -> list[str]:
-    if bounds.contains(value):
+    if value is None or bounds.contains(value):
         return []
     return [
-        f"{month_start.isoformat()}: {label} {value:g} м3/сут вне обучающего "
-        f"диапазона {bounds.minimum:g}..{bounds.maximum:g} м3/сут"
+        f"{month_start.isoformat()}: {label} {value:g} вне обучающего "
+        f"диапазона {bounds.minimum:g}..{bounds.maximum:g}"
     ]
 
 
