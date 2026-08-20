@@ -76,7 +76,14 @@ def main(argv: list[str] | None = None) -> int:
             neural_path=Path(arguments.surrogate_model) if arguments.surrogate_model else None,
             history=history,
             reference_steps=base_steps,
-            fluids=config.fluids, well_fluids=deck_fluids.by_well,
+            # плотности по скважинам сюда не передаются намеренно: ни
+            # тривиальный суррогат, ни обученный их не принимают — они
+            # переводят объёмы в тонны одной плотностью. На вход ЧДД
+            # подеквенные плотности идут выше, в summary.monthly_rows, и
+            # заявляемое число считается по ним. Ограничение прогноза
+            # записано в docs/experiments.md; передавать сюда параметр,
+            # который некому применить, — значит лгать сигнатурой.
+            fluids=config.fluids,
         )
     except SurrogateLoadError as error:
         print(error, file=sys.stderr)
@@ -93,7 +100,9 @@ def main(argv: list[str] | None = None) -> int:
         tune_rates=not arguments.no_tune_rates,
         joint_rate_search=selected.joint_rate_search,
         limits=config.limits,
-        fluids=config.fluids, well_fluids=deck_fluids.by_well,
+        # см. пояснение выше: цикл считает прогноз одной плотностью, а
+        # подеквенные идут в выгрузку, из которой берётся заявляемое число
+        fluids=config.fluids,
     )
 
     if arguments.confirm:

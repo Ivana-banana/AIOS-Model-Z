@@ -433,3 +433,58 @@ def test_pack_npv_shows_the_whole_scenario_not_only_its_first_period(tmp_path, m
     assert code == 0, printed
     assert "0.80…1.30" in printed, "показан только первый период"
     assert "период" in printed, "не сказано, что режим внутри сценария меняется"
+
+
+def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsys):
+    """Цикл обязан доходить до конца на рабочем пути, а не только в юнит-тестах.
+
+    Настоящий случай 20.08, найденный первым же сквозным прогоном на ГГДМ:
+    `run_cycle.py` звал `for_cycle(..., well_fluids=…)`, а такого параметра у
+    функции нет — `TypeError` прилетал **после** одиннадцати минут расчёта
+    базового сценария. Ошибка прожила двое суток: юнит-тесты проверяли
+    `loop.run_cycle` и `model.for_cycle` порознь, и ни один не звал `main`
+    скрипта, то есть ровно ту склейку, которая и разошлась.
+
+    Тест собирает крошечный прогон и проходит цикл целиком на тривиальном
+    бейзлайне — без симулятора, но через тот же `main`, что запускает
+    `run_all.py`.
+    """
+    import csv
+
+    from conftest import make_row
+    from test_dataset import _tiny_project
+
+    from scripts import run_cycle
+
+    config = _tiny_project(tmp_path)
+    # нормативы берём настоящие: предмет теста — склейка вызовов, а не экономика
+    norms = ROOT / "vendor" / "CHDD_PYTHON" / "input" / "Нормативы_ЧДД.xlsx"
+    if not norms.is_file():
+        pytest.skip("нет файла нормативов организаторов")
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'norms_file = "norms.xlsx"', f'norms_file = "{norms.as_posix()}"'
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "runs" / "RUN"
+    source.mkdir(parents=True)
+    rows = [
+        make_row(f"{year}-{month:02d}-01", "1", wlpr=30.0, womr=20.0,
+                 liquid=900.0, oil=600.0)
+        for year in (2007, 2008) for month in range(1, 13)
+    ]
+    with (source.parent / "rows.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    monkeypatch.setattr(run_cycle.summary, "monthly_rows", lambda *a, **k: rows)
+
+    code = run_cycle.main([
+        "--from", str(source.parent), "--out", str(tmp_path / "out"),
+        "--no-tune-rates", "--config", str(config),
+    ])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert "суррогат:" in printed
