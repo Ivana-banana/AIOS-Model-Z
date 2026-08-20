@@ -637,3 +637,61 @@ def test_forcing_beyond_the_doe_is_still_flagged():
     forced = _schedule(rate=95.0 * 2.0)   # датасет кончается на 1.5
 
     assert _range_warnings(surrogate.in_training_range(forced))
+
+
+def test_watercut_parameterisation_cannot_predict_more_oil_than_liquid():
+    """Нефть предсказывается через обводнённость, а не отдельной величиной.
+
+    Измерено 20.08 на настоящем расписании: из 34 оставшихся пометок 33 —
+    «нефти больше, чем жидкости» в самом прогнозе (скв. 1: 437,2 против 427,6 т).
+    Это физически невозможно, и причина в параметризации: модель предсказывает
+    `WLPT_Diff` и `WOMT_Diff` как две независимые величины, ничем не связанные
+    между собой.
+
+    Если предсказывать долю воды и восстанавливать нефть как
+    `жидкость × (1 − обводнённость)`, нарушение становится невозможным по
+    построению, а не отлавливается постфактум. Заодно у модели появляется
+    величина в понятном диапазоне 0…1 вместо тонн, отличающихся по скважинам на
+    порядки.
+    """
+    frame = _watercut_frame()
+
+    bundle = train(frame, seed=11, targets="watercut")
+    surrogate = NeuralSurrogate.create(
+        bundle, [step(30.0)], require_quality=False
+    )
+    rows = surrogate.predict([step(30.0)])
+
+    assert bundle.report.targets == "watercut"
+    assert rows, "прогноз пуст"
+    for row in rows:
+        assert row["WOMT_Diff"] <= row["WLPT_Diff"] + 1e-9, (
+            f"нефти больше жидкости: {row['WOMT_Diff']} > {row['WLPT_Diff']}"
+        )
+        assert row["WOMT_Diff"] >= 0.0
+
+
+def _watercut_frame() -> pd.DataFrame:
+    """Датасет, на котором наивная параметризация нарушает физику.
+
+    Обводнённость растёт со временем, поэтому нефть падает быстрее жидкости, и
+    модель, предсказывающая их порознь, легко ставит нефть выше жидкости на
+    краях диапазона.
+    """
+    rows = []
+    for scenario, multiplier in (("a", 0.7), ("b", 1.0), ("c", 1.3), ("d", 1.6)):
+        for month in range(1, 25):
+            liquid = 1000.0 * multiplier
+            watercut = min(0.05 + 0.03 * month, 0.95)
+            rows.append({
+                "scenario": scenario,
+                "DATA": pd.Timestamp(f"2007-{(month - 1) % 12 + 1:02d}-01")
+                        + pd.DateOffset(years=(month - 1) // 12),
+                "well": "1",
+                "multiplier": multiplier, "production_multiplier": multiplier,
+                "injection_multiplier": np.nan, "is_shut": 0,
+                "WLPR": 30.0 * multiplier, "WWIR": 0.0,
+                "WLPT_Diff": liquid, "WOMT_Diff": liquid * (1.0 - watercut),
+                "WWIT_Diff": 0.0, "THP": 100.0, "BHP": 80.0,
+            })
+    return pd.DataFrame(rows)
