@@ -205,8 +205,24 @@ def sanity_problems(rows: list[dict[str, Any]],
         last = previous.get(well)
         if last is not None:
             for column in ("WLPT", "WOMT", "WWIT"):
-                if row[column] + 1e-6 < last[column]:
-                    problems.append(f"{where}: накопленное {column} уменьшилось")
+                drop = last[column] - row[column]
+                if drop <= 1e-6:
+                    continue
+                increment = row[f"{column}_Diff"]
+                # На выгрузке симулятора `*_Diff` — это и есть разность соседних
+                # накопленных (`monthly_rows`), поэтому отрицательный прирост и
+                # уменьшение накопленного — один факт, уже названный выше. Второй
+                # строки он не заслуживает: на опорном расписании такие пары дают
+                # четверть всех нарушений.
+                # Снять проверку целиком нельзя: прогноз суррогата собирается не
+                # разностями, там ряд накопленных едет и при неотрицательном
+                # приросте, и на большую величину, чем прирост объясняет.
+                if increment < 0 and abs(drop + increment) <= 1e-6 * max(1.0, drop):
+                    continue
+                problems.append(
+                    f"{where}: накопленное {column} уменьшилось на {drop:.6g} "
+                    f"при приросте {increment:.6g}"
+                )
         previous[well] = {column: row[column] for column in ("WLPT", "WOMT", "WWIT")}
 
     return problems
