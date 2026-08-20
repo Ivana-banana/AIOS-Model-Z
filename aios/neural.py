@@ -173,18 +173,63 @@ class NeuralSurrogate:
             _expand_role_controls(self.reference_steps),
         )
 
-    def covers_control(self, role: str, well: str, multiplier: float) -> bool:
+    def covers_control(self, role: str, well: str, multiplier: float,
+                       steps: list[ScheduleStep] | tuple[ScheduleStep, ...] | None = None) -> bool:
         """Был ли такой множитель у этого управления в обучении — до выбора, а не после.
 
         Роль — `production` или `injection`; ключ признака собирается здесь,
         чтобы вызывающему не приходилось знать про префиксы `prod:`/`inj:`.
         Скважина, которой в обучающем наборе нет вовсе, покрытой не считается.
+
+        `steps` — расписание, которое поиск масштабирует (`base_steps`). Оно нужно
+        потому, что множитель поиска отсчитывается **от него**, а обучающие
+        множители DoE — от опорного расписания дека, и это разные величины всякий
+        раз, когда цикл идёт поверх уже форсированного прогона: в интерфейсе
+        `base_steps` берётся из открытого прогона, а опорное — из дека. Без
+        перевода фильтр отвечал «покрыто» там, где детектор на собранном
+        расписании говорит «вне диапазона» — две защиты об одном решении говорили
+        разное. Опущенный аргумент означает «множитель уже отсчитан от опорного».
         """
         prefix = "prod:" if role == "production" else "inj:"
         key = f"{prefix}{well}"
         if key not in self.bundle.control_wells and well in self.bundle.control_wells:
             key = well   # датасет старого вида: одна колонка множителя на скважину
-        return self.bundle.envelope.covers(key, multiplier)
+        if steps is None:
+            return self.bundle.envelope.covers(key, multiplier)
+
+        span = self._scale_span(role, well, steps)
+        if span is None:
+            return False
+        # Область применимости — интервал, поэтому проверять достаточно концы:
+        # всё между ними покрыто вместе с ними
+        return all(self.bundle.envelope.covers(key, multiplier * scale) for scale in span)
+
+    def _scale_span(self, role: str, well: str,
+                    steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                    ) -> tuple[float, float] | None:
+        """Во сколько раз режим `steps` отличается от опорного — минимум и максимум.
+
+        Один множитель на весь горизонт не годится: с периодами (`aios/doe.py`)
+        режим скважины меняется по ходу сценария, и отношение к опорному вместе с
+        ним. `None` означает «сопоставить не с чем»: скважина работает там, где
+        опорное расписание её не запускает вовсе, — это не масштабирование режима,
+        а запуск из простоя, которого в обучении нет ни одного.
+        """
+        planned = _expand_role_controls(steps)
+        reference = _expand_role_controls(self.reference_steps)
+        scales: list[float] = []
+        for month_start, controls in planned.items():
+            rate = _role_rate(controls.get((role, well)), role)
+            base = _role_rate(reference.get(month_start, {}).get((role, well)), role)
+            if base > 0:
+                scales.append(rate / base)
+            elif rate > 0:
+                return None
+        if not scales:
+            # скважина стоит весь горизонт: множитель ничего не меняет, и
+            # запрещать поиску ноль не за что
+            return (1.0, 1.0)
+        return (min(scales), max(scales))
 
     def in_training_range(self,
                           steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> list[str]:

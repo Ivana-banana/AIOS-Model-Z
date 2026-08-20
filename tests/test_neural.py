@@ -637,3 +637,30 @@ def test_forcing_beyond_the_doe_is_still_flagged():
     forced = _schedule(rate=95.0 * 2.0)   # датасет кончается на 1.5
 
     assert _range_warnings(surrogate.in_training_range(forced))
+
+
+def test_coverage_is_asked_about_the_schedule_being_scaled_not_about_the_bare_multiplier():
+    """Множитель поиска отсчитывается от базового расписания, область — от опорного.
+
+    Это те же две несопоставимые величины, ради которых 20.08 переписан детектор
+    (`cfa7153`), только на входе в поиск. `choose_joint_rates` масштабирует
+    `base_steps`, а обучающие множители DoE отсчитаны от расписания дека. В
+    интерфейсе это разные расписания: `base_steps` берётся из открытого прогона
+    (`aios/web/app.py`), а опорное — из дека, поэтому цикл поверх любого
+    форсированного прогона спрашивал покрытие не про тот режим, который собирался
+    выбрать. Фильтр Р-43 при этом отвечал «покрыто», а детектор на собранном
+    расписании — «вне диапазона»: две защиты об одном решении говорили разное.
+    """
+    bundle = train(_dataset_frame(), seed=7, hidden_layers=(4,), max_iter=50)
+    reference = _schedule(rate=100.0)          # обучение: множители 0.8…1.5
+    forced = _schedule(rate=140.0)             # открытый прогон уже ×1.4 к деку
+
+    surrogate = NeuralSurrogate.create(bundle, reference, require_quality=False)
+
+    # ×1.2 к форсированному прогону — это ×1.68 к деку, вне обучающего диапазона
+    assert surrogate.covers_control("production", "1", 1.2, forced) is False
+    assert _range_warnings(surrogate.in_training_range(_schedule(rate=168.0)))
+
+    # то же ×1.2 поверх опорного расписания остаётся покрытым
+    assert surrogate.covers_control("production", "1", 1.2, reference) is True
+    assert surrogate.covers_control("production", "1", 1.2) is True

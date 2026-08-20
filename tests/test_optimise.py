@@ -253,7 +253,10 @@ class ForcingSurrogate:
 class CoveredForcingSurrogate(ForcingSurrogate):
     """Тот же прогноз плюс запрос покрытия: выше 1.25 в обучении такого режима не было."""
 
-    def covers_control(self, role, well, multiplier):
+    def covers_control(self, role, well, multiplier, steps=None):
+        # `steps` — расписание, которое масштабирует поиск: настоящий суррогат
+        # переводит по нему множитель в отсчёт от опорного расписания обучения.
+        # Здесь база и опорное совпадают, поэтому перевод тождественный
         return multiplier <= 1.25 + 1e-9
 
 
@@ -463,3 +466,26 @@ def test_explain_reports_candidates_withheld_even_without_a_change():
 
     assert "вне обучения" in text
     assert "1" in text
+
+
+def test_coverage_is_asked_about_the_schedule_the_search_scales():
+    """Фильтр обязан спрашивать покрытие про базовое расписание, а не про голый множитель.
+
+    Множитель поиска отсчитан от `base_steps`, обучающие множители DoE — от
+    опорного расписания дека, и в интерфейсе это разные расписания (цикл
+    запускается поверх открытого прогона). Без передачи базы суррогат отвечал про
+    режим, которого поиск не рассматривает: замер 20.08 на форсированном ×1.4
+    прогоне показал «покрыто» для ×1.68 к деку при обучении на 0.8…1.5.
+    """
+    asked: list[object] = []
+
+    class RecordingSurrogate(ForcingSurrogate):
+        def covers_control(self, role, well, multiplier, steps=None):
+            asked.append(steps)
+            return True
+
+    base = plan(["a"], months=1)
+    optimise.choose_joint_rates(RecordingSurrogate(), base, start_date=START)
+
+    assert asked, "покрытие не спрашивалось вовсе"
+    assert all(steps == base for steps in asked)

@@ -250,7 +250,9 @@ def choose_joint_rates(
 
     for kind, well in controls:
         before = current_chdd
-        covered, outside = _covered_multipliers(surrogate, kind, well, multipliers)
+        covered, outside = _covered_multipliers(
+            surrogate, kind, well, multipliers, base_steps
+        )
         best_multiplier = selected[(kind, well)]
         best_steps = current_steps
         best_chdd = current_chdd
@@ -277,6 +279,7 @@ def _covered_multipliers(
     kind: str,
     well: str,
     multipliers: tuple[float, ...],
+    base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """Разделить кандидатов на покрытых обучением и отброшенных.
 
@@ -289,12 +292,19 @@ def _covered_multipliers(
     бейзлайна `covers_control` нет вовсе, и это значит «покрытие неизвестно» —
     тогда поиск работает как раньше. Множитель 1.0 остаётся всегда: это базовый
     режим расписания и точка отсчёта, а не кандидат.
+
+    Спрашивается покрытие **про масштабируемое расписание**, а не про голый
+    множитель: поиск отсчитывает его от `base_steps`, а обучающие множители DoE
+    отсчитаны от опорного расписания дека. Совпадают они только когда цикл идёт
+    поверх исторического расписания; поверх форсированного прогона голый
+    множитель означал не тот режим, и фильтр пропускал экстраполяцию, которую
+    детектор на собранном расписании затем честно помечал.
     """
     covers = getattr(surrogate, "covers_control", None)
     if covers is None:
         return multipliers, ()
     covered = tuple(value for value in multipliers
-                    if value == 1.0 or covers(kind, well, value))
+                    if value == 1.0 or covers(kind, well, value, base_steps))
     return covered, tuple(value for value in multipliers if value not in covered)
 
 
