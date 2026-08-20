@@ -93,6 +93,16 @@ class Schedule:
     steps: tuple[ScheduleStep, ...]
 
     unsupported_controls: tuple[str, ...] = ()
+
+    preamble_controls: tuple[str, ...] = ()
+    """Ключевые слова, задающие режим **до первого `DATES`**.
+
+    Разбор их не теряет, но и в шаги не превращает: дата у такого режима — начало
+    расчёта из `START` (RUNSPEC), а этот файл сюда не приходит. На Модели Z список
+    пуст (замер 20.08: в преамбуле только `RPTSCHED` и `WELSPECS`), но заявляемое
+    число считается на тестовом кейсе организаторов, дека которого мы не видели.
+    Решение, что с этим делать, принимает `aios.run.build_case` — см. Р-51.
+    """
     """Ключевые слова внутри шагов, которые задают режим, но нами не разбираются.
 
     Пустой кортеж — весь режим дека прочитан. Непустой означает, что часть
@@ -159,6 +169,14 @@ def parse_keywords(text: str) -> list[Keyword]:
 #: вовсе, а в собранный файл попадут и он, и наш `WCONPROD` — конфликт. Остальные
 #: лишь домножают или переключают уже заданный режим, доходят до симулятора
 #: дословно, и неточен только наш собственный взгляд на режимы. Отказывать из-за
+#: Ключевые слова, назначающие скважине режим. Нужны отдельно от
+#: `UNSUPPORTED_CONTROL_KEYWORDS`: там рядом лежат `TSTEP` и `INCLUDE`, которые
+#: режима не задают. Список тот же, по которому машина А разбирала преамбулу
+#: настоящего `Model_Z_sch.inc` (20.08): там их ноль.
+CONTROL_KEYWORDS = frozenset({
+    "WCONPROD", "WCONINJE", "WCONHIST", "WCONINJH", "WELOPEN", "WELTARG",
+})
+
 #: них значило бы превратить работоспособный кейс организаторов в отказ.
 REPLACING_CONTROL_KEYWORDS = frozenset({"WCONHIST", "WCONINJH", "TSTEP", "INCLUDE"})
 
@@ -182,6 +200,7 @@ def parse_schedule_text(text: str) -> Schedule:
     preamble: list[Keyword] = []
     steps: list[ScheduleStep] = []
     unsupported: dict[str, None] = {}
+    preamble_controls: dict[str, None] = {}
     current_date: date | None = None
     producers: list[ProducerControl] = []
     injectors: list[InjectorControl] = []
@@ -199,6 +218,14 @@ def parse_schedule_text(text: str) -> Schedule:
             producers.extend(_producer(record) for record in keyword.records)
         elif keyword.name == "WCONINJE" and current_date is not None:
             injectors.extend(_injector(record) for record in keyword.records)
+        elif keyword.name in CONTROL_KEYWORDS and current_date is None:
+            # Режим до первой даты действует с начала расчёта (`START` в RUNSPEC),
+            # а этого файла мы не читаем — датировать его здесь нечем. Молча
+            # потерять нельзя: скважина, чей единственный режим стоит тут, не
+            # попадёт ни в `wells`, ни в SUMMARY-секцию, и её выручка не дойдёт до
+            # ЧДД. Поэтому запоминаем и даём отказать тому, кто собирает кейс.
+            preamble_controls[keyword.name] = None
+            preamble.append(keyword)
         elif keyword.name in UNSUPPORTED_CONTROL_KEYWORDS:
             # и до первой DATES тоже: дек, ведущий время через TSTEP, шагов не
             # даёт вовсе, и всё его содержимое оказывается в преамбуле
@@ -212,7 +239,8 @@ def parse_schedule_text(text: str) -> Schedule:
     if current_date is not None:
         steps.append(ScheduleStep(current_date, tuple(producers), tuple(injectors)))
     return Schedule(preamble=tuple(preamble), steps=tuple(steps),
-                    unsupported_controls=tuple(sorted(unsupported)))
+                    unsupported_controls=tuple(sorted(unsupported)),
+                    preamble_controls=tuple(sorted(preamble_controls)))
 
 
 def parse_schedule(path: str | Path) -> Schedule:
