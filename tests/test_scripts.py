@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ SCRIPTS = ROOT / "scripts"
 REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_doe.py", "run_cycle.py",
             "transcribe.py", "build_dataset.py", "train_surrogate.py", "run_all.py",
             "docx_to_text.py", "profiles.py", "pack_npv.py",
-            "surrogate_warnings.py")
+            "surrogate_warnings.py", "build_scaled_case.py")
 
 
 @pytest.mark.parametrize("name", REQUIRED)
@@ -648,3 +649,57 @@ def test_run_all_confirms_with_the_same_surrogate_it_planned_with():
         assert "--surrogate-model" in command, (
             "шаг подтверждения считает обещание другой моделью: " + " ".join(command)
         )
+
+
+def test_scaled_case_scales_our_steps_and_leaves_history_alone(tmp_path, monkeypatch):
+    """Масштабируется управление, а не история — иначе мы переписываем прошлое.
+
+    Команда появилась 21.08 потому, что лучший подтверждённый результат проекта
+    (форсаж ×1,5 с закачкой ×2,0, ЧДД 13 642,4) собирался разовым кодом: прогон
+    исчез вместе со средой, а команды, которой его повторить, в репозитории не
+    осталось. Заявлять ЧДД, который не можешь пересчитать, запрещено, поэтому
+    сценарий обязан строиться командой и быть покрыт тестом.
+    """
+    from test_dataset import _tiny_project
+
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from scripts import build_scaled_case
+
+    captured = {}
+
+    def fake_build_case(run_dir, model_dir, steps=None, control_start=None,
+                        wells=None, case_name="RUN"):
+        captured["steps"] = list(steps or [])
+        captured["control_start"] = control_start
+
+        class Case:
+            data_file = Path(run_dir) / f"{case_name}.DATA"
+
+        return Case()
+
+    history = ScheduleStep(date(2006, 1, 1),
+                           (ProducerControl("1", "OPEN", "LRAT", 10.0, 50.0),), ())
+    ours = ScheduleStep(date(2007, 1, 1),
+                        (ProducerControl("1", "OPEN", "LRAT", 20.0, 50.0),),
+                        (InjectorControl("2", "WATER", "OPEN", "RATE", 40.0, 250.0),))
+
+    class Parsed:
+        steps = (history, ours)
+        wells = ("1", "2")
+
+    monkeypatch.setattr(build_scaled_case, "build_case", fake_build_case)
+    monkeypatch.setattr(build_scaled_case, "parse_schedule", lambda *a, **k: Parsed())
+    monkeypatch.setattr(build_scaled_case, "find_data_file", lambda *a, **k: None)
+    monkeypatch.setattr(build_scaled_case, "layout",
+                        lambda *a, **k: type("L", (), {"one": lambda self, name: Path("s.inc")})())
+
+    code = build_scaled_case.main([
+        str(tmp_path / "run"), "--production", "1.5", "--injection", "2.0",
+        "--config", str(_tiny_project(tmp_path)),
+    ])
+
+    assert code == 0
+    assert len(captured["steps"]) == 1, "история не должна попадать в наши шаги"
+    scaled = captured["steps"][0]
+    assert scaled.producers[0].liquid_rate == pytest.approx(30.0)
+    assert scaled.injectors[0].rate == pytest.approx(80.0)
