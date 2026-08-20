@@ -61,8 +61,14 @@ def main(argv: list[str] | None = None) -> int:
         if not (case.parent / ".doe-done").is_file():
             skipped.append(f"{name}: нет отметки о завершении")
             continue
-        rows = summary.monthly_rows(case, fluids=config.fluids,
-                                    well_fluids=deck_fluids.by_well)
+        try:
+            rows = summary.monthly_rows(case, fluids=config.fluids,
+                                        well_fluids=deck_fluids.by_well)
+        except ValueError as error:
+            # один негодный сценарий не должен уносить таблицу по остальным
+            # сорока семи, но и молча стать нулём в ней он тоже не должен
+            skipped.append(f"{name}: {error}")
+            continue
         if not rows:
             skipped.append(f"{name}: выгрузка пустая")
             continue
