@@ -70,6 +70,9 @@ def check(text: str, deck_text: str, control_start: date) -> tuple[list[str], li
     for problem in schedule_module.validate(controlled, known):
         failures.append(str(problem))
 
+    for problem in _preamble_problems(text, submitted, known, control_start):
+        failures.append(f"до первого DATES: {problem}")
+
     if submitted.unsupported_controls:
         notes.append(
             "режим задан словами, которые мы не разбираем "
@@ -89,6 +92,41 @@ def check(text: str, deck_text: str, control_start: date) -> tuple[list[str], li
             "Eclipse они сохраняют режим, назначенный до этого файла"
         )
     return failures, notes
+
+
+def _preamble_problems(text: str, submitted: deck_module.Schedule,
+                       known: frozenset[str], control_start: date) -> list[str]:
+    """Нарушения в режимах, записанных до первого DATES.
+
+    `aios.deck` кладёт такое ключевое слово в преамбулу, а не в шаг: даты у него
+    ещё нет, и приписывать её нельзя — режим действует с той даты, на которой дек
+    стоял к моменту подключения файла, а она известна только в контексте всего
+    дека. Пропускать его нельзя тем более: дебит 900 м³/сут, записанный до
+    первого DATES, проходил проверку с нулём отказов, и файл объявлялся пригодным
+    к отправке (найдено прогоном 20.08).
+
+    Проверяются нарушения, от даты не зависящие: предел дебита, неизвестный режим,
+    скважина не из дека. Судится преамбула ровно тогда, когда весь файл наш, то
+    есть первый его шаг лежит в управляемой части; файл, несущий историю, остаётся
+    за организаторами целиком — по тому же правилу, что и его шаги.
+
+    Записи разбираются подстановкой `DATES` перед текстом, а не своим разбором:
+    парсер у нас один, и второй его вариант рано или поздно разойдётся с первым.
+    Дата подставляется тем же генератором, которым мы пишем расписание, — иначе
+    её пришлось бы собирать руками, и в сообщении об ошибке стоял бы не тот месяц.
+    """
+    if not submitted.steps or submitted.steps[0].date < control_start:
+        return []
+    first = submitted.steps[0].date
+    probe = deck_module.parse_schedule_text(
+        schedule_module.render([deck_module.ScheduleStep(first, (), ())]) + text
+    )
+    if not probe.steps:
+        return []
+    head = probe.steps[0]
+    if not head.producers and not head.injectors:
+        return []
+    return [str(problem) for problem in schedule_module.validate([head], known)]
 
 
 def _horizon_notes(first: date, last: date, reference: deck_module.Schedule) -> list[str]:

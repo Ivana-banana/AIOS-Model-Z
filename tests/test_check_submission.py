@@ -169,3 +169,29 @@ def test_a_conversion_in_one_step_is_not_also_a_stop_and_a_start():
     )))
 
     assert events(parsed.steps) == {"остановок": 0, "пусков": 0, "переводов под закачку": 1}
+
+
+def test_a_control_before_the_first_dates_is_checked_too_not_skipped():
+    """Режим до первого DATES обязан проверяться наравне с остальными.
+
+    `aios.deck` кладёт такое ключевое слово в преамбулу, а не в шаг: даты у него
+    ещё нет. Проверка смотрела только `steps`, поэтому дебит 900 м³/сут,
+    записанный до первого DATES, проходил предполётную проверку с нулём отказов —
+    и файл объявлялся пригодным к отправке. Найдено прогоном 20.08.
+
+    Случай не выдуманный: сам смысл этой проверки в том, что файл мог быть
+    собран прежней версией кода, скопирован между машинами или отредактирован
+    руками (докстрока `scripts/check_submission.py`). Наш генератор преамбулу
+    режимами не наполняет — а проверяем мы не его, а файл.
+    """
+    text = (
+        "WCONPROD\n 'W1' 'OPEN' 'LRAT' 3* 900 1* 50 /\n/\n\n"
+        + render(steps((date(2007, 1, 1), (producer("1", 100.0),), ())))
+    )
+
+    failures, _ = check(text, DECK, CONTROL_START)
+
+    assert any("запрещено методикой" in failure for failure in failures), (
+        "нарушение до первого DATES прошло проверку"
+    )
+    assert any("до первого DATES" in failure for failure in failures)
