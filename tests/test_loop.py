@@ -144,7 +144,7 @@ def test_confirmation_replaces_the_forecast_with_the_real_calculation(surrogate,
 
     # «выгрузка ГГДМ»: тот же фонд, но нефти вдвое меньше прогноза
     measured = [dict(row, WOMT_Diff=row["WOMT_Diff"] / 2) for row in result.rows]
-    confirmed = loop.confirm(result, measured, CONTROL_START)
+    confirmed = loop.confirm(result, measured, CONTROL_START, base_rows=result.rows)
 
     assert confirmed.confirmed is True
     assert confirmed.chdd_m < result.chdd_m
@@ -253,3 +253,34 @@ def test_summary_names_the_discarded_rows_when_there_are_any():
     text = spoiled.summary()
     assert "4231" in text
     assert "исключ" in text.lower()
+
+
+def test_confirmed_gain_is_a_difference_of_two_full_calculations(surrogate, norms):
+    """Подтверждённый прирост нельзя считать от прогнозного базового.
+
+    `confirm` заменял только `chdd_m`, а `base_chdd_m` оставлял прогнозным — и
+    `gain_m` становился разностью двух разных источников, подписанной
+    «подтверждено полным расчётом». Замер 21.08 на синтетике: прогноз обещал
+    прирост −100,0, после подтверждения печаталось −999,2, потому что базовое
+    число осталось от суррогата.
+
+    `scripts/run_cycle.py` эту ловушку обходил вручную — считал базовый ЧДД сам и
+    печатал разность мимо `gain_m`. То есть защита держалась на том, что
+    единственный вызывающий про неё знает.
+    """
+    result = loop.run_cycle(surrogate, plan(), norms,
+                            control_start=CONTROL_START, start_date=CONTROL_START)
+    measured = [dict(row, WOMT_Diff=row["WOMT_Diff"] / 2) for row in result.rows]
+    base_measured = [dict(row, WOMT_Diff=row["WOMT_Diff"] * 0.9) for row in result.rows]
+
+    confirmed = loop.confirm(result, measured, CONTROL_START, base_rows=base_measured)
+
+    from aios import economics
+    expected_base = economics.compute_npv(
+        base_measured, headers=economics.REQUIRED_COLUMNS,
+        start_date=CONTROL_START.isoformat(),
+    ).chdd_m
+    assert confirmed.base_chdd_m == pytest.approx(expected_base), (
+        "базовое число осталось прогнозным"
+    )
+    assert confirmed.gain_m == pytest.approx(confirmed.chdd_m - expected_base)

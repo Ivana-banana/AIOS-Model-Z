@@ -186,16 +186,29 @@ def run_cycle(surrogate: Surrogate,
     )
 
 
-def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date) -> CycleResult:
+def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
+            *, base_rows: list[dict[str, Any]]) -> CycleResult:
     """Заменить прогнозные числа результатом полного расчёта.
 
-    `rows` — выгрузка ГГДМ по тому же расписанию (`aios.summary.monthly_rows`).
-    После этого `confirmed` становится True, и только тогда прирост можно
-    называть результатом, а ЧДД — заявлять организаторам.
+    `rows` — выгрузка ГГДМ по расписанию цикла, `base_rows` — выгрузка ГГДМ по
+    базовому сценарию (обе из `aios.summary.monthly_rows`). После этого
+    `confirmed` становится True, и только тогда прирост можно называть
+    результатом, а ЧДД — заявлять организаторам.
+
+    **Базовое число пересчитывается тоже, и это не формальность.** Раньше
+    заменялся только `chdd_m`, а `base_chdd_m` оставался прогнозом суррогата —
+    то есть `gain_m` становился разностью двух разных источников и при этом
+    подписывался «подтверждено полным расчётом». Замер 21.08: прогноз обещал
+    прирост −100,0, после подтверждения печаталось −999,2. `run_cycle.py` эту
+    ловушку обходил вручную, считая базовый ЧДД сам, — то есть защита держалась
+    на том, что единственный вызывающий про неё помнит.
+
+    Аргумент обязателен по той же причине, по какой обязателен `start_date` в
+    `economics.compute_npv`: забыть его можно ровно один раз.
     """
     confirmed = _npv(rows, start_date)
     return CycleResult(
-        base_chdd_m=result.base_chdd_m,
+        base_chdd_m=_npv(base_rows, start_date).chdd_m,
         chdd_m=confirmed.chdd_m,
         actions=result.actions,
         rate_choices=result.rate_choices,
