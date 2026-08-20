@@ -165,3 +165,31 @@ def test_volume_factors_change_the_withdrawn_volume():
     rows = _rows(oil_t=1_000_000, water_t=0.0, injected_m3=1_400_000)
     assert balance.compensation_problems(rows, ceiling=1.2, oil_fvf=1.0)
     assert not balance.compensation_problems(rows, ceiling=1.2, oil_fvf=1.3)
+
+
+def test_a_row_with_negative_injection_is_dropped_whole_not_clamped():
+    """Правило методики одно на все три приращения, а проверялись два.
+
+    `by_year` пропускал строку при отрицательных `WOMT_Diff` или `WLPT_Diff` —
+    и тут же **клампил** `WWIT_Diff` через `max(..., 0.0)`. Методика исключает
+    строку целиком, если отрицательно **любое** из трёх; комментарий в коде
+    заявлял именно это, а проверка закрывала две трети.
+
+    Цена перекоса конкретная и односторонняя: добытая вода такой строки идёт в
+    баланс, а закачка обнуляется — то есть ограничение «закачиваем только то,
+    что подняли» выглядит выполненным щедрее, чем есть. Отрицательная закачка
+    в прогнозах суррогата встречается: она в списке оставшихся санити-пометок
+    на 20.08.
+    """
+    good = produced("2014-01-01", "1", oil_m3=100.0, water_m3=900.0)
+    good["WWIT_Diff"] = 500.0
+    rolled_back = produced("2014-02-01", "1", oil_m3=100.0, water_m3=900.0)
+    rolled_back["WWIT_Diff"] = -500.0
+
+    only_good = balance.by_year([good], FLUIDS)[0]
+    with_rolled_back = balance.by_year([good, rolled_back], FLUIDS)[0]
+
+    assert with_rolled_back.water_m3 == pytest.approx(only_good.water_m3), (
+        "вода из строки с отрицательной закачкой попала в баланс"
+    )
+    assert with_rolled_back.injected_m3 == pytest.approx(only_good.injected_m3)

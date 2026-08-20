@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from aios.margin import counted_by_methodology
 from aios.summary import Fluids
 
 
@@ -76,15 +77,23 @@ def by_year(rows: list[dict[str, Any]], fluids: Fluids | None = None) -> list[Ye
     totals: dict[int, list[float]] = {}
 
     for row in rows:
+        # Правило одно на все три приращения: строка с отрицательным WLPT_Diff,
+        # WOMT_Diff **или** WWIT_Diff исключается целиком. До 21.08 здесь
+        # проверялись два из трёх, а закачка клампилась через max(..., 0.0) —
+        # перекос односторонний: добытая вода такой строки шла в баланс, а
+        # закачка обнулялась, и ограничение «закачиваем только то, что подняли»
+        # выглядело выполненным щедрее, чем есть.
+        if not counted_by_methodology(row):
+            continue
         oil_t = row["WOMT_Diff"]
         liquid_t = row["WLPT_Diff"]
-        if oil_t < 0 or liquid_t < 0:
-            continue  # такие строки методика исключает из экономики целиком
         year = int(str(row["DATA"])[:4])
         bucket = totals.setdefault(year, [0.0, 0.0, 0.0])
         bucket[0] += oil_t * 1000.0 / fluids.oil_density
+        # нефти больше жидкости быть не может; прогноз суррогата это нарушает,
+        # и отрицательной воды из-за него в балансе появиться не должно
         bucket[1] += max(liquid_t - oil_t, 0.0) * 1000.0 / fluids.water_density
-        bucket[2] += max(row["WWIT_Diff"], 0.0)
+        bucket[2] += row["WWIT_Diff"]
 
     return [
         YearBalance(year=year, oil_m3=values[0], water_m3=values[1], injected_m3=values[2])
