@@ -338,6 +338,50 @@ def test_neutral_regime_is_inside_the_envelope_even_if_no_scenario_hit_it():
     assert envelope.covers("prod:1", 1.0)
 
 
+def test_range_warnings_are_folded_by_well_and_reason():
+    """Одна мысль — одна строка, с диапазоном месяцев и их числом.
+
+    Ревизия 20.08 намерила на форсаже реального размера 20 925 строк, различных
+    по сути — две: «режим скважины вне диапазона» и то же по объекту. Счётчик
+    печатал «Предупреждения (20925)» и первые десять, то есть десять раз одну и
+    ту же мысль. Соседний блок (`NeuralSurrogate._unlearned_controls`) уже
+    сворачивается по ключу «скважина + причина»; здесь тот же приём.
+    """
+    envelope = TrainingEnvelope.fit(training_rows())
+    forced = {
+        date(2014, month, 1): {"prod:1": 1.9, "prod:2": 1.0, "inj:3": 1.0}
+        for month in range(1, 13)
+    }
+
+    warnings = envelope.warnings(forced)
+
+    # двенадцать месяцев × две причины (скважина и фонд) — две строки, а не 24
+    assert len(warnings) == 2, warnings
+    assert all("2014-01-01…2014-12-01" in warning and "12 мес." in warning
+               for warning in warnings)
+    assert any("prod:1" in warning for warning in warnings)
+
+
+def test_folding_keeps_every_distinct_reason():
+    """Свёртка обязана сохранять причины: разные скважины и разные причины — разные строки."""
+    envelope = TrainingEnvelope.fit(training_rows())
+    months = {
+        date(2014, month, 1): {"prod:1": 1.9, "prod:НОВАЯ": 1.0, "inj:3": 1.0}
+        for month in range(1, 4)
+    }
+
+    warnings = envelope.warnings(months)
+
+    # три причины: скважина вне диапазона, неизвестное управление и фонд целиком
+    assert len(warnings) == 3, warnings
+    assert any("отсутствует в обучающих прогонах" in warning and "prod:НОВАЯ" in warning
+               for warning in warnings)
+    assert any("вне обучающего диапазона" in warning and "prod:1" in warning
+               for warning in warnings)
+    assert any(warning.split(":", 1)[-1].strip().startswith("суммарн")
+               for warning in warnings)
+
+
 def test_envelope_answers_coverage_before_the_choice_is_made():
     """Запрос покрытия для поиска: проверить кандидата **до** выбора, а не после."""
     envelope = TrainingEnvelope.fit(training_rows())

@@ -169,7 +169,10 @@ class TrainingEnvelope:
                     "до перевода детектора на множители, и покрытие прогноза ничем "
                     "не подтверждено"]
 
-        warnings: list[str] = []
+        unknown: dict[str, list[date]] = {}
+        outside: dict[str, list[tuple[date, float]]] = {}
+        field: dict[str, list[tuple[date, float]]] = {}
+
         for month_start, values in multipliers.items():
             # Отрицательный множитель — метка «опорного режима не было» (запуск из
             # простоя, перевод под закачку). Это не режим, и говорит о нём
@@ -178,24 +181,42 @@ class TrainingEnvelope:
             for key, value in sorted(known.items()):
                 bounds = self.control_multipliers.get(key)
                 if bounds is None:
-                    warnings.append(
-                        f"{month_start.isoformat()} {key}: такое управление "
-                        f"отсутствует в обучающих прогонах"
-                    )
+                    unknown.setdefault(key, []).append(month_start)
                 elif not bounds.contains(value):
-                    warnings.append(
-                        f"{month_start.isoformat()} {key}: множитель {value:g} вне "
-                        f"обучающего диапазона {bounds.minimum:g}..{bounds.maximum:g}"
-                    )
+                    outside.setdefault(key, []).append((month_start, value))
 
-            warnings.extend(_field_range_warning(
-                month_start, "суммарный множитель добычи",
-                _prefix_mean(known, "inj:", invert=True), self.field_production,
-            ))
-            warnings.extend(_field_range_warning(
-                month_start, "суммарный множитель закачки",
-                _prefix_mean(known, "inj:"), self.field_injection,
-            ))
+            for label, bounds, value in (
+                ("суммарный множитель добычи", self.field_production,
+                 _prefix_mean(known, "inj:", invert=True)),
+                ("суммарный множитель закачки", self.field_injection,
+                 _prefix_mean(known, "inj:")),
+            ):
+                if value is not None and not bounds.contains(value):
+                    field.setdefault(label, []).append((month_start, value))
+
+        # Свёртка по ключу «управление + причина»: режим держится весь горизонт, и
+        # без неё одна мысль повторяется помесячно. Ревизия 20.08 намерила на
+        # форсаже реального размера 20 925 строк, различных по сути — две.
+        warnings = [
+            f"{_span(months)}: {key} — такое управление отсутствует в обучающих прогонах"
+            for key, months in unknown.items()
+        ]
+        warnings.extend(
+            f"{_span([month for month, _ in hits])}: {key}: множитель "
+            f"{_seen(hits)} вне обучающего диапазона "
+            f"{self.control_multipliers[key].minimum:g}.."
+            f"{self.control_multipliers[key].maximum:g}"
+            for key, hits in outside.items()
+        )
+        warnings.extend(
+            f"{_span([month for month, _ in hits])}: {label} {_seen(hits)} вне "
+            f"обучающего диапазона {bounds.minimum:g}..{bounds.maximum:g}"
+            for label, hits, bounds in (
+                (label, hits,
+                 self.field_production if "добычи" in label else self.field_injection)
+                for label, hits in field.items()
+            )
+        )
         return warnings
 
 
@@ -476,14 +497,19 @@ def _prefix_mean(values: dict[str, float], prefix: str,
     return sum(chosen) / len(chosen) if chosen else None
 
 
-def _field_range_warning(month_start: date, label: str, value: float | None,
-                         bounds: NumericRange) -> list[str]:
-    if value is None or bounds.contains(value):
-        return []
-    return [
-        f"{month_start.isoformat()}: {label} {value:g} вне обучающего "
-        f"диапазона {bounds.minimum:g}..{bounds.maximum:g}"
-    ]
+def _span(months: list[date]) -> str:
+    """Диапазон месяцев одной причины и их число — как в `_unlearned_controls`."""
+    first, last = min(months), max(months)
+    if first == last:
+        return first.isoformat()
+    return f"{first.isoformat()}…{last.isoformat()} ({len(months)} мес.)"
+
+
+def _seen(hits: list[tuple[date, float]]) -> str:
+    """Что именно выходило за границы: одно значение или размах."""
+    values = [value for _, value in hits]
+    low, high = min(values), max(values)
+    return f"{low:g}" if low == high else f"{low:g}…{high:g}"
 
 
 def _watercut_at(decline: WellDecline, cumulative_liquid_m3: float) -> float:
