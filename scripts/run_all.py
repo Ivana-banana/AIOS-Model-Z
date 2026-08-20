@@ -90,11 +90,16 @@ def plan(base_dir: Path,
         "расчёт получившегося сценария на ГГДМ",
         ["bash", flow, str(policy_dir / f"{case_name}.DATA"), str(processes), *flow_args],
     ))
-    steps.append((
-        "подтверждение прироста полным расчётом",
-        [python, str(ROOT / "scripts" / "run_cycle.py"),
-         "--confirm", str(policy_dir), "--from", str(base_dir), "--config", config_path],
-    ))
+    # модель передаётся и сюда: шаг печатает «прогноз суррогата обещал» и ошибку
+    # прогноза, а считает их, заново пройдя цикл. Без ключа он прошёл бы его на
+    # тривиальном бейзлайне — и ошибка прогноза сравнивала бы полный расчёт с
+    # обещанием другой модели. Найдено прогоном 20.08: шаг 3 шёл на линейном
+    # суррогате, шаг 5 печатал обещание бейзлайна.
+    confirm = [python, str(ROOT / "scripts" / "run_cycle.py"),
+               "--confirm", str(policy_dir), "--from", str(base_dir), "--config", config_path]
+    if surrogate_model:
+        confirm += ["--surrogate-model", surrogate_model]
+    steps.append(("подтверждение прироста полным расчётом", confirm))
     return steps
 
 

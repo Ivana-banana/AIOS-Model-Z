@@ -619,3 +619,32 @@ def test_no_call_passes_an_argument_the_callee_does_not_accept():
     mismatches = [line for path in modules + scripts for line in _keyword_mismatches(path)]
 
     assert mismatches == [], "\n".join(mismatches)
+
+
+def test_run_all_confirms_with_the_same_surrogate_it_planned_with():
+    """Шаг подтверждения обязан считать «обещание» той моделью, что принимала решения.
+
+    Настоящий случай 20.08, найденный первым прогоном на обученном суррогате:
+    шаг 3 шёл на линейной модели («суррогат: линейный суррогат по сценариям
+    DoE»), а шаг 5 — на тривиальном бейзлайне, потому что `--surrogate-model`
+    ему не передавался. Подтверждённый ЧДД при этом верен — он из полного
+    расчёта, — но строка «прогноз суррогата обещал» относилась к **другой**
+    модели, и «ошибка прогноза» сравнивала расчёт с чужим прогнозом.
+
+    Цена такой путаницы прямая: именно этим числом мы судим, можно ли доверять
+    суррогату.
+    """
+    from scripts.run_all import plan
+
+    steps = plan(
+        base_dir=Path("runs/base"), policy_dir=Path("runs/policy"),
+        processes=4, flow_args=[], config_path="config.toml",
+        surrogate_model="artifacts/surrogate.joblib", case_name="RUN", skip_base=False,
+    )
+    cycle_steps = [command for _, command in steps if "run_cycle.py" in " ".join(command)]
+
+    assert len(cycle_steps) == 2, [command for _, command in steps]
+    for command in cycle_steps:
+        assert "--surrogate-model" in command, (
+            "шаг подтверждения считает обещание другой моделью: " + " ".join(command)
+        )
