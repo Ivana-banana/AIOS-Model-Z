@@ -703,3 +703,54 @@ def test_scaled_case_scales_our_steps_and_leaves_history_alone(tmp_path, monkeyp
     scaled = captured["steps"][0]
     assert scaled.producers[0].liquid_rate == pytest.approx(30.0)
     assert scaled.injectors[0].rate == pytest.approx(80.0)
+
+
+def test_build_scaled_case_reports_where_the_multiplier_was_not_applied_literally():
+    """Ярлык «×1.5» обязан быть честным или снабжён оговоркой.
+
+    Масштабирование молча делает две вещи: обрезает дебит по пределу методики
+    500 м³/сут и применяет множитель к скважине, которая управляется не дебитом
+    (у неё это поле — предел, а не уставка). На Модели Z ни то ни другое не
+    срабатывает (замер 21.08: максимальный дебит 110 м³/сут, все 22 008 записей
+    `LRAT`), но заявляемое число считается на **чужом** деке валидационного кейса,
+    где так может не быть.
+
+    Поведение намеренно не меняется — сдаваемый файл обязан остаться тем, на
+    котором посчитано заявляемое число. Меняется только видимость.
+    """
+    from datetime import date
+
+    from aios.deck import ProducerControl, ScheduleStep
+    from aios.optimise import scale
+    from scripts.build_scaled_case import _honest_multiplier_notes
+
+    before = [ScheduleStep(date(2007, 1, 1), (
+        ProducerControl("предел", "OPEN", "LRAT", 400.0, 50.0),
+        ProducerControl("давление", "OPEN", "BHP", 100.0, 90.0),
+        ProducerControl("обычная", "OPEN", "LRAT", 100.0, 50.0),
+    ), ())]
+    notes = _honest_multiplier_notes(before, scale(before, 1.5), 1.5)
+
+    assert any("упёрлись в предел 500" in note for note in notes), notes
+    assert any("не под управлением дебитом" in note and "BHP" in note
+               for note in notes), notes
+
+
+def test_build_scaled_case_says_so_when_the_multiplier_was_applied_literally():
+    """Обратная сторона: на исправном материале оговорок быть не должно.
+
+    Иначе предупреждение, звучащее всегда, перестаёт читаться — та же болезнь,
+    что была у детектора обучающего диапазона.
+    """
+    from datetime import date
+
+    from aios.deck import ProducerControl, ScheduleStep
+    from aios.optimise import scale
+    from scripts.build_scaled_case import _honest_multiplier_notes
+
+    before = [ScheduleStep(date(2007, 1, 1),
+                           (ProducerControl("1", "OPEN", "LRAT", 110.0, 50.0),), ())]
+    notes = _honest_multiplier_notes(before, scale(before, 1.5), 1.5)
+
+    assert notes == ["множитель применён буквально ко всем записям: "
+                     "ни одна не упёрлась в предел 500 м³/сут, все под LRAT"], notes

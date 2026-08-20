@@ -79,11 +79,69 @@ def main(argv: list[str] | None = None) -> int:
     print(f"наших шагов:  {len(scaled)}")
     print(f"множители:    отбор ×{arguments.production}, закачка ×{arguments.injection}")
     print(f"кейс:         {case.data_file}")
+
+    for line in _honest_multiplier_notes(steps, scaled, arguments.production):
+        print(line)
     print()
     print("дальше:")
     print(f"  scripts/run_flow.sh {case.data_file} {config.run.processes}")
     print(f"  python scripts/export_rows.py {arguments.run_dir}")
     return 0
+
+
+def _honest_multiplier_notes(before, after, production: float) -> list[str]:
+    """Где заявленный множитель не был применён буквально.
+
+    Масштабирование молча делает две вещи, и обе меняют смысл ярлыка «×1.5».
+
+    **Предел 500 м³/сут.** Методика запрещает больший дебит жидкости, поэтому
+    `optimise.scale` обрезает результат. Запись, упёршаяся в предел, получает не
+    заявленный множитель, а тот, что поместился. На Модели Z это не срабатывает
+    ни разу (максимальный исторический дебит 110 м³/сут, замер 21.08), но
+    заявляемое число считается на **чужом** деке валидационного кейса.
+
+    **Не дебитовый режим.** У скважины под контролем забойного давления (`BHP`)
+    поле дебита — это верхний предел, а не уставка: умножив его, мы ослабляем
+    ограничение, но режима не форсируем. На Модели Z все 22 008 записей —
+    `LRAT`, на чужом деке так может не быть.
+
+    Печатается, а не исправляется: сдаваемый файл обязан остаться ровно тем, на
+    котором посчитано заявляемое число.
+    """
+    notes: list[str] = []
+
+    capped = sum(
+        1
+        for step_before, step_after in zip(before, after, strict=True)
+        for control_before, control_after in zip(step_before.producers,
+                                                 step_after.producers, strict=True)
+        if control_before.status == "OPEN" and control_before.liquid_rate
+        and control_after.liquid_rate is not None
+        and control_before.liquid_rate * production > control_after.liquid_rate + 1e-9
+    )
+    if capped:
+        notes.append(
+            f"внимание:     {capped} записей упёрлись в предел 500 м³/сут — "
+            f"у них множитель меньше заявленного ×{production}"
+        )
+
+    off_rate: dict[str, int] = {}
+    for step in before:
+        for control in step.producers:
+            if control.status == "OPEN" and control.mode != "LRAT":
+                off_rate[control.mode] = off_rate.get(control.mode, 0) + 1
+    if off_rate:
+        listed = ", ".join(f"{mode} ×{count}" for mode, count in sorted(off_rate.items()))
+        notes.append(
+            f"внимание:     {sum(off_rate.values())} записей не под управлением дебитом "
+            f"({listed}) — для них поле дебита это предел, а не уставка, "
+            "и множитель режима не форсирует"
+        )
+
+    if not notes:
+        notes.append("множитель применён буквально ко всем записям: "
+                     "ни одна не упёрлась в предел 500 м³/сут, все под LRAT")
+    return notes
 
 
 if __name__ == "__main__":
