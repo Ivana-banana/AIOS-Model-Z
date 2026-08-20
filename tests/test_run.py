@@ -527,3 +527,42 @@ def test_invalid_steps_never_reach_the_deliverable(tmp_path):
         run.build_case(tmp_path / "run", deck, steps=bad, control_start=date(2007, 1, 1))
 
     assert not (tmp_path / "run" / "wells_schedule.inc").exists(), "файл не должен появиться"
+
+
+def test_a_deck_with_a_regime_before_the_first_date_is_refused_not_read_short(model_dir):
+    """Режим до первого `DATES` — отказ с причиной, а не тихая потеря.
+
+    `aios.deck` кладёт такое ключевое слово в преамбулу: дата у него — начало
+    расчёта из `START` в RUNSPEC, а мы читаем только SCHEDULE и датировать его
+    нечем. В шаги он не попадает, и скважина, чей единственный режим стоит там,
+    выпадает из `Schedule.wells` — то есть из фонда **и из SUMMARY-секции**,
+    которая по этому фонду и пишется. Её выручка не дошла бы до ЧДД, а
+    организаторы считают по своей конфигурации и получили бы другое число.
+    Расхождение с заявленным ЧДД — дисквалификация, повторной попытки нет.
+
+    На Модели Z преамбула пуста (замер машины А 20.08: только `RPTSCHED` и
+    `WELSPECS`), поэтому отказ ничему не мешает. Он про дек тестового кейса
+    (ТЗ п. 4.3), которого мы не видели: там такой режим законен.
+    """
+    schedule = model_dir / "Model_Z_sch.inc"
+    schedule.write_text(
+        "WCONPROD\n '2' 'OPEN' 'LRAT' 1* 1* 1* 40.0 1* 50 1* 1* /\n/\n\n" + SCHEDULE,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="до первого DATES"):
+        run.build_case(model_dir.parent / "case", model_dir)
+
+
+def test_a_deck_whose_preamble_carries_no_regime_is_built_as_before(model_dir, tmp_path):
+    """Обратная сторона: отказ не должен срабатывать на исправном деке.
+
+    У `SCHEDULE` этого файла преамбула ровно как у Модели Z — `RPTSCHED` и
+    `WELSPECS`, ни одного управляющего слова.
+    """
+    parsed = parse_schedule_text(SCHEDULE)
+    assert parsed.preamble_controls == ()
+
+    case = run.build_case(tmp_path / "case", model_dir)
+
+    assert case.schedule_file.is_file()

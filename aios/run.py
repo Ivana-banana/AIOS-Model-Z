@@ -102,6 +102,28 @@ def build_case(run_dir: str | Path,
     source_schedule = deck.one("SCHEDULE")
     schedule_text = source_schedule.read_text(encoding="utf-8", errors="replace")
 
+    # Режим до первого DATES действует с начала расчёта (`START` в RUNSPEC), а
+    # RUNSPEC сюда не приходит — датировать его нечем, и в шаги он не попадает.
+    # Собрать кейс поверх такого дека значит потерять его молча: скважина, чей
+    # единственный режим стоит в преамбуле, не попадёт ни в фонд, ни в
+    # SUMMARY-секцию, и её выручка не дойдёт до ЧДД — заявленное число разошлось
+    # бы с пересчётом организаторов. На Модели Z преамбула пуста (замер 20.08),
+    # так что отказ не мешает; он про чужой дек тестового кейса (Р-51).
+    parsed_source = parse_schedule_text(schedule_text)
+    # Только когда первая дата в файле есть: у дека, ведущего время через TSTEP,
+    # шагов нет вовсе и в преамбуле оказывается всё его содержимое. Настоящая
+    # причина там другая — мы не разбираем TSTEP, — и диагноз ниже точнее.
+    if parsed_source.steps and parsed_source.preamble_controls:
+        preamble_controls = parsed_source.preamble_controls
+        raise ValueError(
+            f"в {source_schedule.name} режим задан до первого DATES "
+            f"({', '.join(preamble_controls)}). Дата такого режима — начало расчёта "
+            "из START в RUNSPEC, а мы читаем только SCHEDULE, поэтому в шаги он не "
+            "попадает: скважина, чей единственный режим стоит там, выпала бы из фонда "
+            "и из выгрузки, а ЧДД посчитался бы не по всему объекту. Нужно либо "
+            "перенести эти записи после первой даты, либо научить разбор читать START"
+        )
+
     if steps is not None:
         if control_start is None:
             raise ValueError("Для своих шагов нужна дата начала управления (control_start).")
