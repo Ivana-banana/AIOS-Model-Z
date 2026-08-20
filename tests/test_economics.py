@@ -113,3 +113,31 @@ def test_norms_come_from_the_organisers_file_not_from_literals():
     assert assumptions["propertyTaxRate"] == 2.2
     assert len(pumps) == 12
     assert pumps[-1]["nominal"] == 400 and pumps[-1]["max"] == 500
+
+
+def test_start_date_has_no_default_because_forgetting_it_changes_the_declared_number():
+    """Базовый год дисконтирования нельзя забыть молча.
+
+    У эталонного расчётчика умолчание есть — минимальная дата данных. Оно не
+    ошибка, но тихо меняет базовый год: выгрузка с историей от 1994 и она же с
+    2007 дисконтируются по-разному и обе считаются без единой жалобы. Заявляемое
+    число при этом другое, а расхождение с пересчётом организаторов — это
+    дисквалификация с одной попытки.
+
+    Поэтому у нашей обвязки умолчания нет: аргумент обязателен, и передать `None`
+    осознанно по-прежнему можно — но это решение будет видно в коде вызова.
+    Проверено 21.08: все десять вызовов в `aios/` и `scripts/` и все семнадцать
+    в тестах дату передают, так что требование ничего не ломает.
+    """
+    import inspect
+
+    signature = inspect.signature(economics.compute_npv)
+    start_date = signature.parameters["start_date"]
+
+    assert start_date.default is inspect.Parameter.empty, (
+        "у start_date появилось умолчание — забытый аргумент снова станет тихим"
+    )
+    assert start_date.kind is inspect.Parameter.KEYWORD_ONLY
+
+    with pytest.raises(TypeError):
+        economics.compute_npv([], headers=economics.REQUIRED_COLUMNS)
