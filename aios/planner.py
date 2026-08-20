@@ -263,6 +263,10 @@ def _fit_liquid_to_capacity(steps: list[ScheduleStep],
 
         # худшие по деньгам на кубометр — первыми под нож
         order = sorted(working, key=lambda control: value.get(control.well, 0.0))
+        # место в очереди нужно для обоснования: режется несколько скважин, и
+        # «наименьшая в фонде» верно только про первую. Ложное обоснование хуже
+        # отсутствующего — его нельзя проверить на глаз
+        place = {control.well: index + 1 for index, control in enumerate(order)}
         excess = total - capacity
         cuts: dict[str, float] = {}
         for control in order:
@@ -289,8 +293,17 @@ def _fit_liquid_to_capacity(steps: list[ScheduleStep],
                         after=new_rate,
                         reason=(
                             f"отбор по объекту {total:,.0f} > предела {capacity:,.0f} м³/сут; "
-                            f"маржа {value.get(control.well, 0.0):.4f} млн руб./м³ — "
-                            f"наименьшая в фонде"
+                            # значащими цифрами, а не четырьмя знаками после
+                            # запятой: удельная маржа — тысячные доли миллиона, и
+                            # при `.4f` две разные скважины печатались одинаково
+                            # (`-0.0001` у обеих, замер 20.08). Единица остаётся
+                            # той же, в которой считается ранжирование
+                            f"маржа {value.get(control.well, 0.0):.4g} млн руб./м³ — "
+                            + ("наименьшая в фонде"
+                               if place[control.well] == 1 else
+                               f"{place[control.well]}-я снизу из {len(working)} "
+                               "работающих; режем по возрастанию, пока отбор не "
+                               "уложится в предел")
                         ),
                     )
                 )

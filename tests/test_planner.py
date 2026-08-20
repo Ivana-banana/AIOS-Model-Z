@@ -266,3 +266,40 @@ def test_the_cut_reason_reports_the_same_unit_it_ranks_by(norms):
     liquid = [d for d in decisions if d.resource == "жидкость"]
     assert liquid, "предел по жидкости не сработал"
     assert "млн руб./м³" in liquid[0].reason
+
+
+def test_a_cut_well_is_told_its_place_in_the_order_not_called_the_worst(norms):
+    """Обоснование обязано быть верным для каждой урезанной скважины, а не для первой.
+
+    Планировщик режет по возрастанию удельной маржи, пока отбор не уложится в
+    предел, — то есть под нож идёт несколько скважин. В обосновании у каждой
+    стояло «маржа … — наименьшая в фонде», хотя наименьшая она только у первой.
+    Замер 20.08: при пределе 300 из 900 м³/сут урезаны две скважины, обе названы
+    наименьшими, причём обе с одинаково округлённым числом `-0.0001`.
+
+    Это тот же класс, что и остановка, которой не происходит: слой
+    интерпретируемости обязан объяснять принятое решение, а не звучать правдоподобно.
+    Ложное обоснование хуже отсутствующего — его нельзя проверить на глаз.
+    """
+    rows = [make_row("2014-01-01", well, wlpr=300.0, womr=oil / 30,
+                     liquid=9000.0, oil=oil)
+            for well, oil in (("A", 1.0), ("B", 50.0), ("C", 200.0))]
+    steps = [ScheduleStep(date(2014, 1, 1),
+                          tuple(ProducerControl(well, "OPEN", "LRAT", 300.0, 50.0)
+                                for well in ("A", "B", "C")), ())]
+
+    _, decisions = planner.enforce(
+        steps, rows, norms, planner.Limits(max_field_liquid_m3_per_day=300.0)
+    )
+
+    assert len(decisions) == 2, [str(d) for d in decisions]
+    worst, second = decisions[0], decisions[1]
+    assert "наименьшая" in worst.reason, worst.reason
+    assert "наименьшая" not in second.reason, (
+        "вторая по счёту скважина названа наименьшей в фонде — это неправда"
+    )
+    assert "2-я" in second.reason, second.reason
+    # число, которым обосновано решение, обязано различать скважины
+    assert worst.reason.split("маржа")[1] != second.reason.split("маржа")[1], (
+        "обоснования двух разных решений неразличимы по числу"
+    )
