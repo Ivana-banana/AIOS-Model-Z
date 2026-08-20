@@ -152,6 +152,28 @@ def test_physical_prediction_failure_reaches_cycle_warnings():
     assert any("отрицательное WLPT_Diff" in warning for warning in warnings)
 
 
+def test_physical_failures_are_folded_to_one_line_per_well():
+    """Одна скважина — одна строка с числом нарушений, а не строка на месяц.
+
+    На настоящем расписании Модели Z таких строк 16 084 у 68 скважин, и страница
+    цикла печатает их все: `{% for warning in result.warnings %}` в cycle.html.
+    Счётчик «Предупреждения (16542)» формально верен и бесполезен.
+    """
+    invalid = bundle()
+    invalid.models["1"] = InvalidModel()
+    months = [ScheduleStep(pd.Timestamp(f"2014-{month:02d}-01").date(),
+                           (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),), ())
+              for month in range(1, 13)]
+    surrogate = NeuralSurrogate.create(invalid, months)
+
+    physical = [warning for warning in surrogate.in_training_range(months)
+                if "физические проверки" in warning]
+
+    assert len(physical) == 1, physical
+    assert "скв. 1" in physical[0]
+    assert "отрицательное WLPT_Diff" in physical[0]
+
+
 def test_date_outside_training_horizon_is_flagged():
     future = ScheduleStep(
         pd.Timestamp("2015-01-01").date(),

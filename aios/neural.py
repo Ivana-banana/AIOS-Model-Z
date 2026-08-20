@@ -209,10 +209,38 @@ class NeuralSurrogate:
                     f"0..{self.bundle.month_span} месяцев"
                 )
         warnings.extend(self._unlearned_controls(steps))
-        warnings.extend(
-            f"прогноз нарушает физические проверки: {problem}"
-            for problem in sanity_problems(self.predict(steps))
-        )
+        warnings.extend(self._physical_problems(steps))
+        return warnings
+
+    def _physical_problems(
+        self, steps: list[ScheduleStep] | tuple[ScheduleStep, ...]
+    ) -> list[str]:
+        """Нарушения физики — по строке на скважину, а не на скважино-месяц.
+
+        Проверки те же (`aios.summary.sanity_problems`) и считаются на тех же
+        строках: они и без того ведутся по скважине отдельно — накопленные
+        величины сравниваются с предыдущим месяцем той же скважины, — поэтому
+        разбиение прогноза по скважинам ничего не меняет в результате, но даёт
+        имя скважины без разбора текста сообщения.
+
+        Свёртка нужна по той же причине, что и у диапазонных пометок: на
+        настоящем расписании Модели Z таких строк 16 084 у 68 скважин, и
+        страница цикла печатает их все до одной. Счётчик, показывающий
+        «Предупреждения (16542)», формально верен и бесполезен.
+        """
+        by_well: dict[str, list[dict[str, Any]]] = {}
+        for row in self.predict(steps):
+            by_well.setdefault(str(row["well"]), []).append(row)
+
+        warnings: list[str] = []
+        for well in sorted(by_well, key=_well_key):
+            problems = sanity_problems(by_well[well])
+            if not problems:
+                continue
+            warnings.append(
+                f"скв. {well}: прогноз нарушает физические проверки, строк "
+                f"{len(problems)}, первая — {problems[0]}"
+            )
         return warnings
 
     def _unlearned_controls(
