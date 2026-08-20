@@ -242,3 +242,26 @@ def test_caveats_reach_both_the_prompt_and_the_template():
     facts = evidence()
     assert "мощность системы ППД" in facts.prompt()
     assert "мощность системы ППД" in template_text(facts)
+
+
+def test_an_enabled_layer_that_cannot_reach_the_model_says_so_instead_of_looking_disabled():
+    """«Включён, но не дозвонился» и «выключен» — разные новости, а вид был один.
+
+    Слой, которому не удалось построить клиента (нет библиотеки `anthropic`, нет
+    учётных данных, испорченный профиль), возвращал `source="template"` с пустым
+    `failure` — ровно то же, что при `enabled = false`. На странице цикла это
+    печатается как «шаблоном — слой выключен в конфигурации либо недоступен», и
+    оператор, который **явно** включил слой, отличить одно от другого не мог.
+
+    Цена ошибки здесь конкретная: ключ API — последнее незакрытое требование
+    допуска (`BLOCKED.md`, п. 6), и живой прогон планируется один. Молчаливый
+    откат к шаблону в нём выглядел бы как успешный запуск. Найдено 20.08 на
+    машине, где пакета `anthropic` действительно нет, хотя он есть в
+    `requirements.txt`.
+    """
+    result = explain(evidence(), Settings(enabled=True), client=None)
+
+    assert result.source == "template-failed", "включённый слой выглядит как выключенный"
+    assert result.failure, "причина не названа"
+    assert not result.from_model
+    assert "11851.8" in result.text, "шаблонный текст обязан остаться на месте"
