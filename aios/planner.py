@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
-from aios.margin import Norms, month_margin
+from aios.margin import Norms, counted_by_methodology, month_margin
 from aios.summary import Fluids
 
 
@@ -333,6 +333,12 @@ def _margin_per_liquid(forecast: list[dict[str, Any]], norms: Norms,
     margin: dict[str, float] = {}
     liquid: dict[str, float] = {}
     for row in forecast:
+        # Строку, исключённую методикой, ранжирование не считает вовсе. Раньше
+        # знаменатель отрицательные приращения обрезал (`max(..., 0.0)`), а
+        # числитель считал строку как есть — и первой под нож уходила не худшая
+        # по деньгам, а та, у кого выгрузка откатила накопленное.
+        if not counted_by_methodology(row):
+            continue
         well = row["well"]
         oil_t = max(row["WOMT_Diff"], 0.0)
         liquid_t = max(row["WLPT_Diff"], 0.0)

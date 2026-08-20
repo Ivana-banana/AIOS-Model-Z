@@ -22,7 +22,7 @@ from datetime import date
 from typing import Any
 
 from aios.deck import ProducerControl, ScheduleStep
-from aios.margin import Norms, is_active, month_margin
+from aios.margin import Norms, counted_by_methodology, is_active, month_margin
 
 SHUT = "shut"
 
@@ -74,6 +74,18 @@ def plan_shutdowns(rows: list[dict[str, Any]],
         for row in by_month[month]:
             well = row["well"]
             if well in shut_wells:
+                continue
+
+            # Строку, исключённую методикой, скрининг тоже не считает: убытка,
+            # которого нет в деньгах, не должно быть и в решении. Счётчик при
+            # этом сбрасывается, а не продолжается через пропуск: правило
+            # говорит «убыточна lookback месяцев **подряд**», а через дыру
+            # подряд не бывает. Сброс — сторона осторожная, и это верная
+            # сторона: замер 20.08 показал, что остановки на этом объекте
+            # разрушают стоимость.
+            if not counted_by_methodology(row):
+                streak[well] = 0
+                loss[well] = 0.0
                 continue
 
             # Месяц закачки правилом про добывающие не судится. У нагнетательной
