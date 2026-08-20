@@ -351,10 +351,18 @@ def explain(evidence: Evidence,
         return Explanation(text=template_text(evidence), source="template", fingerprint=fingerprint)
 
     if client is None:
-        client = _default_client()
+        client, unreachable = _default_client()
         if client is None:
+            # Слой включён явно, но до модели не дошли. Это не то же самое, что
+            # `enabled = false`, и выглядеть одинаково не должно: живой прогон
+            # планируется один (`BLOCKED.md`, п. 6), и молчаливый откат к шаблону
+            # в нём читался бы как успешный запуск.
             return Explanation(
-                text=template_text(evidence), source="template", fingerprint=fingerprint
+                text=template_text(evidence),
+                source="template-failed",
+                fingerprint=fingerprint,
+                model=settings.model,
+                failure=unreachable,
             )
 
     try:
@@ -422,17 +430,21 @@ def _first_text(response: Any) -> str:
     raise ValueError("в ответе модели нет текстового блока")
 
 
-def _default_client() -> MessagesClient | None:
-    """Клиент Anthropic, если библиотека установлена и учётные данные найдены.
+def _default_client() -> tuple[MessagesClient | None, str]:
+    """Клиент Anthropic и — если его нет — причина, названная словами.
 
-    Отсутствие ключа — штатная ситуация, а не ошибка: проверяющий запускает пакет
-    без наших учётных данных, и объяснения тогда идут по шаблону.
+    Отсутствие ключа само по себе штатно: при `enabled = false` проверяющий
+    запускает пакет без наших учётных данных, и объяснения идут по шаблону. Но
+    когда слой включён явно, «не смогли построить клиента» обязано быть отличимо
+    от «слой выключен», а причины между собой — тем более: не установлена
+    библиотека и не найден ключ чинятся разными действиями.
     """
     try:
         import anthropic
     except ImportError:
-        return None
+        return None, ("библиотека anthropic не установлена — она есть в "
+                      "requirements.txt, но не в этом окружении")
     try:
-        return anthropic.Anthropic()
-    except Exception:  # noqa: BLE001 — нет ключа или профиля
-        return None
+        return anthropic.Anthropic(), ""
+    except Exception as error:  # noqa: BLE001 — нет ключа или профиля
+        return None, f"клиент Anthropic не создан: {_failure_text(error)}"

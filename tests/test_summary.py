@@ -285,3 +285,30 @@ def test_summary_section_covers_everything_the_organisers_export():
     section = summary.render_summary_section(["1"])
     for vector in ("WOPT", "WOPR", "WWPT", "WLPR", "WWIR", "WWIT", "WBHP", "WBP9"):
         assert f"\n{vector}\n" in f"\n{section}"
+
+
+def test_an_export_without_our_summary_section_is_refused_not_read_as_zeros(tmp_path):
+    """Выгрузка без скважинных векторов — это не «скважина ничего не дала».
+
+    Файл SUMMARY в поставке организаторов приходит **пустым**: секцию
+    пишем мы сами. Расчёт, к которому её не подключили, читается без единой
+    ошибки — просто в нём нет ни одного вектора по скважинам. До правки это
+    давало полную таблицу нулей, ноль замечаний санити-чека и ЧДД 0,000 млн руб.,
+    поданный как обычный результат (замер 20.08). Ноль здесь опаснее отрицательного
+    числа: скважина с нулевым дебитом не входит в действующий фонд, поэтому и OPEX
+    ей не начисляется, и результат выглядит безобидно.
+
+    Тот же отказ закрывает вторую дорогу к нулям: имена скважин, не совпавшие с
+    именами в выгрузке.
+    """
+    from resdata.summary import Summary
+
+    writer = Summary.writer(str(tmp_path / "CASE"), datetime(2014, 1, 1), 10, 10, 3)
+    writer.add_variable("FOPT", unit="SM3")
+    writer.add_t_step(0, sim_days=0.0)
+    for step in range(3):
+        writer.add_t_step(step + 1, sim_days=31.0 * (step + 1))["FOPT"] = 100.0 * (step + 1)
+    writer.fwrite()
+
+    with pytest.raises(ValueError, match="SUMMARY"):
+        summary.monthly_rows(tmp_path / "CASE", wells=["1"])

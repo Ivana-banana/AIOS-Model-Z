@@ -488,3 +488,45 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
 
     assert code == 0, printed
     assert "суррогат:" in printed
+
+
+def test_pack_npv_skips_a_case_without_our_summary_section(tmp_path, monkeypatch, capsys):
+    """Негодная выгрузка — пропуск с названной причиной, а не падение всей таблицы.
+
+    `monthly_rows` теперь отказывается читать расчёт, к которому не подключена
+    SUMMARY-секция: до 20.08 он давал таблицу нулей и ЧДД 0,000 млн руб. как
+    обычный результат. В пакете из 48 сценариев один такой не должен ни уносить
+    таблицу по остальным сорока семи, ни молча становиться в ней нулём.
+    """
+    import json
+
+    from scripts import pack_npv
+
+    root = tmp_path / "pack"
+    for name in ("doe-000", "doe-001"):
+        (root / name).mkdir(parents=True)
+        (root / name / "RUN.UNSMRY").write_text("", encoding="utf-8")
+        (root / name / ".doe-done").write_text("2026-08-20", encoding="utf-8")
+    (root / "doe.json").write_text(
+        json.dumps({"scenarios": [
+            {"name": "doe-000", "multipliers": {"1": 1.2}},
+            {"name": "doe-001", "multipliers": {"1": 0.8}},
+        ]}),
+        encoding="utf-8",
+    )
+
+    from conftest import make_row
+
+    def rows_or_refuse(case, *args, **kwargs):
+        if "doe-001" in str(case):
+            raise ValueError("нет ни одного вектора по скважинам: SUMMARY-секция не подключена")
+        return [make_row("2007-01-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0)]
+
+    monkeypatch.setattr(pack_npv.summary, "monthly_rows", rows_or_refuse)
+
+    code = pack_npv.main([str(root), "--config", str(_tiny_pack_config(tmp_path))])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert "досчитано 1 из 2" in printed
+    assert "SUMMARY-секция не подключена" in printed

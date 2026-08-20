@@ -100,8 +100,15 @@ def main(argv: list[str] | None = None) -> int:
                 skipped += 1
                 continue
 
-            rows = summary.monthly_rows(case, fluids=config.fluids,
-                                        well_fluids=deck_fluids.by_well)
+            try:
+                rows = summary.monthly_rows(case, fluids=config.fluids,
+                                            well_fluids=deck_fluids.by_well)
+            except ValueError as error:
+                # негодная выгрузка — это пропуск сценария с названной причиной,
+                # а не оборванная сборка датасета на сороковом прогоне
+                print(f"{name}: {error}")
+                skipped += 1
+                continue
             lengths[name] = len(rows)
             roles = control_roles(reference.steps, {str(row["DATA"]) for row in rows})
             problems = summary.sanity_problems(rows)

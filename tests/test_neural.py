@@ -721,3 +721,51 @@ def _watercut_frame() -> pd.DataFrame:
                 "WWIT_Diff": 0.0, "THP": 100.0, "BHP": 80.0,
             })
     return pd.DataFrame(rows)
+
+
+def test_a_model_whose_quality_was_never_measured_says_so_in_its_label(tmp_path):
+    """Артефакт без единого `R²` проходит ворота — значит он обязан быть подписан.
+
+    `assert_quality` терпит отсутствующий `R²` намеренно: `None` означает «не
+    измерено», а не «плохо», и отвергать за это отчёты, собранные до появления
+    метрики, не за что. Но у модели вида `linear` — а с 20.08 в цикл идёт именно
+    она — относительная проверка неприменима по построению, а абсолютная при
+    пустом `R²` молчит. Замер 20.08: такой артефакт проходит `assert_quality`
+    целиком, то есть ведёт оптимизацию наравне с проверенным и выглядит везде
+    так же.
+
+    Ворота при этом не трогаем: их поведение описано и на нём стоят фикстуры
+    этого же файла. Закрываем молчание — подпись модели читает человек, который
+    смотрит, чем посчитан прирост.
+    """
+    unmeasured = TrainingReport(
+        ("train",), ("test",), 1, 2,
+        {target: TargetMetric(1.0, 2.0) for target in TARGET_COLUMNS},
+        kind="linear",
+    )
+    path = tmp_path / "surrogate.joblib"
+    joblib.dump(bundle(unmeasured), path)
+
+    selected = for_cycle(
+        neural_path=path, history=[], reference_steps=[step()], fluids=Fluids()
+    )
+
+    assert "качество не измерено" in selected.name, selected.name
+
+
+def test_a_measured_model_is_not_labelled_as_unmeasured(tmp_path):
+    """Обратная сторона: подпись про неизмеренное качество не должна липнуть ко всем."""
+    measured = TrainingReport(
+        ("train",), ("test",), 1, 2,
+        {target: TargetMetric(1.0, 2.0, neural_r2=0.7, linear_r2=0.8)
+         for target in TARGET_COLUMNS},
+        kind="linear",
+    )
+    path = tmp_path / "surrogate.joblib"
+    joblib.dump(bundle(measured), path)
+
+    selected = for_cycle(
+        neural_path=path, history=[], reference_steps=[step()], fluids=Fluids()
+    )
+
+    assert "качество не измерено" not in selected.name
