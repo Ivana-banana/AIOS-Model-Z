@@ -111,6 +111,8 @@ class JointRateChoice:
     baseline_chdd_m: float
     chosen_chdd_m: float
     kind: str = "production"
+    outside_training: tuple[float, ...] = ()
+    """Кандидаты, отброшенные до выбора: таких режимов у этого управления в обучении не было."""
 
     @property
     def gain_m(self) -> float:
@@ -137,10 +139,14 @@ class JointRateChoice:
         what = "без изменений" if not self.changed else (
             "остановка" if self.multiplier == 0 else f"{control} ×{self.multiplier:g}"
         )
-        return (
+        text = (
             f"скв. {self.well}: {what}, ЧДД фонда "
             f"{self.baseline_chdd_m:+.2f} → {self.chosen_chdd_m:+.2f} млн руб."
         )
+        if not self.outside_training:
+            return text
+        skipped = ", ".join(f"×{value:g}" for value in self.outside_training)
+        return f"{text}; вне обучения не рассматривались: {skipped}"
 
 
 def discounted_margin_by_well(rows: list[dict[str, Any]],
@@ -216,6 +222,13 @@ def choose_joint_rates(
     принятых режимах остальных скважин и оценивается полным эталонным ЧДД фонда.
     Это не гарантирует глобальный оптимум, но не использует неверное допущение о
     независимости скважин и ни одним шагом не ухудшает текущего кандидата.
+
+    **Кандидат вне обучающего диапазона до выбора не доходит.** Раньше область
+    применимости проверялась в `aios.loop` по уже собранному расписанию, то есть
+    пометка приходила после того, как решение принято, — а поиск ищет максимум и
+    тянет решение ровно туда, где суррогат ошибается в нашу пользу (`CLAUDE.md`).
+    Отброшенное записывается в `JointRateChoice.outside_training` и попадает в
+    объяснение решения: молча сузить перебор нельзя.
     """
     if 1.0 not in multipliers:
         raise ValueError("в наборе множителей обязан быть 1.0 — режим «как есть» это база")
@@ -237,10 +250,11 @@ def choose_joint_rates(
 
     for kind, well in controls:
         before = current_chdd
+        covered, outside = _covered_multipliers(surrogate, kind, well, multipliers)
         best_multiplier = selected[(kind, well)]
         best_steps = current_steps
         best_chdd = current_chdd
-        for multiplier in multipliers:
+        for multiplier in covered:
             candidate_multipliers = selected | {(kind, well): multiplier}
             candidate = _scale_individually(base_steps, candidate_multipliers)
             candidate_chdd = _chdd(surrogate.predict(candidate), start_date)
@@ -252,8 +266,36 @@ def choose_joint_rates(
         selected[(kind, well)] = best_multiplier
         current_steps = best_steps
         current_chdd = best_chdd
-        choices.append(JointRateChoice(well, best_multiplier, before, best_chdd, kind))
+        choices.append(
+            JointRateChoice(well, best_multiplier, before, best_chdd, kind, outside)
+        )
     return choices
+
+
+def _covered_multipliers(
+    surrogate: Surrogate,
+    kind: str,
+    well: str,
+    multipliers: tuple[float, ...],
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Разделить кандидатов на покрытых обучением и отброшенных.
+
+    Из двух возможных правил — «не рассматривать» и «рассматривать с пометкой» —
+    выбрано первое (`docs/decisions.md`, Р-43): прогноз за границей обучения это
+    не менее точное число, а число без оснований, и проверить его нечем — полный
+    расчёт у организаторов один, повторной попытки нет.
+
+    Покрытие спрашивается через `getattr`, а не по типу суррогата: у тривиального
+    бейзлайна `covers_control` нет вовсе, и это значит «покрытие неизвестно» —
+    тогда поиск работает как раньше. Множитель 1.0 остаётся всегда: это базовый
+    режим расписания и точка отсчёта, а не кандидат.
+    """
+    covers = getattr(surrogate, "covers_control", None)
+    if covers is None:
+        return multipliers, ()
+    covered = tuple(value for value in multipliers
+                    if value == 1.0 or covers(kind, well, value))
+    return covered, tuple(value for value in multipliers if value not in covered)
 
 
 def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],

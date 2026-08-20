@@ -236,6 +236,65 @@ def test_joint_search_can_change_injection_and_apply_the_choice():
     assert validate(tuned) == []
 
 
+# ── область применимости проверяется до выбора ───────────────────────────────
+
+
+class ForcingSurrogate:
+    """Прогноз растёт с дебитом без предела — так суррогат и врёт за границей обучения."""
+
+    def predict(self, steps):
+        oil = 100.0 + (steps[0].producers[0].liquid_rate or 0.0)
+        return [make_row("2014-01-01", "a", wlpr=oil, womr=oil, liquid=oil, oil=oil)]
+
+    def in_training_range(self, steps):
+        return []
+
+
+class CoveredForcingSurrogate(ForcingSurrogate):
+    """Тот же прогноз плюс запрос покрытия: выше 1.25 в обучении такого режима не было."""
+
+    def covers_control(self, role, well, multiplier):
+        return multiplier <= 1.25 + 1e-9
+
+
+def test_joint_search_does_not_choose_a_candidate_outside_training():
+    """Непокрытый кандидат не выигрывает, даже когда обещает больше покрытого.
+
+    Требование сильнее равенства прогнозов: 1.5 здесь обещает строго больше, чем
+    1.25, и всё равно не выбирается — обещанию нечем быть подтверждённым.
+    """
+    choices = optimise.choose_joint_rates(
+        CoveredForcingSurrogate(), plan(["a"], months=1), start_date=START
+    )
+
+    assert choices[0].multiplier == 1.25
+    assert choices[0].outside_training == (1.5,)
+    assert "1.5" in str(choices[0])
+
+
+def test_joint_search_keeps_forcing_when_the_surrogate_cannot_answer_about_coverage():
+    """Без `covers_control` поиск ведёт себя ровно как раньше — берёт лучший прогноз."""
+    choices = optimise.choose_joint_rates(
+        ForcingSurrogate(), plan(["a"], months=1), start_date=START
+    )
+
+    assert choices[0].multiplier == 1.5
+    assert choices[0].outside_training == ()
+
+
+def test_joint_search_runs_on_the_baseline_surrogate(norms):
+    """У тривиального бейзлайна покрытия нет вовсе, и цикл на нём не должен ломаться."""
+    model = DeclineSurrogate.fit(history("good", 0.50, 0.005) + history("bad", 0.99, 0.0002),
+                                 FLUIDS)
+    assert not hasattr(model, "covers_control")
+
+    choices = optimise.choose_joint_rates(model, plan(["good", "bad"]), start_date=START)
+
+    assert [choice.well for choice in choices] == ["bad", "good"]
+    assert all(choice.outside_training == () for choice in choices)
+    assert all(choice.chosen_chdd_m >= choice.baseline_chdd_m for choice in choices)
+
+
 # ── перевод под закачку (ВНС) ────────────────────────────────────────────────
 #
 # Механизм нужен не сам по себе: суррогат сегодня не видит ВНС вовсе. Признаки
