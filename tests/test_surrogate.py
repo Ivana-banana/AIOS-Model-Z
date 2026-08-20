@@ -9,7 +9,8 @@ from conftest import make_row
 
 from aios import economics, summary
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
-from aios.surrogate import DeclineSurrogate, TrainingEnvelope, expand
+from aios.neural import RESTART_MULTIPLIER
+from aios.surrogate import DeclineSurrogate, NumericRange, TrainingEnvelope, expand
 
 FLUIDS = summary.Fluids()
 
@@ -258,40 +259,153 @@ def test_a_well_without_history_is_flagged_rather_than_guessed():
 
 
 def training_rows() -> list[dict]:
+    """Матрица управления обучающей выборки: строка — сценарий × месяц.
+
+    Именно множители, а не достигнутые дебиты: область применимости суррогата
+    задаётся тем, чем управляли, — в этих же величинах модель принимает вход.
+    """
     return [
-        {"scenario": "low", "DATA": "2014-01-01", "well": "1", "WLPR": 20, "WWIR": 0},
-        {"scenario": "low", "DATA": "2014-01-01", "well": "2", "WLPR": 0, "WWIR": 30},
-        {"scenario": "high", "DATA": "2014-01-01", "well": "1", "WLPR": 40, "WWIR": 0},
-        {"scenario": "high", "DATA": "2014-01-01", "well": "2", "WLPR": 0, "WWIR": 50},
+        {"prod:1": 1.0, "prod:2": 1.0, "inj:3": 1.0},
+        {"prod:1": 0.8, "prod:2": 1.2, "inj:3": 1.2},
+        {"prod:1": 1.2, "prod:2": 0.8, "inj:3": 0.8},
     ]
 
 
-def test_training_envelope_accepts_seen_local_and_field_ranges():
+def test_training_envelope_accepts_multipliers_seen_in_training():
     envelope = TrainingEnvelope.fit(training_rows())
-    steps = [ScheduleStep(
-        date(2014, 1, 1),
-        (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),),
-        (InjectorControl("2", "WATER", "OPEN", "RATE", 40.0, 300.0),),
-    )]
 
-    assert envelope.warnings(steps) == []
+    assert envelope.warnings(
+        {date(2014, 1, 1): {"prod:1": 1.1, "prod:2": 0.9, "inj:3": 1.0}}
+    ) == []
 
 
-def test_training_envelope_flags_unknown_role_and_field_combination():
+def test_training_envelope_flags_a_multiplier_outside_training():
     envelope = TrainingEnvelope.fit(training_rows())
-    steps = [ScheduleStep(
-        date(2014, 1, 1),
-        (
-            ProducerControl("1", "OPEN", "LRAT", 40.0, 50.0),
-            ProducerControl("2", "OPEN", "LRAT", 20.0, 50.0),
-        ),
-        (),
-    )]
 
-    warnings = envelope.warnings(steps)
+    warnings = envelope.warnings(
+        {date(2014, 1, 1): {"prod:1": 1.5, "prod:2": 1.0, "inj:3": 1.0}}
+    )
 
-    assert any("скв. 2" in warning and "режим отсутствует" in warning for warning in warnings)
-    assert any("суммарный дебит 60" in warning for warning in warnings)
+    assert any("prod:1" in warning and "вне обучающего диапазона" in warning
+               for warning in warnings)
+
+
+def test_training_envelope_flags_forcing_the_whole_field():
+    """Каждая скважина внутри своего диапазона, а фонд целиком — нет.
+
+    Пакет DoE двигает скважины вразнобой; расписание, поднявшее разом все,
+    остаётся поскважинно внутри границ и всё равно является экстраполяцией.
+    """
+    envelope = TrainingEnvelope.fit(training_rows())
+
+    warnings = envelope.warnings(
+        {date(2014, 1, 1): {"prod:1": 1.2, "prod:2": 1.2, "inj:3": 1.0}}
+    )
+
+    assert not [warning for warning in warnings if "вне обучающего диапазона" in warning
+                and "суммарн" not in warning], "поскважинно расписание внутри границ"
+    assert any(warning.split(":", 1)[-1].strip().startswith("суммарн")
+               for warning in warnings)
+
+
+def test_restart_marker_is_not_a_range_violation():
+    """Отрицательный множитель — метка «опорного режима не было», а не режим.
+
+    О запуске из простоя и переводе под закачку говорит отдельная пометка
+    (`NeuralSurrogate._unlearned_controls`); диапазонная сказала бы то же самое
+    второй раз и другими словами.
+    """
+    envelope = TrainingEnvelope.fit(training_rows())
+
+    assert envelope.warnings({date(2014, 1, 1): {"prod:1": RESTART_MULTIPLIER}}) == []
+
+
+def test_neutral_regime_is_inside_the_envelope_even_if_no_scenario_hit_it():
+    """Опорный режим обязан проходить молча, даже если DoE до него не дотянул.
+
+    В каждом сценарии DoE часть фонда остановлена, поэтому средний множитель по
+    фонду ни в одном сценарии не равен единице, а опорное расписание — это ровно
+    единица. На настоящем расписании Модели Z это давало 450 пометок «суммарный
+    режим объекта вне диапазона» (замер 20.08) — ложная тревога того же рода, что
+    и поскважинная.
+    """
+    envelope = TrainingEnvelope.fit([
+        {"prod:1": 0.0, "prod:2": 0.8},     # скважина 1 остановлена сценарием
+        {"prod:1": 0.7, "prod:2": 0.0},
+    ])
+
+    assert envelope.warnings({date(2014, 1, 1): {"prod:1": 1.0, "prod:2": 1.0}}) == []
+    assert envelope.covers("prod:1", 1.0)
+
+
+def test_range_warnings_are_folded_by_well_and_reason():
+    """Одна мысль — одна строка, с диапазоном месяцев и их числом.
+
+    Ревизия 20.08 намерила на форсаже реального размера 20 925 строк, различных
+    по сути — две: «режим скважины вне диапазона» и то же по объекту. Счётчик
+    печатал «Предупреждения (20925)» и первые десять, то есть десять раз одну и
+    ту же мысль. Соседний блок (`NeuralSurrogate._unlearned_controls`) уже
+    сворачивается по ключу «скважина + причина»; здесь тот же приём.
+    """
+    envelope = TrainingEnvelope.fit(training_rows())
+    forced = {
+        date(2014, month, 1): {"prod:1": 1.9, "prod:2": 1.0, "inj:3": 1.0}
+        for month in range(1, 13)
+    }
+
+    warnings = envelope.warnings(forced)
+
+    # двенадцать месяцев × две причины (скважина и фонд) — две строки, а не 24
+    assert len(warnings) == 2, warnings
+    assert all("2014-01-01…2014-12-01" in warning and "12 мес." in warning
+               for warning in warnings)
+    assert any("prod:1" in warning for warning in warnings)
+
+
+def test_folding_keeps_every_distinct_reason():
+    """Свёртка обязана сохранять причины: разные скважины и разные причины — разные строки."""
+    envelope = TrainingEnvelope.fit(training_rows())
+    months = {
+        date(2014, month, 1): {"prod:1": 1.9, "prod:НОВАЯ": 1.0, "inj:3": 1.0}
+        for month in range(1, 4)
+    }
+
+    warnings = envelope.warnings(months)
+
+    # три причины: скважина вне диапазона, неизвестное управление и фонд целиком
+    assert len(warnings) == 3, warnings
+    assert any("отсутствует в обучающих прогонах" in warning and "prod:НОВАЯ" in warning
+               for warning in warnings)
+    assert any("вне обучающего диапазона" in warning and "prod:1" in warning
+               for warning in warnings)
+    assert any(warning.split(":", 1)[-1].strip().startswith("суммарн")
+               for warning in warnings)
+
+
+def test_envelope_answers_coverage_before_the_choice_is_made():
+    """Запрос покрытия для поиска: проверить кандидата **до** выбора, а не после."""
+    envelope = TrainingEnvelope.fit(training_rows())
+
+    assert envelope.covers("prod:1", 1.2)
+    assert not envelope.covers("prod:1", 1.5)
+    assert not envelope.covers("prod:404", 1.0)
+
+
+def test_envelope_of_an_old_artifact_does_not_pretend_to_know_coverage():
+    """Артефакт, обученный до перевода детектора на множители, честно говорит об этом.
+
+    Молчать нельзя: пустая область применимости выглядит как «всё внутри
+    обучения», то есть как отсутствие ограничений там, где о них ничего не
+    известно. Поиску при этом отвечаем «покрыто» — тихо запрещать ему все
+    режимы хуже, чем громко сказать о неизвестности один раз на расписание.
+    """
+    envelope = TrainingEnvelope({}, NumericRange(0.0, 0.0), NumericRange(0.0, 0.0))
+
+    warnings = envelope.warnings({date(2014, 1, 1): {"prod:1": 1.0}})
+
+    assert len(warnings) == 1
+    assert "область применимости не записана" in warnings[0]
+    assert envelope.covers("prod:1", 3.0)
 
 
 def test_training_envelope_rejects_empty_dataset():

@@ -21,6 +21,7 @@ from aios.pvt import (
     report,
     well_fluids,
 )
+from aios.summary import Fluids
 
 DENSITY = """\
 DENSITY
@@ -355,3 +356,48 @@ COMPDAT
     result = fluids_by_well(_deck(tmp_path, both))
 
     assert "несколько регионов: 1" in result.note
+
+
+# --- след в артефактах прогона ----------------------------------------------
+#
+# Пометка о происхождении плотностей до 20.08 уходила только в stdout. Заявляемый
+# ЧДД обязан быть подписан источником (`CLAUDE.md`), а прокрутка терминала —
+# не источник: она не переживает ни перезапуск, ни передачу выгрузки между
+# машинами. Поэтому пометка ложится рядом с `rows.csv` — тем файлом, которым
+# машины обмениваются и который читает расчётчик.
+
+def test_the_note_lands_next_to_the_exported_rows(tmp_path):
+    result = fluids_by_well(_deck(tmp_path, COMPDAT))
+
+    path = result.write_note(tmp_path / "rows.csv", fluids=Fluids(),
+                             model_dir=tmp_path / "model")
+
+    assert path.name == "rows.source.txt"
+    text = path.read_text(encoding="utf-8")
+    assert "rows.csv" in text
+    assert "скважин 2" in text
+    assert "ВНИМАНИЕ" not in text  # всё взято из дека, предупреждать не о чем
+
+
+def test_a_run_on_the_common_density_is_marked_in_the_artifact(tmp_path):
+    """Дек на COMPDATMD — весь фонд считается по одной плотности из конфигурации."""
+    result = fluids_by_well(_deck(tmp_path, COMPDATMD))
+
+    text = result.write_note(tmp_path / "rows.csv", fluids=Fluids(),
+                             model_dir=tmp_path / "model").read_text(encoding="utf-8")
+
+    assert "ВНИМАНИЕ" in text
+    assert "913.0766" in text  # какая именно плотность подставлена, а не «общая»
+    assert "весь фонд" in text
+
+
+def test_a_partly_covered_fund_is_not_reported_as_a_whole_one(tmp_path):
+    """Часть скважин без региона — это не то же самое, что дек без COMPDAT вовсе."""
+    result = fluids_by_well(_deck(tmp_path, COMPDAT), wells=("A", "B", "нет-в-деке"))
+
+    text = result.write_note(tmp_path / "rows.csv", fluids=Fluids(),
+                             model_dir=tmp_path / "model").read_text(encoding="utf-8")
+
+    assert "ВНИМАНИЕ" in text
+    assert "весь фонд" not in text
+    assert "скважин без региона: 1 из 3" in text

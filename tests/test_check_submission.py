@@ -1,0 +1,171 @@
+"""Предполётная проверка сдаваемого `wells_schedule.inc`.
+
+Проверяется файл, а не структура в памяти: он мог быть собран прежней версией
+кода, скопирован между машинами или обрезан. Расчёт у организаторов один
+(`CLAUDE.md`), поэтому цена пропущенного дефекта — весь результат.
+
+Тексты собираются нашим же генератором (`aios.schedule.render`): так проверка
+заодно ловит расхождение генератора с парсером — если мы перестанем читать
+собственный файл, тНавигатор тем более прочтёт его иначе.
+"""
+
+from __future__ import annotations
+
+import sys
+from datetime import date
+from pathlib import Path
+
+from aios.deck import InjectorControl, ProducerControl, ScheduleStep, parse_schedule_text
+from aios.schedule import render
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+from check_submission import check, events  # noqa: E402
+
+CONTROL_START = date(2007, 1, 1)
+
+
+def producer(well: str, rate: float, status: str = "OPEN") -> ProducerControl:
+    return ProducerControl(well, status, "LRAT", rate, 50.0)
+
+
+def injector(well: str, rate: float, status: str = "OPEN") -> InjectorControl:
+    return InjectorControl(well, "WATER", status, "RATE", rate, 250.0)
+
+
+def steps(*months: tuple[date, tuple, tuple]) -> list[ScheduleStep]:
+    return [ScheduleStep(day, producers, injectors) for day, producers, injectors in months]
+
+
+DECK = render(steps(
+    (date(2007, 1, 1), (producer("1", 100.0), producer("2", 50.0)), (injector("3", 200.0),)),
+    (date(2007, 2, 1), (producer("1", 90.0),), ()),
+    (date(2007, 3, 1), (producer("1", 80.0),), ()),
+))
+
+
+def test_a_schedule_from_our_own_generator_passes(tmp_path):
+    """Опорный случай: то, что мы генерируем, обязано проходить проверку целиком."""
+    failures, notes = check(DECK, DECK, CONTROL_START)
+
+    assert failures == []
+    assert not [note for note in notes if "горизонт короче" in note]
+
+
+def test_a_rate_above_the_methodology_limit_is_refused():
+    text = render(steps((date(2007, 1, 1), (producer("1", 501.0),), ())))
+
+    failures, _ = check(text, DECK, CONTROL_START)
+
+    assert any("запрещено методикой" in failure for failure in failures)
+
+
+def test_a_well_missing_from_the_deck_is_refused():
+    """Скважина, которой в деке нет, — это другой фонд, а не другой режим."""
+    text = render(steps((date(2007, 1, 1), (producer("нет-в-деке", 100.0),), ())))
+
+    failures, _ = check(text, DECK, CONTROL_START)
+
+    assert any("скважины нет в деке" in failure for failure in failures)
+
+
+def test_an_empty_file_is_refused_not_silently_accepted():
+    failures, _ = check("-- только комментарий\n", DECK, CONTROL_START)
+
+    assert any("нет ни одного шага" in failure for failure in failures)
+
+
+def test_history_before_the_control_start_is_not_judged_by_our_rules():
+    """История задана организаторами: браковать их дек по нашим правилам нельзя."""
+    text = render(steps(
+        (date(1995, 6, 1), (producer("1", 900.0),), ()),   # выше предела, но это история
+        (date(2007, 1, 1), (producer("1", 100.0),), ()),
+    ))
+
+    failures, _ = check(text, DECK, CONTROL_START)
+
+    assert failures == []
+
+
+def test_a_short_horizon_is_a_warning_with_the_number_of_months():
+    """Расписание, кончающееся раньше дека, — это недосчитанные годы выручки."""
+    text = render(steps((date(2007, 1, 1), (producer("1", 100.0),), ())))
+
+    _, notes = check(text, DECK, CONTROL_START)
+
+    assert any("горизонт короче дека на 2 мес." in note for note in notes)
+
+
+def test_wells_that_never_appear_in_the_file_are_named():
+    """Молчание про скважину — не остановка: по семантике Eclipse режим сохраняется."""
+    text = render(steps((date(2007, 1, 1), (producer("1", 100.0),), ())))
+
+    _, notes = check(text, DECK, CONTROL_START)
+
+    assert any("без единого режима в файле: 2" in note for note in notes)
+
+
+def test_a_file_without_completions_says_so_instead_of_blaming_every_well():
+    """В форме «хвост» вскрытий нет вовсе — это не 109 скважин без вскрытия."""
+    _, notes = check(DECK, DECK, CONTROL_START)
+
+    assert any("вскрытий (COMPDAT) в файле нет" in note for note in notes)
+
+
+def test_controls_we_cannot_parse_are_reported_not_ignored():
+    """Неразобранное ключевое слово означает, что часть режима мы не видели."""
+    text = DECK + "\nWELTARG\n '1' LRAT 200 /\n/\n"
+
+    _, notes = check(text, DECK, CONTROL_START)
+
+    assert any("WELTARG" in note for note in notes)
+
+
+# --- события расписания -------------------------------------------------------
+#
+# Деньги считает эталонный расчётчик по выгрузке, а не расписание. Здесь считается
+# другое: насколько подвижное расписание мы отправляем — остановка и пуск это два
+# отдельных события методики, и они не должны сливаться в одно.
+
+def test_a_stop_and_a_start_are_counted_separately():
+    parsed = parse_schedule_text(render(steps(
+        (date(2007, 1, 1), (producer("1", 100.0),), ()),
+        (date(2007, 2, 1), (producer("1", 100.0, status="SHUT"),), ()),
+        (date(2007, 3, 1), (producer("1", 100.0),), ()),
+    )))
+
+    assert events(parsed.steps)["остановок"] == 1
+    assert events(parsed.steps)["пусков"] == 1
+
+
+def test_a_conversion_to_injection_is_counted():
+    parsed = parse_schedule_text(render(steps(
+        (date(2007, 1, 1), (producer("1", 100.0),), ()),
+        (date(2007, 2, 1), (), (injector("1", 200.0),)),
+    )))
+
+    assert events(parsed.steps)["переводов под закачку"] == 1
+
+
+def test_a_well_that_never_changes_produces_no_events():
+    parsed = parse_schedule_text(render(steps(
+        (date(2007, 1, 1), (producer("1", 100.0),), ()),
+        (date(2007, 2, 1), (producer("1", 90.0),), ()),
+    )))
+
+    assert events(parsed.steps) == {"остановок": 0, "пусков": 0, "переводов под закачку": 0}
+
+
+def test_a_conversion_in_one_step_is_not_also_a_stop_and_a_start():
+    """Перевод пишется двумя строками одного шага — событие при этом одно.
+
+    По записям режима, а не по состоянию на конец шага, историческое расписание
+    Модели Z давало 30 остановок, 30 пусков и 30 переводов — одно и то же
+    тридцатикратно (найдено прогоном 20.08).
+    """
+    parsed = parse_schedule_text(render(steps(
+        (date(2007, 1, 1), (producer("1", 100.0),), ()),
+        (date(2007, 2, 1), (producer("1", 100.0, status="SHUT"),), (injector("1", 200.0),)),
+    )))
+
+    assert events(parsed.steps) == {"остановок": 0, "пусков": 0, "переводов под закачку": 1}

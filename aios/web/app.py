@@ -412,9 +412,11 @@ def create_app(root: Path | None = None) -> FastAPI:
         options = _cycle_options(model, mode, lookback, configuration)
         cycle = run_cycle_on(run, configuration, options)
 
+        # три отказа сборки различаются кодом, а не только текстом: страницу на
+        # защите трогают руками, и «почему не собралось» должно читаться из ответа
         if cycle.deck_wells is None:
             raise HTTPException(
-                409,
+                503,   # дека нет в окружении: повторять тот же запрос бессмысленно
                 "дек модели недоступен: кейс собирается поверх дека организаторов, "
                 f"а по пути {configuration.case.model_dir} его нет",
             )
@@ -422,7 +424,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             # то же правило, что в scripts/run_cycle.py: расписание с нарушениями
             # до файла не доходит, иначе нарушение уедет в сдаваемый пакет
             raise HTTPException(
-                409,
+                422,   # запрос понят, но расписание непригодно
                 "расписание нарушает ограничения, кейс не собран: "
                 + "; ".join(str(problem) for problem in cycle.result.problems[:3]),
             )
@@ -430,7 +432,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         target = project_root / "runs" / _case_directory(run.name, options)
         if target.exists():
             raise HTTPException(
-                409,
+                409,   # конфликт с уже существующим прогоном — единственный настоящий 409
                 f"каталог runs/{target.name} уже есть. Прогон не перезаписывается: "
                 "удалите или переименуйте его, если нужно пересобрать",
             )
@@ -444,7 +446,8 @@ def create_app(root: Path | None = None) -> FastAPI:
                 case_name=configuration.case.case_name,
             )
         except (ValueError, OSError) as error:
-            raise HTTPException(409, f"кейс собрать не удалось: {error}") from error
+            # сборка сорвалась на нашей стороне: каталог свободен, запрос верен
+            raise HTTPException(500, f"кейс собрать не удалось: {error}") from error
 
         data_file = case.data_file.resolve()
         return TEMPLATES.TemplateResponse(

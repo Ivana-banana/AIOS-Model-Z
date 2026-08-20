@@ -103,8 +103,13 @@ def main(argv: list[str] | None = None) -> int:
               "правки выгрузки запрещены)")
 
     csv_path = summary.write_csv(rows, run_dir / "rows.csv")
+    # Пометка о происхождении плотностей ложится рядом с выгрузкой: `rows.csv`
+    # уезжает на другую машину, а прокрутка терминала — нет.
+    note_path = deck_fluids.write_note(csv_path, fluids=config.fluids,
+                                       model_dir=config.case.model_dir)
     print()
     print(f"выгрузка:  {csv_path} ({csv_path.stat().st_size / 1e6:.1f} МБ)")
+    print(f"источник:  {note_path}")
 
     result = economics.compute_npv(
         rows,

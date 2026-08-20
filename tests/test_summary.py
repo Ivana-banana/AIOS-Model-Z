@@ -204,6 +204,68 @@ def test_injection_only_well_is_reported(tmp_path):
     assert summary.sanity_problems(rows) == []
 
 
+def _sanity_row(data, *, well="1", wlpt=0.0, womt=0.0, wwit=0.0,
+                wlpt_diff=0.0, womt_diff=0.0, wwit_diff=0.0,
+                wlpr=0.0, wwir=0.0):
+    """Строка контракта под проверки напрямую, без симулятора.
+
+    Так собирает строки и суррогат: накопленные величины и приращения приходят
+    независимо друг от друга, а не одной разностью, — поэтому рассогласовать их
+    в тесте можно, и это не искусственный случай.
+    """
+    return {
+        "DATA": data, "well": well,
+        "WLPT": wlpt, "WLPR": wlpr, "WOMT": womt, "WOMR": 0.0,
+        "WWIR": wwir, "WWIT": wwit, "THP": 120.0, "BHP": 80.0, "WEFF": 1.0,
+        "WLPT_Diff": wlpt_diff, "WOMT_Diff": womt_diff, "WWIT_Diff": wwit_diff,
+    }
+
+
+def test_negative_increment_and_the_drop_it_explains_are_one_problem():
+    """Отрицательный прирост и вызванное им уменьшение накопленного — один факт.
+
+    Замер на опорном расписании Модели Z (20.08, машина В) давал их парами:
+    2 400 строк «отрицательное WLPT_Diff» против 2 378 «накопленное WLPT
+    уменьшилось» у тех же 28 скважин, 264 против 264 по WWIT у пяти. Разница в
+    22 строки — первые месяцы, у которых нет предыдущего для сравнения.
+    """
+    rows = [
+        _sanity_row("2014-01-01", wwit=100.0, wwit_diff=100.0),
+        _sanity_row("2014-02-01", wwit=95.0, wwit_diff=-5.0),
+    ]
+    assert summary.sanity_problems(rows) == [
+        "2014-02-01 скв. 1: отрицательное WWIT_Diff = -5"
+    ]
+
+
+def test_cumulative_drop_without_a_negative_increment_is_still_caught():
+    """Рассогласованный ряд: накопленное поехало при неотрицательном приросте.
+
+    На выгрузке симулятора так не бывает — там `*_Diff` и есть эта разность, —
+    но прогноз суррогата собирается иначе. Свёртка дубликата не должна снимать
+    саму проверку.
+    """
+    rows = [
+        _sanity_row("2014-01-01", wlpt=100.0, wlpt_diff=100.0),
+        _sanity_row("2014-02-01", wlpt=90.0, wlpt_diff=0.0),
+    ]
+    problems = summary.sanity_problems(rows)
+    assert len(problems) == 1
+    assert "накопленное WLPT уменьшилось" in problems[0]
+
+
+def test_drop_deeper_than_the_increment_explains_is_a_separate_problem():
+    """Прирост отрицательный, но уменьшения не объясняет — это две разные новости."""
+    rows = [
+        _sanity_row("2014-01-01", wwit=100.0, wwit_diff=100.0),
+        _sanity_row("2014-02-01", wwit=90.0, wwit_diff=-1.0),
+    ]
+    problems = summary.sanity_problems(rows)
+    assert len(problems) == 2
+    assert any("отрицательное WWIT_Diff" in problem for problem in problems)
+    assert any("накопленное WWIT уменьшилось" in problem for problem in problems)
+
+
 def test_summary_section_lists_every_well_explicitly():
     section = summary.render_summary_section(["1", "2"])
     assert "WOPT\n '1'\n '2'\n/" in section

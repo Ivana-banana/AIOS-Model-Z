@@ -112,7 +112,7 @@ def report(*, neural: float = 1.0, linear: float = 2.0) -> TrainingReport:
 
 def bundle(metrics: TrainingReport | None = None) -> NeuralBundle:
     envelope = TrainingEnvelope(
-        {"1": NumericRange(20.0, 40.0)}, {}, NumericRange(20.0, 40.0), NumericRange(0, 0)
+        {"1": NumericRange(0.5, 2.0)}, NumericRange(0.5, 2.0), NumericRange(0.0, 0.0)
     )
     return NeuralBundle(("1",), {"1": ConstantModel()}, pd.Timestamp("2014-01-01"), 1,
                         envelope, metrics or report())
@@ -150,6 +150,28 @@ def test_physical_prediction_failure_reaches_cycle_warnings():
     warnings = surrogate.in_training_range([step()])
 
     assert any("отрицательное WLPT_Diff" in warning for warning in warnings)
+
+
+def test_physical_failures_are_folded_to_one_line_per_well():
+    """Одна скважина — одна строка с числом нарушений, а не строка на месяц.
+
+    На настоящем расписании Модели Z таких строк 16 084 у 68 скважин, и страница
+    цикла печатает их все: `{% for warning in result.warnings %}` в cycle.html.
+    Счётчик «Предупреждения (16542)» формально верен и бесполезен.
+    """
+    invalid = bundle()
+    invalid.models["1"] = InvalidModel()
+    months = [ScheduleStep(pd.Timestamp(f"2014-{month:02d}-01").date(),
+                           (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),), ())
+              for month in range(1, 13)]
+    surrogate = NeuralSurrogate.create(invalid, months)
+
+    physical = [warning for warning in surrogate.in_training_range(months)
+                if "физические проверки" in warning]
+
+    assert len(physical) == 1, physical
+    assert "скв. 1" in physical[0]
+    assert "отрицательное WLPT_Diff" in physical[0]
 
 
 def test_date_outside_training_horizon_is_flagged():
@@ -568,3 +590,50 @@ def date_(year: int, month: int, day: int):
     from datetime import date
 
     return date(year, month, day)
+
+
+def _schedule(rate: float, months: int = 12) -> list[ScheduleStep]:
+    """Расписание, запрашивающее один и тот же режим каждый месяц 2014 года."""
+    return [
+        ScheduleStep(
+            pd.Timestamp(f"2014-{month:02d}-01").date(),
+            (ProducerControl("1", "OPEN", "LRAT", rate, 50.0),
+             ProducerControl("2", "OPEN", "LRAT", rate, 50.0)),
+            (),
+        )
+        for month in range(1, months + 1)
+    ]
+
+
+def _range_warnings(warnings: list[str]) -> list[str]:
+    return [warning for warning in warnings if "вне обучающего диапазона" in warning]
+
+
+def test_reference_schedule_is_inside_the_envelope_though_rates_never_reach_it():
+    """Опорное расписание обязано проходить молча, даже если режим не достигался.
+
+    Скважина сплошь не выходит на заданный режим: симулятор переключает её с
+    `LRAT` на `BHP`, и достигнутый дебит ниже запрошенного в разы. До 20.08
+    область применимости снималась с достигнутых `WLPR`, а проверялся
+    запрошенный `liquid_rate` — на историческом расписании Модели Z это давало
+    4 796 пометок «режим вне диапазона» при ожидаемом нуле
+    (`docs/experiments.md`, 20.08). Защита, срабатывающая на любом расписании,
+    не отличает опасное решение от безобидного.
+    """
+    bundle = train(_dataset_frame(), seed=7, hidden_layers=(4,), max_iter=50)
+    reference = _schedule(rate=95.0)   # запрошено 95 при достигнутых 24…45
+
+    surrogate = NeuralSurrogate.create(bundle, reference, require_quality=False)
+
+    assert _range_warnings(surrogate.in_training_range(reference)) == []
+
+
+def test_forcing_beyond_the_doe_is_still_flagged():
+    """Форсаж за пределы обучающих множителей обязан оставаться видимым."""
+    bundle = train(_dataset_frame(), seed=7, hidden_layers=(4,), max_iter=50)
+    reference = _schedule(rate=95.0)
+
+    surrogate = NeuralSurrogate.create(bundle, reference, require_quality=False)
+    forced = _schedule(rate=95.0 * 2.0)   # датасет кончается на 1.5
+
+    assert _range_warnings(surrogate.in_training_range(forced))

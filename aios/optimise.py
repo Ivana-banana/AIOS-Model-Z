@@ -111,20 +111,8 @@ class JointRateChoice:
     baseline_chdd_m: float
     chosen_chdd_m: float
     kind: str = "production"
-
-    outside_training: bool = False
-    """Выбранный режим уводит расписание за пределы обучающей выборки.
-
-    Считается **до** выбора, а не после: раньше диапазон проверялся в
-    `aios/loop.py` по итоговому расписанию, то есть когда решение уже принято.
-    Прогноз за границей обучения — экстраполяция, и она систематически
-    оптимистична, потому что оптимизатор ищет максимум и тянет решение именно
-    туда (`CLAUDE.md`).
-
-    Сравнение идёт с базовым расписанием, а не с нулём: детектор сегодня шумит и
-    на самой истории — 9 594 пометки на опорном расписании (замер 20.08). Флаг
-    поднимают только те пометки, которых у базового расписания нет.
-    """
+    outside_training: tuple[float, ...] = ()
+    """Кандидаты, отброшенные до выбора: таких режимов у этого управления в обучении не было."""
 
     @property
     def gain_m(self) -> float:
@@ -151,10 +139,14 @@ class JointRateChoice:
         what = "без изменений" if not self.changed else (
             "остановка" if self.multiplier == 0 else f"{control} ×{self.multiplier:g}"
         )
-        return (
+        text = (
             f"скв. {self.well}: {what}, ЧДД фонда "
             f"{self.baseline_chdd_m:+.2f} → {self.chosen_chdd_m:+.2f} млн руб."
         )
+        if not self.outside_training:
+            return text
+        skipped = ", ".join(f"×{value:g}" for value in self.outside_training)
+        return f"{text}; вне обучения не рассматривались: {skipped}"
 
 
 def discounted_margin_by_well(rows: list[dict[str, Any]],
@@ -230,6 +222,13 @@ def choose_joint_rates(
     принятых режимах остальных скважин и оценивается полным эталонным ЧДД фонда.
     Это не гарантирует глобальный оптимум, но не использует неверное допущение о
     независимости скважин и ни одним шагом не ухудшает текущего кандидата.
+
+    **Кандидат вне обучающего диапазона до выбора не доходит.** Раньше область
+    применимости проверялась в `aios.loop` по уже собранному расписанию, то есть
+    пометка приходила после того, как решение принято, — а поиск ищет максимум и
+    тянет решение ровно туда, где суррогат ошибается в нашу пользу (`CLAUDE.md`).
+    Отброшенное записывается в `JointRateChoice.outside_training` и попадает в
+    объяснение решения: молча сузить перебор нельзя.
     """
     if 1.0 not in multipliers:
         raise ValueError("в наборе множителей обязан быть 1.0 — режим «как есть» это база")
@@ -247,41 +246,56 @@ def choose_joint_rates(
     selected = dict.fromkeys(controls, 1.0)
     current_steps = _scale_individually(base_steps, selected)
     current_chdd = _chdd(surrogate.predict(current_steps), start_date)
-    # то, о чём суррогат жалуется и без наших изменений: вычитается из пометок
-    # каждого кандидата, иначе за границей окажутся все, включая базовый режим
-    baseline_complaints = frozenset(surrogate.in_training_range(current_steps))
     choices: list[JointRateChoice] = []
 
     for kind, well in controls:
         before = current_chdd
+        covered, outside = _covered_multipliers(surrogate, kind, well, multipliers)
         best_multiplier = selected[(kind, well)]
         best_steps = current_steps
         best_chdd = current_chdd
-        best_outside = False
-        for multiplier in multipliers:
+        for multiplier in covered:
             candidate_multipliers = selected | {(kind, well): multiplier}
             candidate = _scale_individually(base_steps, candidate_multipliers)
             candidate_chdd = _chdd(surrogate.predict(candidate), start_date)
-            outside = bool(
-                frozenset(surrogate.in_training_range(candidate)) - baseline_complaints
-            )
-            better = candidate_chdd > best_chdd + 1e-9
-            # при равном прогнозе выигрывает тот, что внутри обучения: между
-            # измеренным и экстраполированным при прочих равных выбирается
-            # измеренное
-            same_money = abs(candidate_chdd - best_chdd) <= 1e-9
-            if better or (same_money and best_outside and not outside):
+            if candidate_chdd > best_chdd + 1e-9:
                 best_multiplier = multiplier
                 best_steps = candidate
                 best_chdd = candidate_chdd
-                best_outside = outside
 
         selected[(kind, well)] = best_multiplier
         current_steps = best_steps
         current_chdd = best_chdd
-        choices.append(JointRateChoice(well, best_multiplier, before, best_chdd, kind,
-                                       outside_training=best_outside))
+        choices.append(
+            JointRateChoice(well, best_multiplier, before, best_chdd, kind, outside)
+        )
     return choices
+
+
+def _covered_multipliers(
+    surrogate: Surrogate,
+    kind: str,
+    well: str,
+    multipliers: tuple[float, ...],
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Разделить кандидатов на покрытых обучением и отброшенных.
+
+    Из двух возможных правил — «не рассматривать» и «рассматривать с пометкой» —
+    выбрано первое (`docs/decisions.md`, Р-43): прогноз за границей обучения это
+    не менее точное число, а число без оснований, и проверить его нечем — полный
+    расчёт у организаторов один, повторной попытки нет.
+
+    Покрытие спрашивается через `getattr`, а не по типу суррогата: у тривиального
+    бейзлайна `covers_control` нет вовсе, и это значит «покрытие неизвестно» —
+    тогда поиск работает как раньше. Множитель 1.0 остаётся всегда: это базовый
+    режим расписания и точка отсчёта, а не кандидат.
+    """
+    covers = getattr(surrogate, "covers_control", None)
+    if covers is None:
+        return multipliers, ()
+    covered = tuple(value for value in multipliers
+                    if value == 1.0 or covers(kind, well, value))
+    return covered, tuple(value for value in multipliers if value not in covered)
 
 
 def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
@@ -485,13 +499,13 @@ def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
         f"(из них остановок {stopped}); {objective} {gain:+.1f} млн руб.",
         "",
     ]
-    extrapolated = [c for c in changed if getattr(c, "outside_training", False)]
-    if extrapolated:
-        # Это не то же самое, что «прогноз неточен»: за границей обучения ошибка
-        # систематически в нашу пользу, потому что максимум ищут именно там
-        lines.insert(1, f"  из них вне обучающей выборки: {len(extrapolated)} из "
-                        f"{len(changed)} — прогноз по ним экстраполяция, "
-                        "подтверждать полным расчётом обязательно")
+    # Считаем по ВСЕМ решениям, а не только по изменённым: управление, у которого
+    # кандидатов отбросили, а режим остался прежним, иначе не попадёт в отчёт —
+    # а знать, что выбор был неполным, важно именно там
+    withheld = [c for c in choices if getattr(c, "outside_training", ())]
+    if withheld:
+        lines.insert(1, f"  управлений, где часть кандидатов вне обучения не "
+                        f"рассматривалась: {len(withheld)} из {len(choices)}")
     lines.extend(f"  {choice}" for choice in sorted(changed, key=lambda item: -item.gain_m))
     return "\n".join(lines)
 

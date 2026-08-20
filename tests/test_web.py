@@ -574,10 +574,14 @@ def test_an_existing_run_is_never_overwritten(project_with_deck):
 
 
 def test_without_the_deck_the_case_is_refused_with_a_reason(client):
-    """Кейс собирается поверх дека организаторов; без него — отказ, а не пустышка."""
+    """Кейс собирается поверх дека организаторов; без него — отказ, а не пустышка.
+
+    Код 503, а не 409: дека нет в окружении, и повторять тот же запрос
+    бессмысленно, пока его не положат на место.
+    """
     response = client.post("/run/base/cycle/save")
 
-    assert response.status_code == 409
+    assert response.status_code == 503
     assert "дек модели недоступен" in response.text
 
 
@@ -595,9 +599,26 @@ def test_a_broken_schedule_never_reaches_the_disk(project_with_deck, monkeypatch
     monkeypatch.setattr("aios.web.app.loop.run_cycle", with_problems)
     response = TestClient(create_app(project_with_deck)).post("/run/base/cycle/save")
 
-    assert response.status_code == 409
+    assert response.status_code == 422
     assert "нарушает ограничения" in response.text
     assert not (project_with_deck / "runs" / "base-mas-decline").exists()
+
+
+def test_a_failed_build_is_not_reported_as_a_conflict(project_with_deck, monkeypatch):
+    """Сборка сорвалась на записи — это наш сбой, а не занятый каталог.
+
+    Три отказа сборки должны различаться кодом, а не только текстом: страницу на
+    защите трогают руками. 503 — дека нет, 422 — расписание непригодно,
+    409 — каталог занят, 500 — сборка сорвалась.
+    """
+    def fails(*args, **kwargs):
+        raise OSError("диск переполнен")
+
+    monkeypatch.setattr("aios.web.app.build_case", fails)
+    response = TestClient(create_app(project_with_deck)).post("/run/base/cycle/save")
+
+    assert response.status_code == 500
+    assert "диск переполнен" in response.text
 
 
 def test_the_cycle_page_offers_the_case_when_the_deck_is_there(project_with_deck):

@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from run_all import execute, plan  # noqa: E402
+from run_all import execute, plan, refuse_surrogate  # noqa: E402
 
 
 def steps(**overrides):
@@ -111,3 +111,64 @@ def test_failure_stops_the_run_immediately():
 @pytest.mark.parametrize("code", [1, 2, 137])
 def test_failure_code_is_propagated(code: int):
     assert execute(steps(), lambda _command: code) == code
+
+
+def test_cycle_runs_on_the_baseline_unless_a_model_is_given():
+    """Без ключа шаг 3 идёт на тривиальном бейзлайне — и это видно в команде."""
+    assert not any("--surrogate-model" in command for command in commands())
+
+
+def test_trained_surrogate_reaches_the_single_command_run():
+    """Обученный суррогат обязан попадать в сквозной прогон, а не только в отдельную команду.
+
+    Иначе «одна команда» ТЗ п. 3.2.3 всегда считает тривиальным бейзлайном, и
+    нейросетевая часть трека 2 в сквозном прогоне не участвует вовсе.
+    """
+    cycle = [command for command in commands(surrogate_model="artifacts/surrogate.joblib")
+             if "run_cycle.py" in command and "--confirm" not in command]
+
+    assert len(cycle) == 1
+    assert "--surrogate-model artifacts/surrogate.joblib" in cycle[0]
+
+
+def test_a_missing_model_is_refused_before_the_simulator(tmp_path):
+    """Отказ обязан приходить до расчёта: базовый прогон стоит 11 минут."""
+    assert refuse_surrogate(tmp_path / "нет.joblib") is not None
+
+
+def test_a_foreign_artifact_is_refused_by_name(tmp_path):
+    import joblib
+
+    path = tmp_path / "чужое.joblib"
+    joblib.dump({"это": "не модель"}, path)
+
+    refusal = refuse_surrogate(path)
+
+    assert refusal is not None and "dict" in refusal
+
+
+def test_a_model_below_the_quality_gate_is_refused_before_the_simulator(tmp_path):
+    """Тот же порог, что и в цикле, только применённый до первого расчёта."""
+    import joblib
+    import pandas as pd
+
+    from aios.neural import NeuralBundle, TargetMetric, TrainingReport
+    from aios.surrogate import NumericRange, TrainingEnvelope
+
+    # сеть хуже линейного бейзлайна по обеим целям порога
+    metrics = {target: TargetMetric(neural_mae=3.0, linear_mae=1.0)
+               for target in ("WLPT_Diff", "WOMT_Diff", "WWIT_Diff", "THP", "BHP")}
+    path = tmp_path / "слабая.joblib"
+    joblib.dump(
+        NeuralBundle(
+            ("prod:1",), {}, pd.Timestamp("2007-01-01"), 12,
+            TrainingEnvelope({"prod:1": NumericRange(0.5, 1.5)},
+                             NumericRange(0.5, 1.5), NumericRange(0.0, 0.0)),
+            TrainingReport(("a",), ("b",), 1, 2, metrics),
+        ),
+        path,
+    )
+
+    refusal = refuse_surrogate(path)
+
+    assert refusal is not None and "порог" in refusal

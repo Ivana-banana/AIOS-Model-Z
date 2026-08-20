@@ -236,6 +236,65 @@ def test_joint_search_can_change_injection_and_apply_the_choice():
     assert validate(tuned) == []
 
 
+# ── область применимости проверяется до выбора ───────────────────────────────
+
+
+class ForcingSurrogate:
+    """Прогноз растёт с дебитом без предела — так суррогат и врёт за границей обучения."""
+
+    def predict(self, steps):
+        oil = 100.0 + (steps[0].producers[0].liquid_rate or 0.0)
+        return [make_row("2014-01-01", "a", wlpr=oil, womr=oil, liquid=oil, oil=oil)]
+
+    def in_training_range(self, steps):
+        return []
+
+
+class CoveredForcingSurrogate(ForcingSurrogate):
+    """Тот же прогноз плюс запрос покрытия: выше 1.25 в обучении такого режима не было."""
+
+    def covers_control(self, role, well, multiplier):
+        return multiplier <= 1.25 + 1e-9
+
+
+def test_joint_search_does_not_choose_a_candidate_outside_training():
+    """Непокрытый кандидат не выигрывает, даже когда обещает больше покрытого.
+
+    Требование сильнее равенства прогнозов: 1.5 здесь обещает строго больше, чем
+    1.25, и всё равно не выбирается — обещанию нечем быть подтверждённым.
+    """
+    choices = optimise.choose_joint_rates(
+        CoveredForcingSurrogate(), plan(["a"], months=1), start_date=START
+    )
+
+    assert choices[0].multiplier == 1.25
+    assert choices[0].outside_training == (1.5,)
+    assert "1.5" in str(choices[0])
+
+
+def test_joint_search_keeps_forcing_when_the_surrogate_cannot_answer_about_coverage():
+    """Без `covers_control` поиск ведёт себя ровно как раньше — берёт лучший прогноз."""
+    choices = optimise.choose_joint_rates(
+        ForcingSurrogate(), plan(["a"], months=1), start_date=START
+    )
+
+    assert choices[0].multiplier == 1.5
+    assert choices[0].outside_training == ()
+
+
+def test_joint_search_runs_on_the_baseline_surrogate(norms):
+    """У тривиального бейзлайна покрытия нет вовсе, и цикл на нём не должен ломаться."""
+    model = DeclineSurrogate.fit(history("good", 0.50, 0.005) + history("bad", 0.99, 0.0002),
+                                 FLUIDS)
+    assert not hasattr(model, "covers_control")
+
+    choices = optimise.choose_joint_rates(model, plan(["good", "bad"]), start_date=START)
+
+    assert [choice.well for choice in choices] == ["bad", "good"]
+    assert all(choice.outside_training == () for choice in choices)
+    assert all(choice.chosen_chdd_m >= choice.baseline_chdd_m for choice in choices)
+
+
 # ── перевод под закачку (ВНС) ────────────────────────────────────────────────
 #
 # Механизм нужен не сам по себе: суррогат сегодня не видит ВНС вовсе. Признаки
@@ -387,81 +446,20 @@ def test_cyclic_schedule_stays_valid():
     assert validate(optimise.cyclic_injection(steps, {"A"}, {"B"}, half_period=3)) == []
 
 
-# ── кандидаты вне обучающего покрытия ────────────────────────────────────────
+# ── кандидаты вне обучающего покрытия: сводка ────────────────────────────────
 #
-# Поиск перебирает шесть множителей и раньше сравнивал их только по деньгам.
-# Прогноз за границей обучения — экстраполяция, и она систематически оптимистична:
-# именно туда оптимизатор и тянет решение. Проверка обязана стоять ДО выбора.
-#
-# Сравнение идёт не «есть ли пометки вообще», а «появились ли новые относительно
-# базового расписания». Иначе проверка бесполезна: детектор сегодня шумит и на
-# самой истории (замер 20.08 — 9 594 пометки на опорном расписании).
+# Отбор кандидатов проверяется тестами выше. Здесь — то, чего они не видят:
+# `explain` перечисляет только ИЗМЕНЁННЫЕ режимы, поэтому управление, у которого
+# кандидатов отбросили, а решение осталось прежним, не попадает в отчёт вовсе.
+# А это как раз тот случай, когда стоит знать, что выбор был неполным.
 
 
-class _Surrogate:
-    """Суррогат с управляемым прогнозом и управляемыми пометками."""
+def test_explain_reports_candidates_withheld_even_without_a_change():
+    unchanged = optimise.JointRateChoice("1", 1.0, 100.0, 100.0, "production",
+                                         outside_training=(1.5,))
+    changed = optimise.JointRateChoice("2", 1.25, 100.0, 130.0, "production")
 
-    def __init__(self, outside: set[float], gain: dict[float, float]):
-        self.outside = outside
-        self.gain = gain
+    text = optimise.explain([unchanged, changed])
 
-    def _multiplier(self, steps) -> float:
-        rate = next((c.liquid_rate or 0.0 for step in steps for c in step.producers), 0.0)
-        return round(rate / 40.0, 3)
-
-    def predict(self, steps):
-        oil = 100.0 * self.gain.get(self._multiplier(steps), 1.0)
-        return [make_row("2014-01-01", "1", wlpr=30.0, womr=oil / 30,
-                         liquid=900.0, oil=oil)]
-
-    def in_training_range(self, steps):
-        shared = ["шум, который есть всегда"]
-        if self._multiplier(steps) in self.outside:
-            return [*shared, "кандидат вне обучающего диапазона"]
-        return shared
-
-
-def _base(rate: float = 40.0):
-    return [ScheduleStep(date(2014, 1, 1),
-                         (ProducerControl("1", "OPEN", "LRAT", rate, 50.0),), ())]
-
-
-def test_candidate_outside_coverage_loses_a_tie():
-    """При равном прогнозе выигрывает тот, что внутри обучения."""
-    surrogate = _Surrogate(outside={1.5}, gain={1.0: 1.0, 1.5: 1.0})
-
-    choices = optimise.choose_joint_rates(surrogate, _base(), start_date=date(2014, 1, 1))
-
-    assert choices[0].multiplier == 1.0, "экстраполяция не должна побеждать вничью"
-
-
-def test_the_shared_noise_does_not_mark_everything():
-    """Пометки, которые есть и у базового расписания, кандидата не порочат."""
-    surrogate = _Surrogate(outside=set(), gain={1.0: 1.0, 1.25: 1.4})
-
-    choices = optimise.choose_joint_rates(surrogate, _base(), start_date=date(2014, 1, 1))
-
-    assert choices[0].multiplier == 1.25
-    assert not choices[0].outside_training, "шум базового расписания — не выход за диапазон"
-
-
-def test_a_chosen_extrapolation_is_marked_not_hidden():
-    """Если экстраполяция всё же выиграла по деньгам — это должно быть видно."""
-    surrogate = _Surrogate(outside={1.5}, gain={1.0: 1.0, 1.5: 5.0})
-
-    choices = optimise.choose_joint_rates(surrogate, _base(), start_date=date(2014, 1, 1))
-
-    assert choices[0].multiplier == 1.5
-    assert choices[0].outside_training, "выбор за границей обучения обязан быть помечен"
-
-
-def test_explain_counts_the_extrapolated_choices():
-    """Сколько решений принято за границей обучения — это отдельная новость."""
-    inside = optimise.JointRateChoice("1", 1.25, 100.0, 110.0, "production")
-    outside = optimise.JointRateChoice("2", 1.5, 110.0, 130.0, "production",
-                                       outside_training=True)
-
-    text = optimise.explain([inside, outside])
-
-    assert "вне обучающей выборки" in text
-    assert "1 из 2" in text
+    assert "вне обучения" in text
+    assert "1" in text

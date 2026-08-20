@@ -24,7 +24,7 @@ from sklearn.preprocessing import StandardScaler
 
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.summary import Fluids, sanity_problems
-from aios.surrogate import NumericRange, TrainingEnvelope, expand
+from aios.surrogate import TrainingEnvelope, expand
 
 #: Чем кодируется «режим назначен там, где опорного режима не было» — запуск
 #: скважины из простоя и перевод под закачку. Значение выбрано отрицательным
@@ -119,14 +119,7 @@ class NeuralSurrogate:
         timeline = expand(steps)
         if not timeline:
             return []
-        reference = expand(self.reference_steps)
-        multipliers = _schedule_multipliers(
-            timeline,
-            reference,
-            self.bundle.control_wells,
-            _expand_role_controls(steps),
-            _expand_role_controls(self.reference_steps),
-        )
+        multipliers = self._multipliers(steps, timeline)
         months = list(timeline)
         feature_matrix = np.vstack([
             _inference_features(
@@ -166,9 +159,40 @@ class NeuralSurrogate:
                 ))
         return rows
 
+    def _multipliers(
+        self,
+        steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+        timeline: dict[date, dict[str, ProducerControl | InjectorControl]],
+    ) -> dict[date, np.ndarray]:
+        """Управляющие признаки расписания — ровно то, что видит модель."""
+        return _schedule_multipliers(
+            timeline,
+            expand(self.reference_steps),
+            self.bundle.control_wells,
+            _expand_role_controls(steps),
+            _expand_role_controls(self.reference_steps),
+        )
+
+    def covers_control(self, role: str, well: str, multiplier: float) -> bool:
+        """Был ли такой множитель у этого управления в обучении — до выбора, а не после.
+
+        Роль — `production` или `injection`; ключ признака собирается здесь,
+        чтобы вызывающему не приходилось знать про префиксы `prod:`/`inj:`.
+        Скважина, которой в обучающем наборе нет вовсе, покрытой не считается.
+        """
+        prefix = "prod:" if role == "production" else "inj:"
+        key = f"{prefix}{well}"
+        if key not in self.bundle.control_wells and well in self.bundle.control_wells:
+            key = well   # датасет старого вида: одна колонка множителя на скважину
+        return self.bundle.envelope.covers(key, multiplier)
+
     def in_training_range(self,
                           steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> list[str]:
-        warnings = self.bundle.envelope.warnings(steps)
+        timeline = expand(steps)
+        warnings = self.bundle.envelope.warnings({
+            month_start: dict(zip(self.bundle.control_wells, values, strict=True))
+            for month_start, values in self._multipliers(steps, timeline).items()
+        }) if timeline else []
         reference_dates = set(expand(self.reference_steps))
         warnings.extend(
             f"{step.date.isoformat()}: даты нет в опорном расписании обучающего датасета"
@@ -185,10 +209,38 @@ class NeuralSurrogate:
                     f"0..{self.bundle.month_span} месяцев"
                 )
         warnings.extend(self._unlearned_controls(steps))
-        warnings.extend(
-            f"прогноз нарушает физические проверки: {problem}"
-            for problem in sanity_problems(self.predict(steps))
-        )
+        warnings.extend(self._physical_problems(steps))
+        return warnings
+
+    def _physical_problems(
+        self, steps: list[ScheduleStep] | tuple[ScheduleStep, ...]
+    ) -> list[str]:
+        """Нарушения физики — по строке на скважину, а не на скважино-месяц.
+
+        Проверки те же (`aios.summary.sanity_problems`) и считаются на тех же
+        строках: они и без того ведутся по скважине отдельно — накопленные
+        величины сравниваются с предыдущим месяцем той же скважины, — поэтому
+        разбиение прогноза по скважинам ничего не меняет в результате, но даёт
+        имя скважины без разбора текста сообщения.
+
+        Свёртка нужна по той же причине, что и у диапазонных пометок: на
+        настоящем расписании Модели Z таких строк 16 084 у 68 скважин, и
+        страница цикла печатает их все до одной. Счётчик, показывающий
+        «Предупреждения (16542)», формально верен и бесполезен.
+        """
+        by_well: dict[str, list[dict[str, Any]]] = {}
+        for row in self.predict(steps):
+            by_well.setdefault(str(row["well"]), []).append(row)
+
+        warnings: list[str] = []
+        for well in sorted(by_well, key=_well_key):
+            problems = sanity_problems(by_well[well])
+            if not problems:
+                continue
+            warnings.append(
+                f"скв. {well}: прогноз нарушает физические проверки, строк "
+                f"{len(problems)}, первая — {problems[0]}"
+            )
         return warnings
 
     def _unlearned_controls(
@@ -371,7 +423,8 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         kind=kind,
     )
     return NeuralBundle(
-        tuple(controls.columns), models, start_month, int(month_span), _envelope(data), report
+        tuple(controls.columns), models, start_month, int(month_span),
+        _envelope(controls), report
     )
 
 
@@ -496,22 +549,13 @@ def _pivot_controls(
     return pivoted.reindex(full_index).fillna(1.0)
 
 
-def _envelope(frame: pd.DataFrame) -> TrainingEnvelope:
-    positive_liquid = frame[frame["WLPR"].astype(float) > 0].groupby("well")["WLPR"]
-    positive_injection = frame[frame["WWIR"].astype(float) > 0].groupby("well")["WWIR"]
-    field = frame.groupby(["scenario", "DATA"])[["WLPR", "WWIR"]].sum()
-    return TrainingEnvelope(
-        producer_rates={
-            str(well): NumericRange(float(values.min()), float(values.max()))
-            for well, values in positive_liquid
-        },
-        injector_rates={
-            str(well): NumericRange(float(values.min()), float(values.max()))
-            for well, values in positive_injection
-        },
-        field_liquid_rate=NumericRange(float(field["WLPR"].min()), float(field["WLPR"].max())),
-        field_injection_rate=NumericRange(float(field["WWIR"].min()), float(field["WWIR"].max())),
-    )
+def _envelope(controls: pd.DataFrame) -> TrainingEnvelope:
+    """Область применимости снимается с той же матрицы, что уходит в признаки.
+
+    Строк здесь ровно «сценарий × месяц» (у Модели Z это 12 × 370), а не
+    «скважина × месяц», поэтому перевод в словари ничего не стоит.
+    """
+    return TrainingEnvelope.fit(controls.to_dict("records"))
 
 
 def _features(rows: pd.DataFrame, controls: pd.DataFrame, start: pd.Timestamp,

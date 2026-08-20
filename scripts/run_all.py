@@ -12,6 +12,11 @@
 1. собрать базовый кейс из дека         `scripts/build_case.py`
 2. посчитать его на ГГДМ                `scripts/run_flow.sh`
 3. пройти цикл и собрать расписание     `scripts/run_cycle.py --out`
+
+Шаг 3 идёт на тривиальном бейзлайне, если не передан `--surrogate-model`:
+обученный суррогат подставляется тем же ключом, что и в отдельной команде, и
+проверяется **до** первого расчёта — иначе отказ порога качества приходит после
+одиннадцати минут счёта базового прогона.
 4. посчитать получившийся сценарий      `scripts/run_flow.sh`
 5. заменить прогноз полным расчётом     `scripts/run_cycle.py --confirm`
 
@@ -54,7 +59,8 @@ def plan(base_dir: Path,
          processes: int,
          flow_args: Sequence[str],
          config_path: str,
-         skip_base: bool) -> list[tuple[str, list[str]]]:
+         skip_base: bool,
+         surrogate_model: str | None = None) -> list[tuple[str, list[str]]]:
     """Список шагов «название → команда». Отдельной функцией — чтобы проверять.
 
     `--skip-base` нужен не для удобства: базовый прогон стоит 11 минут и не
@@ -75,11 +81,11 @@ def plan(base_dir: Path,
             ["bash", flow, str(base_dir / f"{case_name}.DATA"), str(processes), *flow_args],
         ))
 
-    steps.append((
-        "цикл управления: состояние → решения → расписание",
-        [python, str(ROOT / "scripts" / "run_cycle.py"),
-         "--from", str(base_dir), "--out", str(policy_dir), "--config", config_path],
-    ))
+    cycle = [python, str(ROOT / "scripts" / "run_cycle.py"),
+             "--from", str(base_dir), "--out", str(policy_dir), "--config", config_path]
+    if surrogate_model:
+        cycle += ["--surrogate-model", surrogate_model]
+    steps.append(("цикл управления: состояние → решения → расписание", cycle))
     steps.append((
         "расчёт получившегося сценария на ГГДМ",
         ["bash", flow, str(policy_dir / f"{case_name}.DATA"), str(processes), *flow_args],
@@ -111,6 +117,36 @@ def execute(steps: Sequence[tuple[str, list[str]]], runner: Runner) -> int:
     return 0
 
 
+def refuse_surrogate(path: Path) -> str | None:
+    """Почему этим артефактом вести цикл нельзя; `None` — можно.
+
+    Проверяется **до** симулятора намеренно. Шаг 3 читает модель, но идёт после
+    двух шагов расчёта: базовый прогон Модели Z стоит 11 минут, и отказ «модель
+    не проходит порог качества» после него — это потерянный прогон вместо
+    мгновенного ответа. Проверка та же, что и в цикле (`aios.model.for_cycle`
+    вызывает `NeuralSurrogate.create` с порогом), поэтому расхождения между
+    ранним отказом и поздним быть не может.
+    """
+    if not path.is_file():
+        return f"модель не найдена: {path}"
+
+    import joblib
+
+    from aios.neural import NeuralBundle, assert_quality
+
+    try:
+        bundle = joblib.load(path)
+    except Exception as error:
+        return f"артефакт не читается: {error}"
+    if not isinstance(bundle, NeuralBundle):
+        return f"это не обученный суррогат: {type(bundle).__name__}"
+    try:
+        assert_quality(bundle.report)
+    except ValueError as error:
+        return f"артефакт не годится вести цикл: {error}"
+    return None
+
+
 def _run(command: Sequence[str]) -> int:
     return subprocess.run(list(command), cwd=ROOT).returncode
 
@@ -130,8 +166,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="базовый прогон уже посчитан — начать с цикла")
     parser.add_argument("--dry-run", action="store_true",
                         help="показать команды и выйти, ничего не запуская")
+    parser.add_argument("--surrogate-model", default=None,
+                        help="обученный суррогат для шага 3; без него цикл идёт "
+                             "на тривиальном бейзлайне")
     parser.add_argument("--config", default=str(config_module.DEFAULT_PATH))
     arguments = parser.parse_args(argv)
+
+    if arguments.surrogate_model:
+        refusal = refuse_surrogate(Path(arguments.surrogate_model))
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
 
     config = config_module.load(arguments.config)
     base_dir = Path(arguments.base) if arguments.base else config.case.run_dir
@@ -143,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         flow_args=arguments.flow_args.split() if arguments.flow_args else (),
         config_path=arguments.config,
         skip_base=arguments.skip_base,
+        surrogate_model=arguments.surrogate_model,
     )
 
     if arguments.dry_run:
