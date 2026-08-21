@@ -115,6 +115,14 @@ class JointRateChoice:
     outside_training: tuple[float, ...] = ()
     """Кандидаты, отброшенные до выбора: таких режимов у этого управления в обучении не было."""
 
+    since: date | None = None
+    """С какой даты действует режим. `None` — весь горизонт, один режим на скважину.
+
+    Появляется, когда поиск ведётся по периодам: границы те же, что у DoE
+    (`aios.doe`), поэтому найденное расписание выражается в тех же величинах, на
+    которых обучалась модель.
+    """
+
     @property
     def gain_m(self) -> float:
         return self.chosen_chdd_m - self.baseline_chdd_m
@@ -140,8 +148,9 @@ class JointRateChoice:
         what = "без изменений" if not self.changed else (
             "остановка" if self.multiplier == 0 else f"{control} ×{self.multiplier:g}"
         )
+        period = f" с {self.since:%Y-%m-%d}" if self.since is not None else ""
         text = (
-            f"скв. {self.well}: {what}, ЧДД фонда "
+            f"скв. {self.well}{period}: {what}, ЧДД фонда "
             f"{self.baseline_chdd_m:+.2f} → {self.chosen_chdd_m:+.2f} млн руб."
         )
         if not self.outside_training:
@@ -220,6 +229,7 @@ def choose_joint_rates(
     *,
     start_date: date,
     multipliers: tuple[float, ...] = JOINT_MULTIPLIERS,
+    periods: int = 1,
     limits: planner.Limits | None = None,
     norms: Norms | None = None,
     fluids: Fluids | None = None,
@@ -254,6 +264,18 @@ def choose_joint_rates(
     Цена согласования — второй `predict` на кандидата: расписание считается до
     срезки (планировщику нужен отклик, чтобы знать, сколько воды поднято) и
     после. Без `limits` поведение прежнее, лишних расчётов нет.
+
+    **`periods` — на сколько кусков горизонта режим может различаться.** Единица,
+    значение по умолчанию, означает сегодняшнее поведение: один множитель на все
+    19 лет. Между тем пакет `doe-periods` учил модель управлению, меняющемуся по
+    пяти периодам, — то есть пространство поиска было беднее обучающего, и часть
+    того, что суррогат умеет предсказывать, поиску была недоступна. Границы
+    берутся тем же делением, что у DoE, иначе найденный режим не выражался бы в
+    величинах, на которых модель обучалась.
+
+    Счёт растёт прямо пропорционально: управлений × периодов × множителей полных
+    прогнозов фонда. Замер 21.08 на Модели Z: 113 × 6 прогнозов — 509 с, то есть
+    пять периодов стоят около сорока минут, а с согласованием — вдвое дороже.
     """
     if 1.0 not in multipliers:
         raise ValueError("в наборе множителей обязан быть 1.0 — режим «как есть» это база")
@@ -269,25 +291,30 @@ def choose_joint_rates(
     injector_wells = sorted(
         {control.well for step in base_steps for control in step.injectors}, key=_well_key
     )
+    starts = _period_starts(base_steps, periods) if periods > 1 else [None]
     controls = [
-        *(("injection", well) for well in injector_wells),
-        *(("production", well) for well in producer_wells),
+        (kind, well, start)
+        for start in starts
+        for kind, well in (
+            *(("injection", well) for well in injector_wells),
+            *(("production", well) for well in producer_wells),
+        )
     ]
     selected = dict.fromkeys(controls, 1.0)
     current_steps = _scale_individually(base_steps, selected)
     current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids)
     choices: list[JointRateChoice] = []
 
-    for kind, well in controls:
+    for kind, well, start in controls:
         before = current_chdd
         covered, outside = _covered_multipliers(
             surrogate, kind, well, multipliers, base_steps
         )
-        best_multiplier = selected[(kind, well)]
+        best_multiplier = selected[(kind, well, start)]
         best_steps = current_steps
         best_chdd = current_chdd
         for multiplier in covered:
-            candidate_multipliers = selected | {(kind, well): multiplier}
+            candidate_multipliers = selected | {(kind, well, start): multiplier}
             candidate = _scale_individually(base_steps, candidate_multipliers)
             candidate_chdd = _value_of(surrogate, candidate, start_date, limits, norms, fluids)
             if candidate_chdd > best_chdd + 1e-9:
@@ -295,11 +322,11 @@ def choose_joint_rates(
                 best_steps = candidate
                 best_chdd = candidate_chdd
 
-        selected[(kind, well)] = best_multiplier
+        selected[(kind, well, start)] = best_multiplier
         current_steps = best_steps
         current_chdd = best_chdd
         choices.append(
-            JointRateChoice(well, best_multiplier, before, best_chdd, kind, outside)
+            JointRateChoice(well, best_multiplier, before, best_chdd, kind, outside, start)
         )
     return choices
 
@@ -524,23 +551,11 @@ def _injection_pressure(steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) ->
 def apply_choices(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                   choices: list[RateChoice] | list[JointRateChoice]) -> list[ScheduleStep]:
     """Собрать расписание из выбранных по скважинам режимов."""
-    producers = {
-        choice.well: choice.multiplier for choice in choices if choice.kind == "production"
+    selected = {
+        (choice.kind, choice.well, getattr(choice, "since", None)): choice.multiplier
+        for choice in choices
     }
-    injectors = {
-        choice.well: choice.multiplier for choice in choices if choice.kind == "injection"
-    }
-    result: list[ScheduleStep] = []
-    for step in steps:
-        scaled_producers = tuple(
-            _scaled(control, producers.get(control.well, 1.0)) for control in step.producers
-        )
-        scaled_injectors = tuple(
-            _scaled_injector(control, injectors.get(control.well, 1.0))
-            for control in step.injectors
-        )
-        result.append(ScheduleStep(step.date, scaled_producers, scaled_injectors))
-    return result
+    return _scale_individually(steps, selected)
 
 
 def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
@@ -574,20 +589,57 @@ def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
 
 def _scale_individually(
     steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-    multipliers: dict[tuple[str, str], float],
+    multipliers: dict[tuple[str, str, date | None], float],
 ) -> list[ScheduleStep]:
+    """Применить выбранные множители, каждый — со своей даты и до следующей."""
+    by_control: dict[tuple[str, str], list[tuple[date | None, float]]] = {}
+    for (kind, well, start), multiplier in multipliers.items():
+        by_control.setdefault((kind, well), []).append((start, multiplier))
+    for entries in by_control.values():
+        entries.sort(key=lambda entry: entry[0] or date.min)
+
     result: list[ScheduleStep] = []
     for step in steps:
         producers = tuple(
-            _scaled(control, multipliers.get(("production", control.well), 1.0))
+            _scaled(control, _multiplier_at(by_control, "production", control.well, step.date))
             for control in step.producers
         )
         injectors = tuple(
-            _scaled_injector(control, multipliers.get(("injection", control.well), 1.0))
+            _scaled_injector(
+                control, _multiplier_at(by_control, "injection", control.well, step.date)
+            )
             for control in step.injectors
         )
         result.append(ScheduleStep(step.date, producers, injectors))
     return result
+
+
+def _multiplier_at(
+    by_control: dict[tuple[str, str], list[tuple[date | None, float]]],
+    kind: str,
+    well: str,
+    when: date,
+) -> float:
+    """Множитель, действующий на эту дату: последний из назначенных не позже неё."""
+    value = 1.0
+    for start, multiplier in by_control.get((kind, well), ()):
+        if start is None or start <= when:
+            value = multiplier
+    return value
+
+
+def _period_starts(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   periods: int) -> list[date]:
+    """Начала периодов — тем же делением, что у DoE.
+
+    Функция берётся из `aios.doe`, а не пишется заново: границы периодов обязаны
+    совпадать с теми, по которым размечена обучающая выборка, иначе поиск
+    выражает режим не в тех величинах, в которых учился суррогат. Две копии
+    одного правила разошлись бы молча.
+    """
+    from aios.doe import _period_starts as doe_period_starts
+
+    return doe_period_starts(steps, periods)
 
 
 def _chdd(rows: list[dict[str, Any]], start_date: date) -> float:

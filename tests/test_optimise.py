@@ -468,6 +468,81 @@ def test_explain_reports_candidates_withheld_even_without_a_change():
     assert "1" in text
 
 
+# ── режим по периодам горизонта ──────────────────────────────────────────────
+
+
+class SeasonalSurrogate:
+    """Отклик, у которого выгодный режим меняется по ходу горизонта.
+
+    Первый год пласт отдаёт нефть пропорционально отбору, второй — обводнён:
+    нефти столько же при любом дебите, а жидкости тем больше, чем выше режим.
+    Один множитель на весь горизонт вынужден выбирать между этими годами.
+    """
+
+    def predict(self, steps):
+        rows = []
+        for step in steps:
+            for control in step.producers:
+                rate = (control.liquid_rate or 0.0) if control.status == "OPEN" else 0.0
+                liquid_t = rate * 30.0 * FLUIDS.water_density / 1000.0
+                oil_t = liquid_t * 0.5 if step.date.year == 2014 else min(liquid_t, 200.0) * 0.02
+                rows.append(make_row(step.date.isoformat(), control.well, wlpr=rate,
+                                     womr=oil_t / 30.0, liquid=liquid_t, oil=oil_t))
+        return rows
+
+    def in_training_range(self, steps):
+        return []
+
+
+def _field_npv(model, steps):
+    return economics.compute_npv(
+        model.predict(steps), headers=economics.REQUIRED_COLUMNS, start_date=START.isoformat()
+    ).chdd_m
+
+
+def test_periods_let_the_search_change_the_regime_along_the_horizon():
+    """Пять периодов DoE учили модель управлению, которое меняется во времени.
+
+    Поиск с одним множителем на 19 лет беднее обучающего пространства: часть
+    того, что суррогат умеет предсказывать, ему недоступна. Здесь выгодный режим
+    меняется на границе года, и два периода находят то, чего один найти не может.
+    """
+    model = SeasonalSurrogate()
+    base = plan(["a"], months=24)
+
+    one = optimise.choose_joint_rates(model, base, start_date=START)
+    two = optimise.choose_joint_rates(model, base, start_date=START, periods=2)
+
+    assert len({choice.multiplier for choice in two}) > 1, "оба периода выбрали одно и то же"
+    assert _field_npv(model, optimise.apply_choices(base, two)) >            _field_npv(model, optimise.apply_choices(base, one))
+
+
+def test_one_period_is_the_default_and_keeps_todays_behaviour():
+    model = SeasonalSurrogate()
+    base = plan(["a"], months=24)
+
+    default = optimise.choose_joint_rates(model, base, start_date=START)
+    explicit = optimise.choose_joint_rates(model, base, start_date=START, periods=1)
+
+    assert [(c.well, c.multiplier, c.since) for c in default] ==            [(c.well, c.multiplier, c.since) for c in explicit]
+    assert all(choice.since is None for choice in default)
+
+
+def test_the_choice_of_a_period_is_applied_only_to_its_part_of_the_horizon():
+    """Множитель периода действует с его даты и до начала следующего."""
+    base = plan(["a"], months=24, rate=30.0)
+    choices = [
+        optimise.JointRateChoice("a", 0.5, 0.0, 0.0),
+        optimise.JointRateChoice("a", 1.5, 0.0, 0.0, since=date(2015, 1, 1)),
+    ]
+
+    tuned = optimise.apply_choices(base, choices)
+
+    assert tuned[0].producers[0].liquid_rate == pytest.approx(15.0)
+    assert tuned[11].producers[0].liquid_rate == pytest.approx(15.0)
+    assert tuned[12].producers[0].liquid_rate == pytest.approx(45.0)
+
+
 # ── общий ресурс учитывается до выбора, а не после ───────────────────────────
 
 
