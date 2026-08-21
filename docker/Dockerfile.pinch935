@@ -1,0 +1,138 @@
+# OPM Flow 2026.04 с бэкпортом opm-grid PR #935 (pinch-out NNC на коллапсированных
+# ячейках). Рецепт получен внешним разбором (Manus, 21.08.2026), отчёт —
+# docs/manus/opm-build-pinch935.md, решение — Р-62 в docs/decisions.md.
+# Хеши релизных тегов сверены нами через git ls-remote, коммиты патча — через
+# GitHub API; см. таблицу проверки в docs/manus/README.md.
+#
+#   docker build -t opm-pinch935 -f docker/Dockerfile.pinch935 .
+#
+# Образ содержит только flow. Чтобы получить нашу среду поверх него, соберите
+# docker/Dockerfile с --build-arg FLOW_IMAGE=opm-pinch935 (пока не сделано:
+# на машине разработки нет Docker, проверить сборку нечем).
+# syntax=docker/dockerfile:1
+# OPM Flow 2026.04, opm-grid PR #935 backport.
+# Source notes: https://opm-project.org/?page_id=231 and https://opm-project.org/?page_id=239
+# This Dockerfile intentionally installs NO libopm-* package from ppa:opm/ppa.
+
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS build
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG BUILD_JOBS=4
+ARG OPM_COMMON_COMMIT=0ea62974f24d70fc2b3e30d6aae8b76ef000dac1
+ARG OPM_GRID_RELEASE_COMMIT=d6a1a35c3d770fe50073b9ed866bbec740c8faac
+ARG OPM_SIMULATORS_COMMIT=b82f21dba405286c4c4446614dd3bf9cdebf7a2c
+ARG OPM_GRID_FIX_COMMIT=ef3fad537be6b94c35011f4014eb67fcf46be56c
+ARG OPM_GRID_TEST_COMMIT=7b665216985439a72fe908e574c6c2ffe5017e1a
+ARG OPM_GRID_PATCHED_HEAD=9869209d28dcf797997ffc18e41fab506191744f
+ARG DUNE_VERSION=2.11.0-1~noble
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends software-properties-common ca-certificates \
+ && add-apt-repository -y ppa:opm/ppa \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential gfortran pkg-config cmake git \
+      mpi-default-dev libblas-dev liblapack-dev libboost-all-dev \
+      libsuitesparse-dev libtrilinos-zoltan-dev libfmt-dev libcjson-dev \
+      libhdf5-mpi-dev libptscotch-dev \
+      libdune-common-dev=${DUNE_VERSION} \
+      libdune-geometry-dev=${DUNE_VERSION} \
+      libdune-istl-dev=${DUNE_VERSION} \
+      libdune-grid-dev=${DUNE_VERSION} \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+RUN git clone https://github.com/OPM/opm-common.git opm-common \
+ && git -C opm-common checkout --detach "${OPM_COMMON_COMMIT}" \
+ && test "$(git -C opm-common rev-parse HEAD)" = "${OPM_COMMON_COMMIT}" \
+ && git clone https://github.com/OPM/opm-grid.git opm-grid \
+ && git -C opm-grid checkout --detach "${OPM_GRID_RELEASE_COMMIT}" \
+ && test "$(git -C opm-grid rev-parse HEAD)" = "${OPM_GRID_RELEASE_COMMIT}" \
+ && git clone https://github.com/OPM/opm-simulators.git opm-simulators \
+ && git -C opm-simulators checkout --detach "${OPM_SIMULATORS_COMMIT}" \
+ && test "$(git -C opm-simulators rev-parse HEAD)" = "${OPM_SIMULATORS_COMMIT}"
+
+RUN cd /src/opm-grid \
+ && git config user.name 'Markus Blatt' \
+ && git config user.email 'markus@dr-blatt.de' \
+ && GIT_COMMITTER_DATE='2025-10-14T22:15:34+02:00' git cherry-pick --no-edit "${OPM_GRID_FIX_COMMIT}" \
+ && GIT_COMMITTER_DATE='2025-10-24T08:57:47+02:00' git cherry-pick --no-edit "${OPM_GRID_TEST_COMMIT}" \
+ && test "$(git rev-parse HEAD)" = "${OPM_GRID_PATCHED_HEAD}" \
+ && git diff --check HEAD~2..HEAD
+
+RUN install -d /opt/opm/share/opm-build \
+ && { \
+      printf 'opm-common %s\n' "$(git -C /src/opm-common rev-parse HEAD)"; \
+      printf 'opm-grid-release %s\n' "${OPM_GRID_RELEASE_COMMIT}"; \
+      printf 'opm-grid-fix %s\n' "${OPM_GRID_FIX_COMMIT}"; \
+      printf 'opm-grid-test %s\n' "${OPM_GRID_TEST_COMMIT}"; \
+      printf 'opm-grid-patched-head %s\n' "$(git -C /src/opm-grid rev-parse HEAD)"; \
+      printf 'opm-simulators %s\n' "$(git -C /src/opm-simulators rev-parse HEAD)"; \
+    } > /opt/opm/share/opm-build/git-revisions.txt
+
+RUN cmake -S /src/opm-common -B /build/opm-common \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/opm -DWITH_NATIVE=OFF \
+ && cmake --build /build/opm-common --parallel "${BUILD_JOBS}" \
+ && cmake --install /build/opm-common
+
+RUN cmake -S /src/opm-grid -B /build/opm-grid \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/opm \
+      -DCMAKE_PREFIX_PATH=/opt/opm -DWITH_NATIVE=OFF \
+ && cmake --build /build/opm-grid --parallel "${BUILD_JOBS}" \
+ && ctest --test-dir /build/opm-grid --output-on-failure -R '^minpvprocessor$' \
+      | tee /opt/opm/share/opm-build/grid-minpvprocessor.ctest.log \
+ && cmake --install /build/opm-grid
+
+RUN cmake -S /src/opm-simulators -B /build/opm-simulators \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/opm \
+      -DCMAKE_PREFIX_PATH=/opt/opm -DSIBLING_SEARCH=OFF \
+      -Dopm-common_DIR=/opt/opm/lib/cmake/opm-common \
+      -Dopm-grid_DIR=/opt/opm/lib/cmake/opm-grid \
+      -DBUILD_FLOW_VARIANTS=OFF -DUSE_GPU_BRIDGE=OFF -DUSE_OPENCL=OFF -DWITH_NATIVE=OFF \
+ && cmake --build /build/opm-simulators --target flow --parallel "${BUILD_JOBS}" \
+ && cmake --install /build/opm-simulators \
+ && /opt/opm/bin/flow --version | tee /opt/opm/share/opm-build/flow-version.txt \
+ && sha256sum /opt/opm/bin/flow > /opt/opm/share/opm-build/flow.sha256 \
+ && dpkg-query -W -f='${binary:Package}\t${Version}\n' | sort \
+      > /opt/opm/share/opm-build/dpkg-packages.tsv
+
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG DUNE_VERSION=2.11.0-1~noble
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends software-properties-common ca-certificates \
+ && add-apt-repository -y ppa:opm/ppa \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      mpi-default-bin libblas-dev liblapack-dev libboost-all-dev \
+      libsuitesparse-dev libtrilinos-zoltan-dev libfmt-dev libcjson-dev \
+      libhdf5-mpi-dev libptscotch-dev \
+      libdune-common-dev=${DUNE_VERSION} \
+      libdune-geometry-dev=${DUNE_VERSION} \
+      libdune-istl-dev=${DUNE_VERSION} \
+      libdune-grid-dev=${DUNE_VERSION} \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /opt/opm /opt/opm
+
+RUN echo '/opt/opm/lib' > /etc/ld.so.conf.d/opm.conf \
+ && ldconfig \
+ && /opt/opm/bin/flow --version \
+ && sha256sum -c /opt/opm/share/opm-build/flow.sha256
+
+ENV PATH=/opt/opm/bin:${PATH}
+
+LABEL org.opencontainers.image.title="OPM Flow 2026.04 with opm-grid PR 935" \
+      org.opencontainers.image.description="Full-source OPM Flow 2026.04 backport of PINCH collapsed-cell NNC fix" \
+      org.opencontainers.image.version="2026.04-pinch935" \
+      org.opencontainers.image.source="https://github.com/OPM/opm-grid"
+
+WORKDIR /work
+CMD ["flow", "--version"]
