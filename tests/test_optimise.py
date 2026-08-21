@@ -489,3 +489,32 @@ def test_coverage_is_asked_about_the_schedule_the_search_scales():
 
     assert asked, "покрытие не спрашивалось вовсе"
     assert all(steps == base for steps in asked)
+
+
+def test_the_objective_ignores_rows_the_methodology_drops(norms):
+    """Целевая функция поиска не должна считать деньги, которых нет.
+
+    Дисконтированная маржа — это та же EBITDA методики со скидкой по годам, и
+    равенство проверяется соседним тестом. Оно держалось только на чистой
+    выгрузке: строку с отрицательным приращением расчётчик выбрасывает целиком,
+    а поиск складывал её как есть и получал другую величину, чем та, по которой
+    нас оценивают.
+    """
+    from conftest import make_row
+
+    from aios.optimise import discounted_margin_by_well
+
+    rows = [make_row(f"2007-{month:02d}-01", "1", wlpr=30, womr=5, liquid=900, oil=150)
+            for month in range(1, 13)]
+    clean = discounted_margin_by_well(rows, norms, 2007)["1"]
+
+    rows[5]["WOMT_Diff"] = -150.0
+    with_dropped = discounted_margin_by_well(rows, norms, 2007)["1"]
+    without_month = discounted_margin_by_well(
+        [row for index, row in enumerate(rows) if index != 5], norms, 2007
+    )["1"]
+
+    assert with_dropped == pytest.approx(without_month), (
+        "исключённая строка попала в целевую функцию"
+    )
+    assert with_dropped < clean, "проверка вырождена: строка ничего не меняла"

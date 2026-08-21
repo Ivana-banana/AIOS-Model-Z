@@ -37,7 +37,7 @@ from typing import Any
 
 from aios import economics
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
-from aios.margin import Norms, month_margin
+from aios.margin import Norms, counted_by_methodology, month_margin
 from aios.schedule import MAX_INJECTION_BHP_ATM, MAX_LIQUID_RATE_M3_PER_DAY
 from aios.surrogate import Surrogate
 
@@ -160,6 +160,10 @@ def discounted_margin_by_well(rows: list[dict[str, Any]],
     """
     totals: dict[str, float] = {}
     for row in rows:
+        # та же причина, что и в `margin.screen`: строку, которую методика
+        # выбрасывает целиком, нельзя класть в целевую функцию поиска
+        if not counted_by_methodology(row):
+            continue
         year = int(str(row["DATA"])[:4])
         factor = 1.0 / (1.0 + norms.wacc_rate) ** max(year - start_year, 0)
         totals[row["well"]] = totals.get(row["well"], 0.0) + month_margin(row, norms) * factor

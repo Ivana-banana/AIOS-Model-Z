@@ -164,7 +164,13 @@ def screen(rows: list[dict[str, Any]], norms: Norms) -> list[WellVerdict]:
     verdicts: list[WellVerdict] = []
     for well, well_rows in by_well.items():
         well_rows.sort(key=lambda item: item["DATA"])
-        margins = [month_margin(row, norms) for row in well_rows]
+        # Строки, исключённые методикой, в оценку не идут: расчётчик выбрасывает
+        # их целиком, и без этого сумма месячных марж перестаёт совпадать с его
+        # EBITDA. Замер 21.08: одна такая строка на двенадцать месяцев даёт
+        # расхождение 1,427 млн руб., а страница прогона утверждает, что скважины
+        # отбираются по тем же деньгам, по каким нас будут оценивать.
+        margins = [month_margin(row, norms)
+                   for row in well_rows if counted_by_methodology(row)]
 
         trailing = 0
         for margin in reversed(margins):
