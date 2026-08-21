@@ -341,3 +341,96 @@ OPM-конвертации предупреждения нет — плотно�
 `docs/experiments.md`. Оговорка «на живом API не гонялся» снимается из
 `docs/report.md` (п. 4 раздела ограничений) и `docs/tz-compliance.md` только
 после настоящего ответа модели — и только вместе с решением по кэшу выше.
+
+## 7. Lock-файл, SBOM и проверки образа — нужна машина с Docker (22.08)
+
+**Что нужно:** машина, где есть Docker и целевой Linux (сейчас это А), чтобы
+снять с **собранного образа** то, чего нельзя получить из документов.
+
+**Зачем.** Это остаток задачи Б19 (лицензионный и воспроизводимый пакет). Всё,
+что закрывалось документами, закрыто: `LICENSES/`, `THIRD_PARTY_NOTICES.md`,
+`MODIFICATIONS.md`, `PROVENANCE_AND_RIGHTS.md`, раздел 9 отчёта, digest базового
+образа. Не закрывается без Docker ровно две вещи.
+
+**Состояние машины Б (проверено 22.08):** Docker нет, WSL нет
+(`wsl.exe` отсутствует), `pip check` — «No broken requirements found».
+
+### 7.1. Транзитивные зависимости не зафиксированы
+
+Прямых пакетов 14: 8 рантайма (`requirements.txt`) и 6 инструментов
+(`requirements-dev.txt`), все с `==`. Но resolver тянет около шестидесяти, и
+NumPy, pandas, SciPy приходят транзитивно — через `resdata` и `scikit-learn`.
+На машине Б 22.08 разрешились NumPy 2.5.2, pandas 3.0.5, SciPy 1.18.0 (те же
+версии, что видел внешний resolver 21.08), но это **Windows и Python 3.14**, а
+поставка — Linux и системный Python образа. Lock, снятый здесь, описывал бы не ту
+среду, поэтому он не снят вовсе, а не снят «примерно».
+
+Что сделать на машине с образом:
+
+```bash
+docker run --rm -v "$PWD:$PWD" -w "$PWD" aios bash -lc '
+  pip install pip-tools &&
+  pip-compile --generate-hashes --output-file requirements.lock requirements.txt &&
+  pip check'
+```
+
+`pip-compile` резолвит под тот интерпретатор, в котором запущен, — поэтому
+запускать его надо **внутри образа**, а не рядом с ним. Готовый `requirements.lock`
+ставится в сборке через `pip install --require-hashes -r requirements.lock`;
+до тех пор `docker/Dockerfile` ставит `requirements.txt`, и это записано честно.
+
+### 7.2. Состав образа: версии OPM, их лицензии, SBOM, проверки Dockerfile
+
+Ни версии Debian-пакетов OPM, ни их `copyright`-файлы, ни SBOM образа из
+документов не берутся. Поля в `THIRD_PARTY_NOTICES.md` оставлены пустыми
+намеренно.
+
+```bash
+# 1. Версии пакетов, попавших в образ (в первую очередь libopm-*).
+docker run --rm aios dpkg-query -W -f='${binary:Package}\t${Version}\n' | sort > image-packages.tsv
+
+# 2. Лицензионные файлы OPM и MPI из самого образа.
+docker run --rm aios bash -lc 'for p in libopm-simulators-bin libopm-common libopm-grid mpi-default-bin; do
+    echo "== $p"; cat /usr/share/doc/$p/copyright 2>/dev/null | head -40; done'
+
+# 3. Версия симулятора и digest образа — то, чем подписаны числа отчёта.
+docker run --rm aios flow --version
+docker image inspect aios --format '{{index .RepoDigests 0}} {{.Id}}'
+
+# 4. Проверки самого Dockerfile (не выполнялись ни разу).
+docker buildx build --check -f docker/Dockerfile .
+
+# 5. SBOM и происхождение (разрешённым в организации сканером).
+docker buildx build --pull --no-cache --provenance=mode=max --sbom \
+  --metadata-file build-metadata.json -t aios:$(git rev-parse --short HEAD) \
+  -f docker/Dockerfile --load .
+```
+
+**Что считать закрытием:** заполненные поля в `THIRD_PARTY_NOTICES.md` (версии
+OPM-пакетов), лицензионные файлы OPM в `LICENSES/`, `requirements.lock` в
+репозитории, чистый `docker buildx build --check` и записанный digest образа.
+
+**Чего не делать:** не подставлять правдоподобные версии и хэши. Пустое поле
+видно, выдуманное — нет.
+
+## 8. Лицензия нашего кода и права на материалы заказчика (22.08)
+
+**Что нужно:** два решения владельца. Инженерным способом ни одно не получить.
+
+**1. Правообладатель и лицензия нашего собственного кода.** Файла `LICENSE` в
+корне нет, copyright нигде не объявлен. Пока это так, в
+`THIRD_PARTY_NOTICES.md` стоит пустое поле, а не выдуманная строка «© …»: назвать
+правообладателя за владельца мы не можем.
+
+**2. Права на материалы организаторов.** `vendor/CHDD_PYTHON`, деки Модели Z,
+методики, ТЗ, лекции и расшифровки лежат в репозитории. Факт передачи нам не
+равен праву распространять. Реестр — `PROVENANCE_AND_RIGHTS.md`; там же три
+вопроса, на которые нужен ответ. Отдельно: **расчётчик организаторов копируется
+внутрь Docker-образа** (`docker/Dockerfile`), то есть уезжает любому получателю
+образа. Если права на такую передачу нет — его надо монтировать томом, как дек,
+либо ограничить круг получателей образа организаторами.
+
+**Пока оба открыты:** репозиторий не публикуем (проверено 22.08: GitHub API
+отвечает на него `404` неаутентифицированному запросу, то есть он приватный), а
+в отчёте и на защите говорим ровно это — права не подтверждены, публичного
+распространения нет.

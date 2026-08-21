@@ -85,3 +85,83 @@ def test_build_context_excludes_heavy_material():
 @pytest.mark.parametrize("path", [DOCKERFILE, ROOT / ".dockerignore", REQUIREMENTS])
 def test_packaging_files_exist(path: Path):
     assert path.is_file()
+
+
+LICENSES = ROOT / "LICENSES"
+PINCH_DOCKERFILE = ROOT / "docker" / "Dockerfile.pinch935"
+
+
+def test_base_image_is_pinned_by_digest_and_both_files_agree():
+    """Тег `ubuntu:24.04` — движущаяся цель: его пересобирают, и «тот же
+    Dockerfile» через месяц даёт другой образ.
+
+    До 22.08 по digest пинуется только `Dockerfile.pinch935`, а основной образ —
+    тот, в котором посчитаны все числа проекта, — брал плавающий тег. Внешняя
+    проверка назвала это отдельным пунктом (`docs/manus/round4.md`, 4-10).
+    Digest у двух файлов обязан быть один: два разных базовых образа в одной
+    поставке — это две разные среды, о чём бы ни говорил отчёт.
+    """
+    digests = set()
+    for path in (DOCKERFILE, PINCH_DOCKERFILE):
+        text = path.read_text(encoding="utf-8")
+        found = re.findall(r"^FROM ubuntu:24\.04@(sha256:[0-9a-f]{64})", text, re.M)
+        assert found, f"база не закреплена по digest: {path.name}"
+        digests.update(found)
+    assert len(digests) == 1, f"базовые образы разошлись: {sorted(digests)}"
+
+
+@pytest.mark.parametrize("name", [
+    "LICENSES/GPL-3.0.txt",
+    "THIRD_PARTY_NOTICES.md",
+    "MODIFICATIONS.md",
+    "PROVENANCE_AND_RIGHTS.md",
+])
+def test_licence_package_is_in_place(name: str):
+    """Передача образа с Flow — это conveying по GPLv3 §6, а не просто отправка файла.
+
+    Требуется приложить текст лицензии, сохранить notices, обозначить свои правки
+    GPL-компонентов и назвать, откуда взять Corresponding Source. Четыре файла
+    выше — минимум, без которого пакет отдавать нельзя; до 22.08 не было ни
+    одного.
+    """
+    assert (ROOT / name).is_file(), f"нет файла лицензионного пакета: {name}"
+
+
+def test_gpl_text_is_the_real_thing_not_a_placeholder():
+    text = (LICENSES / "GPL-3.0.txt").read_text(encoding="utf-8")
+    assert "GNU GENERAL PUBLIC LICENSE" in text
+    assert "Version 3, 29 June 2007" in text
+    assert "Corresponding Source" in text, "текст обрезан: §6 обязателен"
+
+
+def test_every_pinned_runtime_package_has_its_licence_text():
+    """Лицензия — свойство версии, а не названия пакета.
+
+    Поэтому файлы в `LICENSES/` названы `<пакет>-<версия>-<лицензия>.txt`, и
+    подъём пина обязан ронять этот тест: новый пин без нового текста означает,
+    что в поставке лежит лицензия от другой версии.
+    """
+    texts = [path.name for path in LICENSES.glob("*.txt")]
+    for requirement in _packages(REQUIREMENTS):
+        name, version = requirement.split("==")
+        prefix = f"{name}-{version}-"
+        assert any(text.startswith(prefix) for text in texts), \
+            f"нет текста лицензии для {requirement} (ожидался {prefix}*.txt)"
+
+
+def test_the_image_carries_the_licence_texts_but_not_our_rights_register():
+    """GPLv3 §4: копия лицензии передаётся вместе с программой.
+
+    Получатель образа получает Flow и `resdata` под GPL — значит тексты лицензий
+    должны быть внутри образа, а не только в репозитории, из которого его
+    собирали. `PROVENANCE_AND_RIGHTS.md` — наоборот: внутренний реестр прав, где
+    записано, чего мы не подтвердили; получателю образа он не адресован.
+    """
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    copied = "\n".join(re.findall(r"^COPY .*", text, re.M))
+
+    assert "COPY LICENSES" in copied
+    assert "THIRD_PARTY_NOTICES.md" in copied
+    # проверяются именно инструкции COPY: упоминание файла в комментарии рядом —
+    # это объяснение, почему его тут нет, и оно как раз уместно
+    assert "PROVENANCE_AND_RIGHTS.md" not in copied
