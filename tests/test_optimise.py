@@ -517,6 +517,25 @@ def test_periods_let_the_search_change_the_regime_along_the_horizon():
     assert _field_npv(model, optimise.apply_choices(base, two)) >            _field_npv(model, optimise.apply_choices(base, one))
 
 
+def test_coverage_of_a_period_is_asked_about_that_period_only():
+    """Покрытие спрашивается про тот кусок расписания, который масштабируется (Р-50).
+
+    Множитель периода меняет режим только внутри своих месяцев, поэтому и вопрос
+    «было ли такое в обучении» относится к ним, а не ко всему горизонту.
+    """
+    asked: list[tuple[float, ...]] = []
+
+    class Recording(SeasonalSurrogate):
+        def covers_control(self, role, well, multiplier, steps=None):
+            asked.append(tuple(sorted({step.date.year for step in steps})))
+            return True
+
+    optimise.choose_joint_rates(Recording(), plan(["a"], months=24),
+                                start_date=START, periods=2, multipliers=(1.0, 1.5))
+
+    assert asked == [(2014,), (2015,)]
+
+
 def test_one_period_is_the_default_and_keeps_todays_behaviour():
     model = SeasonalSurrogate()
     base = plan(["a"], months=24)

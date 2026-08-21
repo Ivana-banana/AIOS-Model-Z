@@ -292,6 +292,7 @@ def choose_joint_rates(
         {control.well for step in base_steps for control in step.injectors}, key=_well_key
     )
     starts = _period_starts(base_steps, periods) if periods > 1 else [None]
+    spans = _period_spans(base_steps, starts)
     controls = [
         (kind, well, start)
         for start in starts
@@ -307,8 +308,10 @@ def choose_joint_rates(
 
     for kind, well, start in controls:
         before = current_chdd
+        # покрытие спрашивается про тот кусок расписания, который масштабирует этот
+        # кандидат (Р-50): множитель периода меняет режим только внутри его месяцев
         covered, outside = _covered_multipliers(
-            surrogate, kind, well, multipliers, base_steps
+            surrogate, kind, well, multipliers, spans[start]
         )
         best_multiplier = selected[(kind, well, start)]
         best_steps = current_steps
@@ -626,6 +629,21 @@ def _multiplier_at(
         if start is None or start <= when:
             value = multiplier
     return value
+
+
+def _period_spans(
+    steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+    starts: list[date | None],
+) -> dict[date | None, list[ScheduleStep]]:
+    """Куски расписания по периодам: с даты начала и до следующей."""
+    if starts == [None]:
+        return {None: list(steps)}
+    bounds = [*starts[1:], None]
+    return {
+        start: [step for step in steps
+                if step.date >= start and (end is None or step.date < end)]
+        for start, end in zip(starts, bounds, strict=True)
+    }
 
 
 def _period_starts(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
