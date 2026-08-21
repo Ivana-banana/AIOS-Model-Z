@@ -35,6 +35,7 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from aios import trust
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.summary import Fluids, sanity_problems
 from aios.surrogate import TrainingEnvelope, expand
@@ -324,6 +325,27 @@ class NeuralSurrogate:
             _expand_role_controls(steps),
             _expand_role_controls(self.reference_steps),
         )
+
+    def control_profile(self,
+                        steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                        ) -> dict[str, float]:
+        """Сценарное представление расписания — вход второго контура шлюза доверия.
+
+        Возвращает ровно то, что `aios.trust.profile` собирает с обучающих
+        сценариев: по два числа на управление, уровень и размах. Ключи — те же
+        `prod:`/`inj:`, в которых модель принимает вход, поэтому кандидат и
+        обучающие сценарии живут в одном пространстве по построению, а не по
+        договорённости.
+        """
+        timeline = expand(steps)
+        if not timeline:
+            return {}
+        multipliers = self._multipliers(steps, timeline)
+        keys = list(self.bundle.control_wells)
+        return trust.profile({
+            month_start: dict(zip(keys, (float(value) for value in vector), strict=True))
+            for month_start, vector in multipliers.items()
+        })
 
     def covers_control(self, role: str, well: str, multiplier: float,
                        steps: list[ScheduleStep] | tuple[ScheduleStep, ...] | None = None) -> bool:

@@ -1,0 +1,223 @@
+"""Второй контур шлюза доверия: сценарное расстояние и запас против оптимизма.
+
+Главное, что здесь закреплено, — свойство, из-за которого модуль и появился:
+кандидат, проходящий покоординатную проверку целиком, обязан быть отброшен по
+совместному режиму. Разбор 4-7 называет это ровно тем классом ошибок, который
+прямоугольник не видит по построению.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+
+from aios import trust
+
+
+def flat(values: dict[str, float], months: int = 4) -> dict[date, dict[str, float]]:
+    """Расписание с постоянным режимом: множители не меняются по месяцам."""
+    return {date(2007, month, 1): dict(values) for month in range(1, months + 1)}
+
+
+def diagonal_scenarios(count: int = 12) -> dict[str, dict[str, float]]:
+    """DoE «по диагонали»: обе скважины двигаются вместе, вразнобой — никогда.
+
+    Ровно тот двумерный пример, которым разбор 4-7 показывает дыру
+    покоординатной проверки: точки лежат около диагонали от (0.8, 0.8) до
+    (1.2, 1.2), поэтому (0.8, 1.2) проходит min–max по каждой координате, но
+    далеко от всех наблюдённых сочетаний.
+    """
+    return {
+        f"s{index:02d}": trust.profile(
+            flat({"prod:1": value, "prod:2": value})
+        )
+        for index, value in enumerate(
+            0.8 + 0.4 * step / (count - 1) for step in range(count)
+        )
+    }
+
+
+# ── сценарное представление ──────────────────────────────────────────────────
+
+def test_profile_keeps_both_the_level_and_the_swing():
+    """Два сценария с одним средним, но разным поведением, не должны совпасть."""
+    steady = trust.profile(flat({"prod:1": 1.0}))
+    swinging = trust.profile({
+        date(2007, 1, 1): {"prod:1": 0.5},
+        date(2007, 2, 1): {"prod:1": 1.5},
+        date(2007, 3, 1): {"prod:1": 0.5},
+        date(2007, 4, 1): {"prod:1": 1.5},
+    })
+
+    assert steady["prod:1|уровень"] == pytest.approx(swinging["prod:1|уровень"])
+    assert steady["prod:1|размах"] == pytest.approx(0.0)
+    assert swinging["prod:1|размах"] > 0.4
+
+
+def test_an_empty_schedule_is_refused_not_silently_averaged():
+    with pytest.raises(ValueError, match="ни одного месяца"):
+        trust.profile({})
+
+
+# ── доверенная область ───────────────────────────────────────────────────────
+
+def test_joint_mode_outside_the_doe_is_rejected_although_each_axis_is_inside():
+    """То, ради чего модуль написан.
+
+    (0.8, 1.2) внутри диапазона обеих координат по отдельности, но такого
+    сочетания DoE не содержал. Покоординатная проверка его пропускает; сценарное
+    расстояние обязано его пометить.
+    """
+    region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
+
+    on_diagonal = region.distance(trust.profile(flat({"prod:1": 1.0, "prod:2": 1.0})))
+    off_diagonal = region.distance(trust.profile(flat({"prod:1": 0.8, "prod:2": 1.2})))
+
+    assert not on_diagonal.outside
+    assert off_diagonal.outside
+    assert off_diagonal.value > on_diagonal.value
+
+
+def test_the_threshold_comes_from_the_sample_not_from_a_chosen_number():
+    """Порог — насколько одинока самая одинокая точка самой выборки."""
+    region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
+
+    inside = [
+        region.distance(profile).value
+        for profile in diagonal_scenarios().values()
+    ]
+
+    assert region.threshold > 0
+    # каждый обучающий сценарий сам себе ближайший, поэтому его d_k строго меньше
+    # порога, посчитанного без него самого
+    assert max(inside) <= region.threshold
+
+
+def test_neighbours_name_the_training_scenarios_for_the_explanation():
+    """«Покажите пять ближайших режимов DoE» — требование слоя интерпретируемости."""
+    region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
+
+    found = region.distance(trust.profile(flat({"prod:1": 0.8, "prod:2": 0.8})))
+
+    assert len(found.neighbours) == 3
+    assert found.neighbours[0].scenario == "s00"
+    assert [n.distance for n in found.neighbours] == sorted(n.distance for n in found.neighbours)
+
+
+def test_a_control_the_doe_never_moved_is_the_hardest_boundary():
+    """Нулевая дисперсия признака не выбрасывается: сдвинуть его — уйти далеко."""
+    profiles = {
+        name: one | trust.profile(flat({"inj:9": 1.0}))
+        for name, one in diagonal_scenarios().items()
+    }
+    region = trust.TrustRegion.fit(profiles, k=3)
+
+    moved = region.distance(
+        trust.profile(flat({"prod:1": 1.0, "prod:2": 1.0, "inj:9": 2.0}))
+    )
+
+    assert moved.outside
+
+
+def test_fewer_scenarios_than_neighbours_is_refused():
+    with pytest.raises(ValueError, match="не определено"):
+        trust.TrustRegion.fit(diagonal_scenarios(4), k=5)
+
+
+# ── конформный запас ─────────────────────────────────────────────────────────
+
+def test_too_few_pairs_means_not_calibrated_not_zero():
+    """Мало пар — «не измерено», а не «риска нет». Разница в том, что заявляем."""
+    margin = trust.OptimismMargin.fit([(100.0, 90.0), (100.0, 95.0)], alpha=0.1)
+
+    assert not margin.calibrated
+    assert margin.value is None
+    assert "не существует" in margin.reason
+    assert margin.index == 3 and margin.samples == 2
+
+
+def test_the_margin_is_the_order_statistic_the_theory_names():
+    """`⌈(n+1)(1−α)⌉`-й по величине остаток, а не среднее и не максимум."""
+    pairs = [(100.0 + gap, 100.0) for gap in (1.0, 2.0, 3.0, 4.0, 5.0,
+                                              6.0, 7.0, 8.0, 9.0, 10.0)]
+    margin = trust.OptimismMargin.fit(pairs, alpha=0.2)
+
+    assert margin.samples == 10
+    assert margin.index == 9
+    assert margin.value == pytest.approx(9.0)
+
+
+def test_a_surrogate_that_understates_gets_a_negative_margin():
+    """Занижающий суррогат не наказывается: запас против оптимизма односторонний."""
+    margin = trust.OptimismMargin.fit([(90.0, 100.0)] * 20, alpha=0.1)
+
+    assert margin.calibrated
+    assert margin.value == pytest.approx(-10.0)
+
+
+# ── цель поиска ──────────────────────────────────────────────────────────────
+
+def test_safe_value_penalises_distance_and_optimism():
+    region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
+    far = region.distance(trust.profile(flat({"prod:1": 0.8, "prod:2": 1.2})))
+    margin = trust.OptimismMargin.fit([(100.0 + gap, 100.0) for gap in range(1, 21)],
+                                      alpha=0.1)
+
+    assert trust.safe_value(1000.0, None, None) == pytest.approx(1000.0)
+    assert trust.safe_value(1000.0, far, margin) < 1000.0 - margin.value
+
+
+def test_an_uncalibrated_margin_is_not_silently_treated_as_zero_risk():
+    """Не вычитаем выдуманное — но и не молчим: кандидат уходит на полный расчёт."""
+    margin = trust.OptimismMargin.fit([(100.0, 90.0)], alpha=0.1)
+
+    assert trust.safe_value(1000.0, None, margin) == pytest.approx(1000.0)
+    reasons = trust.routed_to_full_run(None, margin)
+    assert any("не калибрована" in reason for reason in reasons)
+
+
+def test_a_covered_candidate_with_calibration_is_not_routed_to_a_full_run():
+    region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
+    near = region.distance(trust.profile(flat({"prod:1": 1.0, "prod:2": 1.0})))
+    margin = trust.OptimismMargin.fit([(100.0 + gap, 100.0) for gap in range(1, 21)],
+                                      alpha=0.1)
+
+    assert trust.routed_to_full_run(near, margin) == []
+
+
+def test_hard_rules_are_carried_through_untouched():
+    """Первый контур не подменяется вторым — оба идут в одно решение."""
+    region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
+    near = region.distance(trust.profile(flat({"prod:1": 1.0, "prod:2": 1.0})))
+    margin = trust.OptimismMargin.fit([(100.0 + gap, 100.0) for gap in range(1, 21)],
+                                      alpha=0.1)
+
+    reasons = trust.routed_to_full_run(near, margin, ["скв. 66: режим вне диапазона"])
+    assert reasons == ["скв. 66: режим вне диапазона"]
+
+
+# ── контракт артефакта ───────────────────────────────────────────────────────
+
+def test_the_artifact_states_what_the_guarantee_does_not_cover():
+    """Область действия гарантии — обязательное поле, а не примечание в отчёте."""
+    region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
+    margin = trust.OptimismMargin.fit([(100.0 + gap, 100.0) for gap in range(1, 21)],
+                                      alpha=0.1)
+
+    written = trust.contract(region, margin, dataset_hash="abc", model_hash="def")
+
+    assert "не гарантия для адаптивно выбранного оптимизатором кандидата" in written["guarantee_scope"]
+    assert written["scenario_unit"].startswith("целый сценарий")
+    assert written["calibrated"] is True
+    assert written["k"] == 3
+    assert written["training_scenario_ids"] == sorted(diagonal_scenarios())
+
+
+def test_a_missing_block_makes_the_artifact_uncalibrated():
+    """Нет калибровки — интерфейс обязан сказать это, а не показать зелёный статус."""
+    region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
+
+    assert trust.contract(region, None)["calibrated"] is False
+    assert trust.contract(None, trust.OptimismMargin.fit(
+        [(100.0 + gap, 100.0) for gap in range(1, 21)], alpha=0.1))["calibrated"] is False

@@ -7,7 +7,7 @@ from datetime import date
 import pytest
 from conftest import make_row
 
-from aios import economics, optimise, planner, summary
+from aios import economics, optimise, planner, summary, trust
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.margin import Norms
 from aios.schedule import MAX_LIQUID_RATE_M3_PER_DAY, validate
@@ -273,6 +273,81 @@ def test_joint_search_does_not_choose_a_candidate_outside_training():
     assert choices[0].multiplier == 1.25
     assert choices[0].outside_training == (1.5,)
     assert "1.5" in str(choices[0])
+
+
+class ProfilingForcingSurrogate(ForcingSurrogate):
+    """Тот же врущий прогноз, но умеет назвать свой совместный режим.
+
+    Покрытия по скважине он **не** проверяет намеренно: тест обязан показать,
+    что кандидата останавливает именно второй контур, а не первый.
+    """
+
+    def control_profile(self, steps):
+        rate = steps[0].producers[0].liquid_rate or 0.0
+        return trust.profile({date(2014, 1, 1): {"prod:a": rate / 30.0}})
+
+
+def test_the_second_gate_stops_a_candidate_the_coordinatewise_check_lets_through():
+    """Ровно тот провал, из-за которого второй контур и появился (Р-68).
+
+    Обучение видело режимы 0.9…1.1, поэтому 1.5 далеко от всех обучающих
+    сценариев. Покрытие по скважине здесь не спрашивается вовсе — кандидата
+    останавливает сценарное расстояние.
+    """
+    region = trust.TrustRegion.fit(
+        {
+            f"s{index}": trust.profile({date(2014, 1, 1): {"prod:a": value}})
+            for index, value in enumerate((0.90, 0.95, 1.00, 1.05, 1.10))
+        },
+        k=2,
+    )
+
+    loose = optimise.choose_joint_rates(
+        ProfilingForcingSurrogate(), plan(["a"], months=1), start_date=START
+    )
+    guarded = optimise.choose_joint_rates(
+        ProfilingForcingSurrogate(), plan(["a"], months=1), start_date=START,
+        region=region, penalty=1_000_000.0,
+    )
+
+    assert loose[0].multiplier == 1.5, "без второго контура поиск берёт максимум прогноза"
+    assert guarded[0].multiplier < 1.5
+
+
+def test_the_second_gate_does_not_fire_inside_the_training_cloud():
+    """Защита, срабатывающая всегда, не работает вовсе: внутри облака поиск свободен."""
+    region = trust.TrustRegion.fit(
+        {
+            f"s{index}": trust.profile({date(2014, 1, 1): {"prod:a": value}})
+            for index, value in enumerate((0.5, 0.8, 1.0, 1.2, 1.5))
+        },
+        k=2,
+    )
+
+    choices = optimise.choose_joint_rates(
+        ProfilingForcingSurrogate(), plan(["a"], months=1), start_date=START,
+        region=region, penalty=1_000_000.0,
+    )
+
+    assert choices[0].multiplier == 1.5
+
+
+def test_a_surrogate_without_a_scenario_profile_searches_as_before():
+    """Второй контур необязателен: бейзлайн сценарного представления не имеет."""
+    region = trust.TrustRegion.fit(
+        {
+            f"s{index}": trust.profile({date(2014, 1, 1): {"prod:a": value}})
+            for index, value in enumerate((0.90, 0.95, 1.00, 1.05, 1.10))
+        },
+        k=2,
+    )
+
+    choices = optimise.choose_joint_rates(
+        ForcingSurrogate(), plan(["a"], months=1), start_date=START,
+        region=region, penalty=1_000_000.0,
+    )
+
+    assert choices[0].multiplier == 1.5
 
 
 def test_joint_search_keeps_forcing_when_the_surrogate_cannot_answer_about_coverage():

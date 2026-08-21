@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from aios import economics, planner
+from aios import economics, planner, trust
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.margin import Norms, counted_by_methodology, month_margin
 from aios.schedule import MAX_INJECTION_BHP_ATM, MAX_LIQUID_RATE_M3_PER_DAY
@@ -58,6 +58,18 @@ DEFAULT_MULTIPLIERS = (0.0, 0.5, 0.75, 1.0)
 #: на прогонах ГГДМ: `choose_rates(..., multipliers=DEFAULT_MULTIPLIERS + FORCING)`.
 FORCING_MULTIPLIERS = (1.25, 1.5)
 JOINT_MULTIPLIERS = DEFAULT_MULTIPLIERS + FORCING_MULTIPLIERS
+
+TRUST_PENALTY = 1.0
+"""`ρ` — цена удаления кандидата от обучающих сценариев, млн руб. за (d − τ)².
+
+Единица — не результат измерения, а честное «вес не подбирали». Разбор 4-7
+требует подбирать `λ` и `ρ` по внешней валидации, а не на тех же сценариях; до
+этого замера значение единичное и записано в артефакт доверия, чтобы влияние
+штрафа на найденный режим можно было пересчитать.
+"""
+
+TRUST_WEIGHT = 1.0
+"""`λ` — вес конформного запаса. Единица означает «вычитаем весь измеренный запас»."""
 
 
 @dataclass(frozen=True)
@@ -233,6 +245,10 @@ def choose_joint_rates(
     limits: planner.Limits | None = None,
     norms: Norms | None = None,
     fluids: Fluids | None = None,
+    region: trust.TrustRegion | None = None,
+    margin: trust.OptimismMargin | None = None,
+    penalty: float = TRUST_PENALTY,
+    weight: float = TRUST_WEIGHT,
 ) -> list[JointRateChoice]:
     """Координатный поиск для суррогата с межскважинными связями.
 
@@ -303,7 +319,8 @@ def choose_joint_rates(
     ]
     selected = dict.fromkeys(controls, 1.0)
     current_steps = _scale_individually(base_steps, selected)
-    current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids)
+    current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids,
+                             region, margin, penalty, weight)
     choices: list[JointRateChoice] = []
 
     for kind, well, start in controls:
@@ -319,7 +336,8 @@ def choose_joint_rates(
         for multiplier in covered:
             candidate_multipliers = selected | {(kind, well, start): multiplier}
             candidate = _scale_individually(base_steps, candidate_multipliers)
-            candidate_chdd = _value_of(surrogate, candidate, start_date, limits, norms, fluids)
+            candidate_chdd = _value_of(surrogate, candidate, start_date, limits, norms,
+                                       fluids, region, margin, penalty, weight)
             if candidate_chdd > best_chdd + 1e-9:
                 best_multiplier = multiplier
                 best_steps = candidate
@@ -341,6 +359,10 @@ def _value_of(
     limits: planner.Limits | None,
     norms: Norms | None,
     fluids: Fluids | None,
+    region: trust.TrustRegion | None = None,
+    margin: trust.OptimismMargin | None = None,
+    penalty: float = TRUST_PENALTY,
+    weight: float = TRUST_WEIGHT,
 ) -> float:
     """Чего кандидат стоит — уже с учётом общего ресурса, если он задан.
 
@@ -351,9 +373,33 @@ def _value_of(
     """
     forecast = surrogate.predict(steps)
     if limits is None:
-        return _chdd(forecast, start_date)
-    fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids)
-    return _chdd(surrogate.predict(fitted), start_date)
+        value, judged = _chdd(forecast, start_date), steps
+    else:
+        fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids)
+        value, judged = _chdd(surrogate.predict(fitted), start_date), fitted
+    return trust.safe_value(value, _distance_of(surrogate, judged, region), margin,
+                            penalty=penalty, weight=weight)
+
+
+def _distance_of(surrogate: Surrogate, steps: list[ScheduleStep],
+                 region: trust.TrustRegion | None) -> trust.Distance | None:
+    """Насколько совместный режим кандидата далёк от обучающих сценариев.
+
+    Спрашивается у суррогата тем же способом, что и покрытие, — через `getattr`:
+    у тривиального бейзлайна сценарного представления нет, и это значит «мера не
+    считается», а не «кандидат близок». Без области поиск работает как раньше.
+
+    Меряется расписание **после** планировщика, если ограничения заданы: именно
+    оно уходит в расчёт, и именно его совместный режим имеет значение. До срезки
+    расписание может быть сколь угодно экзотическим — оно всё равно не исполнится.
+    """
+    if region is None:
+        return None
+    build = getattr(surrogate, "control_profile", None)
+    if build is None:
+        return None
+    one = build(steps)
+    return region.distance(one) if one else None
 
 
 def _covered_multipliers(
