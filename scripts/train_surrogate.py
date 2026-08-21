@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         help="как представлять нефть: своей величиной или через долю воды",
     )
     parser.add_argument(
-        "--features", choices=FEATURE_KINDS, default="all",
+        "--features", choices=FEATURE_KINDS, default="own",
         help="что видит модель скважины: весь фонд (all) или свои столбцы плюс "
              "агрегаты по фонду (own)",
     )
