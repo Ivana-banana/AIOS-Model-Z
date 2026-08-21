@@ -195,3 +195,32 @@ def test_a_control_before_the_first_dates_is_checked_too_not_skipped():
         "нарушение до первого DATES прошло проверку"
     )
     assert any("до первого DATES" in failure for failure in failures)
+
+
+def test_wells_controlled_but_not_declared_in_the_file_are_reported():
+    """Скважина получает режим, но `WELSPECS` для неё в файле нет.
+
+    Разбор семантики SCHEDULE (`docs/manus/schedule-semantics.md`, п. 4 чек-листа)
+    требует объявления `WELSPECS` до первого `COMPDAT`/`WCONPROD`/`WCONINJE` для
+    каждой скважины, на которую файл ссылается. Требование действует ровно в том
+    прочтении, где наш файл **подменяет** всю секцию SCHEDULE: наследовать
+    объявление там неоткуда. Прочтение не выбрано (В-03), поэтому это
+    предупреждение, а не отказ, — но молчать о нём нельзя: parser-ошибка вылезет
+    у организаторов на единственном расчёте.
+    """
+    text = render(steps((date(2007, 1, 1), (producer("1", 100.0),), (injector("3", 200.0),))))
+
+    _, notes = check(text, DECK, CONTROL_START)
+
+    assert any("WELSPECS" in note for note in notes), "необъявленные скважины прошли молча"
+
+
+def test_a_file_declaring_every_controlled_well_keeps_quiet():
+    text = (
+        "WELSPECS\n 'W1' 'GROUP' 1 1 1* 'OIL' /\n 'W3' 'GROUP' 2 2 1* 'OIL' /\n/\n\n"
+        + render(steps((date(2007, 1, 1), (producer("W1", 100.0),), (injector("W3", 200.0),))))
+    )
+
+    _, notes = check(text, DECK, CONTROL_START)
+
+    assert not [note for note in notes if "WELSPECS" in note]

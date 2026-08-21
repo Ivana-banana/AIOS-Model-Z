@@ -21,7 +21,11 @@ target-version = "py311"
 # он исполняется в их окружении с глобалями тНавигатора и под наш линтер не подходит.
 # «Scripts» в этом списке не пишем: под Windows он же означает наш scripts/, и тогда
 # скрипты запуска молча перестают линтоваться (тем же способом они выпали из git).
-extend-exclude = ["vendor", "Lib", "Include", "docs/method/organisers-export-script_1.py"]
+# Скрипты из отчётов Manus (`docs/manus/*-calc.py`, `*-stats.py`) — тоже чужие артефакты:
+# они приложены как есть, чтобы числа отчёта можно было пересчитать. Наш пересчёт
+# рядом (`docs/manus/ppd-rescale.py`) под линтером остаётся.
+extend-exclude = ["vendor", "Lib", "Include", "docs/method/organisers-export-script_1.py",
+                  "docs/manus/ppd-capacity-calc.py", "docs/manus/uplift-benchmarks-stats.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]

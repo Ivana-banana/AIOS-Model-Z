@@ -83,6 +83,7 @@ def check(text: str, deck_text: str, control_start: date) -> tuple[list[str], li
     first, last = submitted.steps[0].date, submitted.steps[-1].date
     notes.extend(_horizon_notes(first, last, reference))
     notes.extend(_completion_notes(text, submitted))
+    notes.extend(_declaration_notes(submitted))
 
     silent = [well for well in reference.wells if well not in set(submitted.wells)]
     if silent:
@@ -161,6 +162,33 @@ def _completion_notes(text: str, submitted: deck_module.Schedule) -> list[str]:
         f"скважин с режимом, но без вскрытия: {len(uncompleted)} "
         f"({', '.join(uncompleted[:5])}{' …' if len(uncompleted) > 5 else ''}) — "
         "симулятор оставит их закрытыми и сообщит об этом одной строкой лога"
+    ]
+
+
+def _declaration_notes(submitted: deck_module.Schedule) -> list[str]:
+    """Скважины, получающие режим, но не объявленные `WELSPECS` в самом файле.
+
+    Требование из разбора семантики SCHEDULE (`docs/manus/schedule-semantics.md`,
+    п. 4 чек-листа): `WELSPECS` обязан стоять до первого `COMPDAT`, `WCONPROD`,
+    `WCONINJE` и `WEFAC` для каждой скважины, на которую файл ссылается. Оно
+    действует в прочтении «файл подменяет всю секцию SCHEDULE»: наследовать
+    объявление там неоткуда, и симулятор отвергнет дек. В прочтении «файл
+    дописывается хвостом» объявление приходит из истории, и его отсутствие
+    нормально.
+
+    Какое из двух прочтений верно, мы не знаем (В-03), поэтому это предупреждение,
+    а не отказ. Наш сдаваемый файл объявляет все 103 скважины и проверку проходит
+    молча — но собран он может быть и иначе.
+    """
+    declared = _welspecs(submitted)
+    missing = [well for well in submitted.wells if well not in declared]
+    if not missing:
+        return []
+    return [
+        f"скважин с режимом, но без WELSPECS в самом файле: {len(missing)} "
+        f"({', '.join(missing[:5])}{' …' if len(missing) > 5 else ''}) — так файл "
+        "читается только как дописывание к истории; как замена всей секции "
+        "SCHEDULE он неполон (вопрос В-03)"
     ]
 
 
