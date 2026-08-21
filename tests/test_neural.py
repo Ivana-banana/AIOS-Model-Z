@@ -769,3 +769,36 @@ def test_a_measured_model_is_not_labelled_as_unmeasured(tmp_path):
     )
 
     assert "качество не измерено" not in selected.name
+
+
+def test_a_well_without_a_model_is_named_not_silently_dropped():
+    """Скважина, которой не досталось модели, обязана быть названа.
+
+    `train` пропускает скважину, у которой нет строк по одну из сторон
+    разбиения: `if train_rows.empty or test_rows.empty: continue`. Второй такой
+    пропуск — скважина, все строки которой лежат раньше `control_start`.
+
+    Дальше она исчезает бесшумно: `predict` идёт по `bundle.models`, поэтому
+    прогноза по ней нет **ни одной строки**, ЧДД считается по остатку фонда и
+    подаётся как ЧДД сценария, а поиск режимов про эту скважину не знает вовсе.
+    Замер 21.08: датасет из двух скважин, обучена одна, `control_wells` содержит
+    обе, прогноз содержит одну, предупреждений — ноль.
+
+    На настоящем пакете DoE фонд у всех сценариев один, поэтому первый пропуск
+    не срабатывает. Второй — вполне: скважина, остановленная до начала
+    управления, управляемых строк не имеет.
+    """
+    frame = _dataset_frame()
+    # скважина «2» встречается ровно в одном сценарии — при любом разбиении она
+    # окажется либо только в обучении, либо только в отложенной части
+    frame = frame[(frame["well"] == "1") | (frame["scenario"] == "doe-001")]
+
+    bundle = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+    surrogate = NeuralSurrogate.create(bundle, _schedule(rate=95.0), require_quality=False)
+
+    assert set(bundle.models) == {"1"}, "проверка вырождена: пропуска не случилось"
+    warnings = surrogate.in_training_range(_schedule(rate=95.0))
+
+    assert any("2" in warning and "модел" in warning for warning in warnings), (
+        f"скважина без модели не названа ни одним предупреждением: {warnings}"
+    )

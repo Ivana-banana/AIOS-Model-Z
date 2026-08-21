@@ -85,6 +85,16 @@ class TrainingReport:
     metric_start: str = ""
     """С какой даты считались метрики; пусто — считались по всей выборке."""
 
+    wells_without_model: tuple[str, ...] = ()
+    """Скважины фонда, которым модели не досталось.
+
+    Пропуск случается в двух местах `train`: у скважины нет строк по одну из
+    сторон разбиения, либо все её строки лежат раньше `control_start`. Дальше она
+    исчезает бесшумно — `predict` идёт по `models`, поэтому прогноза по ней нет
+    ни одной строки, ЧДД считается по остатку фонда, а поиск режимов про неё не
+    знает. Список нужен, чтобы это было видно, а не выводилось сравнением.
+    """
+
     kind: str = "mlp"
     """Что именно сохранено в модели: `mlp` или `linear`.
 
@@ -248,6 +258,20 @@ class NeuralSurrogate:
             month_start: dict(zip(self.bundle.control_wells, values, strict=True))
             for month_start, values in self._multipliers(steps, timeline).items()
         }) if timeline else []
+        # Скважина, которой не досталось модели, исчезает из прогноза бесшумно:
+        # `predict` идёт по `models`, поэтому строк по ней нет ни одной, ЧДД
+        # считается по остатку фонда и подаётся как ЧДД сценария, а поиск режимов
+        # про неё не знает. `getattr` — ради артефактов, обученных до появления
+        # этого поля: у них список неизвестен, и это не повод падать.
+        missing = getattr(self.bundle.report, "wells_without_model", ())
+        if missing:
+            listed = ", ".join(missing[:5]) + (f" и ещё {len(missing) - 5}"
+                                               if len(missing) > 5 else "")
+            warnings.append(
+                f"скважин без модели: {len(missing)} ({listed}) — прогноза по ним "
+                "нет ни одной строки, ЧДД посчитан по остатку фонда"
+            )
+
         reference_dates = set(expand(self.reference_steps))
         warnings.extend(
             f"{step.date.isoformat()}: даты нет в опорном расписании обучающего датасета"
@@ -482,6 +506,9 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         metrics=metrics,
         targets=targets,
         metric_rows=int(sum(len(part) for part in test_targets)),
+        wells_without_model=tuple(
+            sorted(set(data["well"].astype(str)) - set(models), key=_well_key)
+        ),
         metric_start="" if control_start is None else control_start.isoformat(),
         kind=kind,
     )
