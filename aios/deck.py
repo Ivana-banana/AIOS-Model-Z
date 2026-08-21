@@ -271,10 +271,32 @@ def format_date_record(value: date) -> str:
 def _tokenize(text: str) -> list[str]:
     tokens: list[str] = []
     for line in text.splitlines():
-        line = line.split("--", 1)[0]
+        line = _strip_comment(line)
         if line.strip():
             tokens.extend(_TOKEN_RE.findall(line))
     return tokens
+
+
+def _strip_comment(line: str) -> str:
+    """Убрать комментарий, не тронув `--` внутри кавычек.
+
+    Простое `split("--")` режет запись посреди строки в кавычках: путь
+    `'model--z/sch.inc'` превращается в `'model`, и `INCLUDE` начинает указывать
+    в никуда — молча, потому что токен остаётся синтаксически годным. Каталог
+    ловушек Eclipse (`docs/manus/round4.md`, ответ 4-4) называет это отдельной
+    конструкцией: вне кавычек всё от `--` до конца строки удаляется **до**
+    разбора, внутри одиночных или двойных кавычек комментарием не является.
+    """
+    quote = ""
+    for index, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char == "-" and line.startswith("--", index):
+            return line[:index]
+    return line
 
 
 def _is_keyword(token: str) -> bool:

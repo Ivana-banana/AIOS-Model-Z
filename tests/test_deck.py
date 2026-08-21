@@ -237,3 +237,21 @@ def test_control_keyword_sets_of_deck_and_run_do_not_share_a_name():
     assert "DATES" in run_module.CONTROL_KEYWORDS, (
         "carried_keywords обязан считать DATES своим и не переносить его дословно"
     )
+
+
+def test_a_double_dash_inside_quotes_is_not_a_comment():
+    """Каталог ловушек Eclipse, ECL-003: `--` в кавычках комментарием не является.
+
+    Дефект был тихим: путь `'model--z/sch.inc'` резался до `'model`, токен
+    оставался синтаксически годным, и INCLUDE начинал указывать в никуда без
+    единого сообщения.
+    """
+    found = deck.parse_keywords("INCLUDE\n  'model--z/sch.inc' /\n")
+
+    assert found[0].records == (("model--z/sch.inc",),)
+
+
+def test_a_comment_outside_quotes_is_still_removed():
+    found = deck.parse_keywords("DATES\n  1 'JAN' 2007 /  -- начало горизонта\n/\n")
+
+    assert found[0].records == (("1", "JAN", "2007"),)
