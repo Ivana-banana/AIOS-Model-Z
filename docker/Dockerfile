@@ -8,7 +8,18 @@
 #
 # Дек организаторов в образ НЕ кладём: он их, весит 78 МБ и монтируется томом.
 
-FROM ubuntu:24.04
+# База закреплена по digest, а не только по тегу: `ubuntu:24.04` — движущаяся
+# цель, её пересобирают, и «тот же Dockerfile» через месяц даёт другой образ.
+# Правило одно на оба файла: `Dockerfile.pinch935` пинуется так же и этим же
+# digest'ом.
+#
+# Проверено 22.08.2026 запросом в Docker Hub (без Docker, curl к registry API):
+# манифест по этому digest существует, это multi-arch индекс, созданный
+# 10.08.2026, и тег `24.04` на 22.08 указывает ровно на него.
+# Обновление digest — осознанное действие: взять новый ответ
+# `docker-content-digest` для тега, вписать сюда, пересобрать и перепроверить
+# прогон, а не «подтянуть свежее» молча.
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 # Тихая установка: иначе tzdata остановится на диалоге и сборка повиснет.
 ENV DEBIAN_FRONTEND=noninteractive
@@ -42,6 +53,13 @@ COPY aios /opt/aios/aios
 COPY scripts /opt/aios/scripts
 COPY config.toml /opt/aios/config.toml
 COPY vendor/CHDD_PYTHON /opt/aios/vendor/CHDD_PYTHON
+
+# Лицензии едут вместе с образом, а не остаются в репозитории: получатель образа
+# получает Flow и resdata под GPLv3, а §4 требует передать копию лицензии вместе
+# с программой. `PROVENANCE_AND_RIGHTS.md` сюда намеренно не кладётся — это наш
+# внутренний реестр прав, а не документ получателя.
+COPY LICENSES /opt/aios/LICENSES
+COPY THIRD_PARTY_NOTICES.md MODIFICATIONS.md /opt/aios/
 RUN chmod +x /opt/aios/scripts/*.sh
 
 ENV PYTHONPATH=/opt/aios

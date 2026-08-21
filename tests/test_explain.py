@@ -4,7 +4,9 @@
 объяснение. Проект уже получал убедительное физическое обоснование под неверный
 результат (форсаж, 16.08), поэтому «звучит правдоподобно» здесь не аргумент.
 
-Сеть в тестах не трогается: клиент подставной.
+Сеть в тестах не трогается: клиент подставной. Единственное исключение —
+проверка «включён, но не дозвонился»: там клиент строится настоящий, поэтому
+учётные данные у неё отбираются, а `base_url` уводится на закрытый порт.
 """
 
 from __future__ import annotations
@@ -202,6 +204,24 @@ def test_cached_explanation_is_reused_without_calling_the_model(tmp_path: Path):
     assert len(client.messages.calls) == 1, "повторный прогон обязан обойтись без вызова"
 
 
+def test_cache_file_holds_the_explanation_and_nothing_else(tmp_path: Path):
+    """В кэше лежит только объяснение: ни настроек, ни клиента, ни учётных данных.
+
+    Кэш — единственное, что слой пишет на диск, и пишет он туда рядом с ключом
+    API: `explain()` вызывается уже с построенным клиентом. Дамп «всего контекста
+    на всякий случай» положил бы ключ в файл внутри рабочего дерева, а оттуда —
+    в сдаваемый репозиторий (`BLOCKED.md`, п. 6: ключ читается только из
+    окружения и нигде не сохраняется). Набор полей поэтому закреплён, а не
+    подразумевается.
+    """
+    settings = Settings(enabled=True, cache_dir=tmp_path)
+    explain(evidence(), settings, client=_FakeClient(answer()))
+
+    stored = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+
+    assert set(stored) == {"text", "model", "fingerprint"}
+
+
 def test_rejected_answer_is_not_cached(tmp_path: Path):
     settings = Settings(enabled=True, cache_dir=tmp_path)
     client = _FakeClient(answer(confirmation="Прирост 2500.0 млн руб."))
@@ -244,7 +264,7 @@ def test_caveats_reach_both_the_prompt_and_the_template():
     assert "мощность системы ППД" in template_text(facts)
 
 
-def test_an_enabled_layer_that_cannot_reach_the_model_says_so_instead_of_looking_disabled():
+def test_an_enabled_layer_that_cannot_reach_the_model_says_so_instead_of_looking_disabled(monkeypatch):
     """«Включён, но не дозвонился» и «выключен» — разные новости, а вид был один.
 
     Слой, которому не удалось построить клиента (нет библиотеки `anthropic`, нет
@@ -258,7 +278,22 @@ def test_an_enabled_layer_that_cannot_reach_the_model_says_so_instead_of_looking
     откат к шаблону в нём выглядел бы как успешный запуск. Найдено 20.08 на
     машине, где пакета `anthropic` действительно нет, хотя он есть в
     `requirements.txt`.
+
+    **Учётные данные отбираются у теста намеренно (21.08 → 22.08).** С 22.08
+    пакет `anthropic` на машине Б установлен, и `client=None` больше не упирается
+    в отсутствующий импорт: клиент строится, а отказ приходит уже из вызова.
+    Значит, на машине, где ключ **есть**, этот тест сходил бы к живой модели —
+    настоящим запросом, за деньги, при каждом `pytest -q`. Живой вызов в проекте
+    планируется ровно один и делается руками (`BLOCKED.md`, п. 6), поэтому здесь
+    снимаются все источники учётных данных SDK, а `base_url` уводится на заведомо
+    закрытый порт: если ключ всё же придёт из профиля на диске, запрос упрётся в
+    отказ соединения, а не в API. Проверяемое поведение от этого не меняется —
+    причина обязана быть названа при любой из причин.
     """
+    for variable in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
+
     result = explain(evidence(), Settings(enabled=True), client=None)
 
     assert result.source == "template-failed", "включённый слой выглядит как выключенный"
