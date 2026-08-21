@@ -12,6 +12,7 @@ from conftest import make_row, months
 from aios import economics
 from aios.margin import (
     Norms,
+    counted_by_methodology,
     breakeven_oil_t,
     breakeven_watercut,
     is_active,
@@ -171,3 +172,32 @@ def test_the_screen_matches_the_reference_ebitda_even_with_an_excluded_row(norms
     ).raw["annual"][0]["ebitdaM"]
 
     assert ours == pytest.approx(theirs, abs=1e-9)
+
+
+def test_a_verdict_counts_money_and_tonnes_over_the_same_rows(norms):
+    """Внутри одной строки таблицы всё обязано быть посчитано по одному набору.
+
+    После фильтрации исключаемых строк маржа считалась по одному набору, а
+    тонны, месяцы в работе и `average_margin_m` — по другому, полному. На
+    странице прогона это стоит рядом в одной строке: «маржа 10,46 / нефть
+    1 950 т / мес. в работе 12», где деньги уже без исключённой строки, а тонны
+    и месяцы всё ещё с ней.
+
+    Правило то же, что вывело сегодняшнюю серию находок: величины, стоящие рядом
+    как объяснение одного решения, обязаны быть посчитаны по одному материалу.
+    """
+    rows = [make_row(f"2007-{month:02d}-01", "1", wlpr=30, womr=5, liquid=900, oil=150)
+            for month in range(1, 13)]
+    rows[5]["WOMT_Diff"] = -150.0
+    rows[5]["WLPT_Diff"] = -900.0
+
+    verdict = screen(rows, norms)[0]
+    kept = [row for row in rows if counted_by_methodology(row)]
+
+    assert verdict.months == len(kept), "месяцы считаются по всем строкам, а деньги — нет"
+    assert verdict.oil_t == pytest.approx(sum(row["WOMT_Diff"] for row in kept))
+    assert verdict.liquid_t == pytest.approx(sum(row["WLPT_Diff"] for row in kept))
+    assert 0.0 <= verdict.watercut <= 1.0, (
+        f"обводнённость {verdict.watercut:.3f} вне физического диапазона"
+    )
+    assert verdict.average_margin_m == pytest.approx(verdict.total_margin_m / len(kept))

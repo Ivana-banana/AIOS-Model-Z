@@ -169,8 +169,13 @@ def screen(rows: list[dict[str, Any]], norms: Norms) -> list[WellVerdict]:
         # EBITDA. Замер 21.08: одна такая строка на двенадцать месяцев даёт
         # расхождение 1,427 млн руб., а страница прогона утверждает, что скважины
         # отбираются по тем же деньгам, по каким нас будут оценивать.
-        margins = [month_margin(row, norms)
-                   for row in well_rows if counted_by_methodology(row)]
+        #
+        # Отбор один на весь вердикт, а не только на деньги: тонны, месяцы и
+        # средняя маржа стоят на странице в одной строке с ними и обязаны быть
+        # посчитаны по тому же материалу. Иначе получается «маржа без исключённой
+        # строки, тонны вместе с ней» — и обводнённость выходит за 100 %.
+        counted = [row for row in well_rows if counted_by_methodology(row)]
+        margins = [month_margin(row, norms) for row in counted]
 
         trailing = 0
         for margin in reversed(margins):
@@ -182,15 +187,15 @@ def screen(rows: list[dict[str, Any]], norms: Norms) -> list[WellVerdict]:
         verdicts.append(
             WellVerdict(
                 well=well,
-                months=len(well_rows),
-                active_months=sum(1 for row in well_rows if is_active(row)),
+                months=len(counted),
+                active_months=sum(1 for row in counted if is_active(row)),
                 total_margin_m=sum(margins),
                 negative_months=sum(1 for margin in margins if margin < 0),
                 trailing_negative_months=trailing,
                 trailing_margin_m=sum(margins[len(margins) - trailing:]) if trailing else 0.0,
-                oil_t=sum(row["WOMT_Diff"] for row in well_rows),
-                liquid_t=sum(row["WLPT_Diff"] for row in well_rows),
-                injection_m3=sum(row["WWIT_Diff"] for row in well_rows),
+                oil_t=sum(row["WOMT_Diff"] for row in counted),
+                liquid_t=sum(row["WLPT_Diff"] for row in counted),
+                injection_m3=sum(row["WWIT_Diff"] for row in counted),
             )
         )
 
