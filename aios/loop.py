@@ -148,7 +148,10 @@ def run_cycle(surrogate: Surrogate,
     tuned = list(base_steps)
     if tune_rates:
         if joint_rate_search:
-            choices = optimise.choose_joint_rates(surrogate, base_steps, start_date=start_date)
+            choices = optimise.choose_joint_rates(
+                surrogate, base_steps, start_date=start_date,
+                limits=limits, norms=norms, fluids=fluids,
+            )
         else:
             choices = optimise.choose_rates(surrogate, base_steps, norms, start_date=start_date)
         tuned = optimise.apply_choices(base_steps, choices)

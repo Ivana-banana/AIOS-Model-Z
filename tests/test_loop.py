@@ -11,7 +11,7 @@ from datetime import date
 import pytest
 from conftest import make_row
 
-from aios import economics, loop, summary
+from aios import economics, loop, optimise, summary
 from aios.deck import ProducerControl, ScheduleStep
 from aios.margin import Norms
 from aios.surrogate import DeclineSurrogate
@@ -206,6 +206,36 @@ def test_without_limits_the_planner_stays_out(surrogate, norms):
     result = loop.run_cycle(surrogate, plan(), norms,
                             control_start=CONTROL_START, start_date=CONTROL_START)
     assert result.allocations == ()
+
+
+def test_joint_search_sees_the_same_limits_the_planner_enforces(surrogate, norms, monkeypatch):
+    """Поиск режимов обязан узнавать об ограничении раньше планировщика (Р-54, `docs/decisions.md`).
+
+    Иначе он выбирает режимы по ЧДД, которого не будет: планировщик режет их
+    после. `choose_joint_rates` умеет учитывать `limits`/`norms`/`fluids` с
+    21.08 (`aios/optimise.py`), но `run_cycle` их не передавал.
+    """
+    from aios.planner import Limits
+
+    limits = Limits(max_field_liquid_m3_per_day=20.0, enforce_water_balance=False)
+    seen = {}
+    original = optimise.choose_joint_rates
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(loop.optimise, "choose_joint_rates", spy)
+
+    loop.run_cycle(
+        surrogate, plan(), norms,
+        control_start=CONTROL_START, start_date=CONTROL_START,
+        joint_rate_search=True, limits=limits, fluids=FLUIDS,
+    )
+
+    assert seen.get("limits") is limits
+    assert seen.get("norms") is norms
+    assert seen.get("fluids") is FLUIDS
 
 
 def test_forecast_reports_rows_the_calculator_threw_away():
