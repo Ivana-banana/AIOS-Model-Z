@@ -11,6 +11,9 @@
 | Архивы, презентации, методики | `materials/` |
 | Опись материалов и распаковка | `materials/README.md` |
 | Расшифровки записей встреч | `docs/method/transcripts/` |
+| Слайды лекции 11.08 (ML), с цитатами литературы — точнее аудио | `docs/method/lecture-2-ml.txt` |
+| Слайды лекции 12.08 (разработка месторождений) — точнее аудио | `docs/method/lecture-3-reservoir.txt` |
+| Разбор регламента из лекции 10.08 (только аудио, слайдов нет) | `docs/method/lecture-1-regulations.md` |
 | Ответы организаторов на вопросы команд | `docs/method/qa-organisers.md` |
 | Отличия двух методик ЧДД | `docs/method/diff.md` |
 | Скрипт выгрузки организаторов | `docs/method/organisers-export-script_1.py` |
