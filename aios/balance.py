@@ -5,9 +5,26 @@
 сточной, пресной и товарной не приходится (`docs/method/qa-organisers.md`).
 
 Отсюда балансовое ограничение, которого нет ни в методике, ни в презентациях:
-закачка не берётся из воздуха и ограничена добытой водой. Сценарий, который
-закачивает больше, чем поднял, физически не обеспечен — и это ровно тот случай,
-когда модель посчитает «отлично», а решение будет нереализуемым.
+закачка не берётся из воздуха. Сценарий, который закачивает воду ниоткуда,
+физически не обеспечен — и это ровно тот случай, когда модель посчитает
+«отлично», а решение будет нереализуемым.
+
+**Но буквальное «закачка ≤ добытая вода» историю Модели Z отвергает, и измерение
+это доказало** (22.08, `runs/base/rows.csv`): за 1991–2025 закачано 13 157 610 м³
+при добытой воде 5 164 127 м³, то есть **60,8 % всей закачки объекта — вода со
+стороны**; в 2024 это 682,4 м³/сут при закачке 1 940 м³/сут. Независимая
+проверка пришла к 684 м³/сут (`docs/manus/round4.md`, ответ 4-2).
+
+Поэтому здесь три формулировки, а не одна, и подменять их друг другом молча
+нельзя — они ограничивают разное:
+
+* `problems` — «дополнительной воды нет вовсе», лимит источника ноль. На Модели Z
+  ложно по факту, оставлено для кейса, где источника действительно нет;
+* `compensation_problems` — закачка возмещает **отобранную пустотность**. Это про
+  поддержание пластового давления, а не про то, откуда взялась вода;
+* `external_water_problems` — закачка ≤ попутная вода + лимит **стороннего**
+  источника. Физически это и есть ограничение по источнику, и мощность источника
+  нам неизвестна: она параметр, а не константа.
 
 Здесь же — водонефтяной фактор. Организаторы подсветили его отдельно: это не
 отчётный показатель, а **признак для агента**. «Максимум жидкости — значит
@@ -17,6 +34,7 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,10 +50,25 @@ class YearBalance:
     oil_m3: float
     water_m3: float
     injected_m3: float
+    days: float = 365.0
+    """Сколько суток года попало в выгрузку. Нужно, чтобы перевести объёмы в м³/сут."""
 
     @property
     def liquid_m3(self) -> float:
         return self.oil_m3 + self.water_m3
+
+    @property
+    def external_water_m3(self) -> float:
+        """Закачка, не покрытая собственной попутной водой, — вода со стороны.
+
+        Отрицательное значение означает обратное: часть попутной воды не пошла в
+        закачку и утилизируется иначе.
+        """
+        return self.injected_m3 - self.water_m3
+
+    @property
+    def external_water_m3_per_day(self) -> float:
+        return self.external_water_m3 / self.days if self.days > 0 else 0.0
 
     @property
     def watercut(self) -> float:
@@ -75,6 +108,7 @@ def by_year(rows: list[dict[str, Any]], fluids: Fluids | None = None) -> list[Ye
     """Свести баланс по годам. Массы из выгрузки переводятся обратно в объёмы."""
     fluids = fluids or Fluids()
     totals: dict[int, list[float]] = {}
+    months: dict[int, set[str]] = {}
 
     for row in rows:
         # Правило одно на все три приращения: строка с отрицательным WLPT_Diff,
@@ -87,7 +121,9 @@ def by_year(rows: list[dict[str, Any]], fluids: Fluids | None = None) -> list[Ye
             continue
         oil_t = row["WOMT_Diff"]
         liquid_t = row["WLPT_Diff"]
-        year = int(str(row["DATA"])[:4])
+        stamp = str(row["DATA"])
+        year = int(stamp[:4])
+        months.setdefault(year, set()).add(stamp[:7])
         bucket = totals.setdefault(year, [0.0, 0.0, 0.0])
         bucket[0] += oil_t * 1000.0 / fluids.oil_density
         # нефти больше жидкости быть не может; прогноз суррогата это нарушает,
@@ -96,9 +132,19 @@ def by_year(rows: list[dict[str, Any]], fluids: Fluids | None = None) -> list[Ye
         bucket[2] += row["WWIT_Diff"]
 
     return [
-        YearBalance(year=year, oil_m3=values[0], water_m3=values[1], injected_m3=values[2])
+        YearBalance(year=year, oil_m3=values[0], water_m3=values[1], injected_m3=values[2],
+                    days=days_of(months.get(year, set())))
         for year, values in sorted(totals.items())
     ]
+
+
+def days_of(stamps: set[str]) -> float:
+    """Сколько суток покрывают месяцы `YYYY-MM` — неполный год не считаем полным."""
+    total = 0.0
+    for stamp in stamps:
+        year, month = int(stamp[:4]), int(stamp[5:7])
+        total += monthrange(year, month)[1]
+    return total or 365.0
 
 
 def problems(rows: list[dict[str, Any]], fluids: Fluids | None = None,
@@ -189,6 +235,63 @@ def compensation_problems(rows: list[dict[str, Any]],
                 f"выше предела {ceiling * 100:.0f}%"
             )
     return over
+
+
+def historic_external_water(rows: list[dict[str, Any]],
+                            fluids: Fluids | None = None) -> float:
+    """Максимальный годовой приток сторонней воды в истории объекта, м³/сут.
+
+    Это единственное число про мощность водоисточника, которое у нас есть
+    основание назвать: столько источник **заведомо выдавал**, потому что выдавал.
+    Мощности его мы не знаем — ни паспорта КНС, ни производительности водозабора
+    в поставке нет (`docs/manus/round4.md`, разбор ответа 4-2).
+
+    Поэтому число годится как предел по умолчанию и не годится как утверждение
+    «больше нельзя». Сценарий, которому нужно больше, не запрещается, а
+    помечается: подтверждать его мощность — не наша задача и не задача нашего
+    стенда.
+    """
+    years = by_year(rows, fluids)
+    return max((year.external_water_m3_per_day for year in years), default=0.0)
+
+
+def external_water_problems(rows: list[dict[str, Any]],
+                            fluids: Fluids | None = None,
+                            limit_m3_per_day: float | None = None) -> list[str]:
+    """Годы, в которых закачке не хватает попутной воды сверх лимита источника.
+
+    Третья формулировка баланса, и физически она честнее двух прежних.
+
+    `problems` сравнивает закачку с добытой водой (лимит источника = 0) и на
+    истории Модели Z отвергает саму историю: 60,8 % всей закачки объекта — вода
+    со стороны. `compensation_problems` сравнивает закачку с отобранной
+    пустотностью — это про поддержание пластового давления, а не про то, откуда
+    берётся вода. Здесь проверяется ровно источник:
+
+        закачка ≤ попутная вода + лимит сторонней воды
+
+    `limit_m3_per_day = None` означает «предел неизвестен» — тогда проверка
+    ничего не запрещает, но по-прежнему считает потребность, и её печатают.
+    Подставлять сюда правдоподобное число вместо неизвестного нельзя: заявленный
+    ЧДД тогда будет опираться на выдуманную мощность водозабора.
+    """
+    found: list[str] = []
+    for year in by_year(rows, fluids):
+        need = year.external_water_m3_per_day
+        if need <= 0:
+            continue
+        if limit_m3_per_day is None:
+            found.append(
+                f"{year.year}: закачке нужно {need:,.0f} м³/сут воды со стороны — "
+                f"мощность источника неизвестна, режим не подтверждён"
+            )
+        elif need > limit_m3_per_day:
+            found.append(
+                f"{year.year}: закачке нужно {need:,.0f} м³/сут воды со стороны при "
+                f"пределе {limit_m3_per_day:,.0f} м³/сут — превышение "
+                f"{(need / limit_m3_per_day - 1) * 100:.0f}%"
+            )
+    return found
 
 
 def well_water_oil_ratio(rows: list[dict[str, Any]],

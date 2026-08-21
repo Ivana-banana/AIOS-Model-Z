@@ -36,6 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from aios import balance
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.margin import Norms, counted_by_methodology, month_margin
 from aios.summary import Fluids
@@ -54,8 +55,16 @@ class Limits:
     enforce_water_balance: bool = True
     """Ограничивать закачку балансом воды вообще."""
 
+    max_external_water_m3_per_day: float | None = None
+    """Мощность стороннего водоисточника, м³/сут. None — число неизвестно.
+
+    Нужна только правилу `external_water`. Значение по умолчанию для конкретного
+    объекта выводится из его же истории — `aios.balance.historic_external_water`
+    даёт максимум, который источник заведомо выдавал.
+    """
+
     water_balance_rule: str = "produced_water"
-    """Чем ограничена закачка: `produced_water` или `compensation`.
+    """Чем ограничена закачка: `produced_water`, `compensation` или `external_water`.
 
     `produced_water` — буквальное прочтение ответа организаторов «дополнительной
     воды нет»: накопленная закачка не выше накопленной добытой воды. На истории
@@ -66,6 +75,12 @@ class Limits:
     обычная величина для заводнения с поддержанием давления. Отраслевой нормы
     вида «закачка ≤ добытая вода» не существует: нормируются источник, качество и
     максимальный годовой объём (`docs/manus/vrr-water-balance.md`).
+
+    `external_water` — закачка ограничена попутной водой **плюс лимитом
+    стороннего источника**. Это единственная из трёх формулировок, которая
+    ограничивает то, чем закачка ограничена физически. На Модели Z сторонняя вода
+    даёт 60,8 % всей закачки за историю и 682 м³/сут в 2024 — то есть
+    `produced_water` описывает не этот объект (`docs/manus/round4.md`, Р-67).
     """
 
     water_tolerance: float = 1.0
@@ -112,16 +127,20 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     result = list(steps)
     decisions: list[Allocation] = []
 
-    if limits.water_balance_rule not in ("produced_water", "compensation"):
+    if limits.water_balance_rule not in ("produced_water", "compensation", "external_water"):
         raise ValueError(
             f"неизвестное water_balance_rule: {limits.water_balance_rule!r}; "
-            "допустимы 'produced_water' и 'compensation'"
+            "допустимы 'produced_water', 'compensation' и 'external_water'"
         )
 
     if limits.enforce_water_balance:
         if limits.water_balance_rule == "compensation":
             result, water = _fit_injection_to_compensation(result, forecast, fluids,
                                                            limits.water_tolerance)
+        elif limits.water_balance_rule == "external_water":
+            result, water = _fit_injection_to_external_water(
+                result, forecast, fluids, limits.max_external_water_m3_per_day
+            )
         else:
             result, water = _fit_injection_to_available_water(result, forecast, fluids,
                                                               limits.water_tolerance)
@@ -228,6 +247,52 @@ def _fit_injection_to_available_water(steps: list[ScheduleStep],
         steps, allowed / planned,
         f"закачка {planned:,.0f} м³ превышает добытую воду "
         f"{produced:,.0f} м³; источника сверх неё нет",
+    )
+
+
+def _fit_injection_to_external_water(
+    steps: list[ScheduleStep],
+    forecast: list[dict[str, Any]],
+    fluids: Fluids,
+    limit_m3_per_day: float | None,
+) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Ужать закачку до попутной воды плюс лимит стороннего источника.
+
+    Физически закачка ограничена не отношением объёмов, а тем, откуда берётся
+    вода: своя попутная плюс то, что даёт водозабор. На Модели Z второе слагаемое
+    не поправка, а больше половины — 60,8 % закачки за историю (Р-67).
+
+    `limit_m3_per_day = None` означает «мощность источника неизвестна». Тогда
+    **ничего не режем**: выдуманный предел изменит заявляемый ЧДД на число,
+    которого никто не измерял. Потребность в сторонней воде при этом остаётся
+    видимой — её печатает `aios.balance.external_water_problems`, и она обязана
+    попасть в отчёт как оговорка к сценарию.
+    """
+    if limit_m3_per_day is None:
+        return steps, []
+
+    produced = 0.0
+    planned = 0.0
+    stamps: set[str] = set()
+    for row in forecast:
+        oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
+        if liquid_t > 0 and 0 <= oil_t <= liquid_t:
+            produced += (liquid_t - oil_t) * 1000.0 / fluids.water_density
+        planned += max(row["WWIT_Diff"], 0.0)
+        stamp = str(row.get("DATA", ""))[:7]
+        if len(stamp) == 7:
+            stamps.add(stamp)
+
+    days = balance.days_of(stamps)
+    allowed = produced + limit_m3_per_day * days
+    if planned <= allowed or planned <= 0:
+        return steps, []
+
+    need = (planned - produced) / days
+    return _scale_injection(
+        steps, allowed / planned,
+        f"закачке нужно {need:,.0f} м³/сут воды со стороны при мощности источника "
+        f"{limit_m3_per_day:,.0f} м³/сут",
     )
 
 

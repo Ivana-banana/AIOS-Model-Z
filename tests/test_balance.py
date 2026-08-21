@@ -193,3 +193,65 @@ def test_a_row_with_negative_injection_is_dropped_whole_not_clamped():
         "вода из строки с отрицательной закачкой попала в баланс"
     )
     assert with_rolled_back.injected_m3 == pytest.approx(only_good.injected_m3)
+
+
+def test_days_are_counted_by_actual_months_not_by_full_year():
+    """Неполный год не считаем полным: иначе м³/сут занижается втрое и больше."""
+    rows = [produced("2014-01-01", "1", 10.0, 90.0), injected("2014-01-01", "2", 310.0)]
+    year = balance.by_year(rows, FLUIDS)[0]
+
+    assert year.days == pytest.approx(31.0)
+    assert year.external_water_m3 == pytest.approx(310.0 - 90.0)
+    assert year.external_water_m3_per_day == pytest.approx(220.0 / 31.0)
+
+
+def test_external_water_is_negative_when_produced_water_exceeds_injection():
+    """Своей воды больше, чем закачали, — источник не нужен, и это не нарушение."""
+    rows = [produced("2014-01-01", "1", 10.0, 900.0), injected("2014-01-01", "2", 100.0)]
+    year = balance.by_year(rows, FLUIDS)[0]
+
+    assert year.external_water_m3 < 0
+    assert balance.external_water_problems(rows, FLUIDS, limit_m3_per_day=0.0) == []
+
+
+def test_unknown_source_capacity_is_reported_but_not_treated_as_zero():
+    """None — «мощность неизвестна». Это не ноль: потребность печатается, режим не подтверждён."""
+    rows = [produced("2014-01-01", "1", 10.0, 90.0), injected("2014-01-01", "2", 310.0)]
+
+    found = balance.external_water_problems(rows, FLUIDS, limit_m3_per_day=None)
+    assert len(found) == 1
+    assert "мощность источника неизвестна" in found[0]
+
+
+def test_external_water_over_the_limit_is_a_problem():
+    rows = [produced("2014-01-01", "1", 10.0, 90.0), injected("2014-01-01", "2", 310.0)]
+
+    assert balance.external_water_problems(rows, FLUIDS, limit_m3_per_day=10.0) == []
+    over = balance.external_water_problems(rows, FLUIDS, limit_m3_per_day=5.0)
+    assert len(over) == 1
+    assert "воды со стороны" in over[0]
+
+
+def test_historic_limit_is_the_maximum_the_source_actually_delivered():
+    """Предел по умолчанию выводится из истории, а не назначается."""
+    rows = [
+        produced("2014-01-01", "1", 10.0, 90.0), injected("2014-01-01", "2", 310.0),
+        produced("2015-01-01", "1", 10.0, 90.0), injected("2015-01-01", "2", 190.0),
+    ]
+
+    assert balance.historic_external_water(rows, FLUIDS) == pytest.approx(220.0 / 31.0)
+
+
+def test_history_of_model_z_fails_produced_water_but_passes_external_water():
+    """Ровно тот случай, из-за которого правило и появилось.
+
+    Объект закачивает больше, чем поднимает воды, — по `problems` это нарушение,
+    хотя так работает реальная история Модели Z. С названным источником вопроса
+    нет, и разница между двумя правилами видна на одних и тех же строках.
+    """
+    rows = [produced("2014-01-01", "1", 10.0, 90.0), injected("2014-01-01", "2", 310.0)]
+
+    assert balance.problems(rows, FLUIDS), "правило добытой воды обязано отвергнуть"
+    assert balance.external_water_problems(
+        rows, FLUIDS, limit_m3_per_day=220.0 / 31.0
+    ) == [], "с названной мощностью источника тот же режим обеспечен"

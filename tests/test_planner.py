@@ -131,6 +131,55 @@ def test_compensation_above_the_ceiling_is_cut_to_the_ceiling(norms):
     assert "компенсац" in decisions[0].reason
 
 
+def test_external_water_rule_allows_injection_the_source_can_cover(norms):
+    """Январь 2007: 31 сутки, своей воды 900 м³, источник даёт 10 м³/сут — это 310 м³."""
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 1200.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 40.0)])]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="external_water",
+                       max_external_water_m3_per_day=10.0), FLUIDS,
+    )
+
+    assert decisions == []
+    assert result == steps
+
+
+def test_external_water_rule_cuts_what_the_source_cannot_cover(norms):
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 1200.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 40.0)])]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="external_water",
+                       max_external_water_m3_per_day=1.0), FLUIDS,
+    )
+
+    assert [decision.resource for decision in decisions] == ["закачка"]
+    assert result[0].injectors[0].rate == pytest.approx(40.0 * 931.0 / 1200.0)
+    assert "воды со стороны" in decisions[0].reason
+
+
+def test_unknown_source_capacity_does_not_invent_a_limit(norms):
+    """Мощность источника неизвестна — не режем.
+
+    Выдуманный предел изменил бы заявляемый ЧДД на число, которого никто не
+    измерял. Потребность в сторонней воде при этом видна через
+    `aios.balance.external_water_problems` и идёт в отчёт оговоркой.
+    """
+    forecast = [produced("2007-01-01", "1", 100.0, 100.0), injected("2007-01-01", "9", 9000.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 300.0)])]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="external_water"), FLUIDS,
+    )
+
+    assert decisions == []
+    assert result == steps
+
+
 def test_an_unknown_balance_rule_is_refused_not_silently_ignored(norms):
     with pytest.raises(ValueError, match="water_balance_rule"):
         planner.enforce(

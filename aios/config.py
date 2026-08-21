@@ -108,6 +108,9 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
             enforce_water_balance=bool(
                 _value(limits, "enforce_water_balance", "limits", source)
             ),
+            max_external_water_m3_per_day=(
+                _non_negative(limits, "max_external_water_m3_per_day", "limits", source) or None
+            ),
             water_balance_rule=str(
                 _value(limits, "water_balance_rule", "limits", source)
             ),
