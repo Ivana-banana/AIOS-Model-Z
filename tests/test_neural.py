@@ -95,11 +95,20 @@ class InvalidModel:
 
 
 class RecordingModel(ConstantModel):
+    """Запоминает каждый вызов: с разделением уровня и отклика их два на прогноз.
+
+    Второй — точка центра (`_response` берёт разность), и он ничего не говорит о
+    поданном расписании. Поэтому вызовы копятся списком, а `features` остаётся
+    последним для тестов, где путь без разделения и вызов один.
+    """
+
     def __init__(self):
         self.features = None
+        self.calls = []
 
     def predict(self, features):
         self.features = features.copy()
+        self.calls.append(features.copy())
         return np.tile([900.0, 500.0, 0.0, 200.0, 50.0], (len(features), 1))
 
 
@@ -973,3 +982,93 @@ def test_the_training_script_says_whether_the_response_beats_the_dumb_slope():
 
     assert "WLPT_Diff: 0.6 против 0.53 — бьёт" in verdict, verdict
     assert "WOMT_Diff: 0.1 против 0.285 — НЕ бьёт" in verdict, verdict
+
+
+def _own_feature_bundle(model) -> NeuralBundle:
+    """Пучок с признаками `own`: скважина-добытчик и скважина-нагнетатель."""
+    trained = bundle(TrainingReport(
+        ("train",), ("test",), 1, 2,
+        {target: TargetMetric(1.0, 2.0) for target in TARGET_COLUMNS},
+        features="own",
+    ))
+    trained.control_wells = ("prod:1", "inj:2")
+    trained.models = {"1": model}
+    trained.levels = {"1": np.tile([900.0, 500.0, 0.0, 200.0, 50.0], (2, 1))}
+    trained.control_center = np.ones((2, 2))
+    return trained
+
+
+def _pair(producer: float, injector: float) -> ScheduleStep:
+    return ScheduleStep(
+        pd.Timestamp("2014-01-01").date(),
+        (ProducerControl("1", "OPEN", "LRAT", producer, 50.0),),
+        (InjectorControl("2", "WATER", "OPEN", "RATE", injector, 300.0),),
+    )
+
+
+def test_own_features_are_seven_columns_and_carry_the_wells_own_control():
+    """При `own` модель видит семь столбцов, а не весь фонд.
+
+    Три временных, два собственных множителя скважины и два агрегата. Столбца
+    `inj:1` в датасете нет вовсе, и на его месте стоит нейтральная единица — то
+    же значение, каким `_pivot_controls` заполняет пропуски: «нет управления» и
+    «управление нейтрально» обязаны кодироваться одинаково, иначе отсутствующая
+    роль читается как остановка.
+    """
+    recorder = RecordingModel()
+    surrogate = NeuralSurrogate.create(
+        _own_feature_bundle(recorder), [_pair(30.0, 40.0)], require_quality=False
+    )
+
+    surrogate.predict([_pair(45.0, 40.0)])
+
+    asked = recorder.calls[0]         # второй вызов — центр, про расписание он молчит
+    assert asked.shape[1] == 7, asked.shape
+    own_production, own_injection = asked[0, 3], asked[0, 4]
+    assert own_production == pytest.approx(1.5), "собственный множитель не дошёл"
+    assert own_injection == pytest.approx(1.0), "отсутствующая роль обязана быть нейтральной"
+
+
+def test_a_neighbour_reaches_the_model_through_the_field_aggregate():
+    """Сосед обязан менять вход модели, иначе взаимодействие через пласт потеряно.
+
+    Ради этого агрегаты и заведены. Цена их отсутствия измерена 20.08: суррогат
+    предсказал, что при закачке, срезанной в 28 раз, нефть почти не пострадает,
+    — она упала вчетверо, и цикл на суррогате дал −79,4 % ЧДД. Сокращая 112
+    признаков до собственных, канал влияния соседа легко потерять целиком, и
+    тогда правка чинила бы метрику ценой ровно того, что 20.08 стоило прогона.
+    """
+    recorder = RecordingModel()
+    surrogate = NeuralSurrogate.create(
+        _own_feature_bundle(recorder), [_pair(30.0, 40.0)], require_quality=False
+    )
+
+    surrogate.predict([_pair(30.0, 40.0)])
+    unchanged = recorder.calls[0][0].copy()
+    recorder.calls.clear()
+    surrogate.predict([_pair(30.0, 80.0)])   # сосед-нагнетатель ×2, своя скважина та же
+    with_neighbour = recorder.calls[0][0].copy()
+
+    assert with_neighbour[3] == pytest.approx(unchanged[3]), "свой множитель не менялся"
+    assert with_neighbour[6] == pytest.approx(2.0 * unchanged[6]), (
+        "агрегат закачки по фонду обязан отследить соседа"
+    )
+
+
+def test_own_features_keep_the_contract_and_the_exact_zero_at_the_centre():
+    """Сокращение признаков — внутреннее дело модели: наружу тот же контракт."""
+    surrogate = NeuralSurrogate.create(
+        _own_feature_bundle(SlopeModel()), [_pair(30.0, 40.0)], require_quality=False
+    )
+
+    centred = surrogate.predict([_pair(30.0, 40.0)])
+    forced = surrogate.predict([_pair(45.0, 40.0)])
+
+    assert list(centred[0]) == economics.REQUIRED_COLUMNS
+    assert centred[0]["WLPT_Diff"] == 900.0, "в центре обязан остаться уровень"
+    assert forced[0]["WLPT_Diff"] != 900.0, "проверка вырождена: модель не реагирует"
+
+
+def test_an_unknown_feature_set_is_refused_by_name():
+    with pytest.raises(ValueError, match="набор признаков"):
+        train(_dataset_frame(), seed=7, features="соседи")

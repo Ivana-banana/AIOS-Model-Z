@@ -21,7 +21,12 @@ import pandas as pd  # noqa: E402
 import sklearn  # noqa: E402
 
 from aios import config as config_module  # noqa: E402
-from aios.neural import TrainingReport, assert_quality, train  # noqa: E402
+from aios.neural import (  # noqa: E402
+    FEATURE_KINDS,
+    TrainingReport,
+    assert_quality,
+    train,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         help="как представлять нефть: своей величиной или через долю воды",
     )
     parser.add_argument(
+        "--features", choices=FEATURE_KINDS, default="all",
+        help="что видит модель скважины: весь фонд (all) или свои столбцы плюс "
+             "агрегаты по фонду (own)",
+    )
+    parser.add_argument(
         "--model", choices=("mlp", "linear"), default="mlp",
         help="какая из двух обученных моделей поедет в цикл; меряются обе в любом случае",
     )
@@ -49,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     # сценариев одна и по входу, и по отклику, поэтому по ней меряется память
     bundle = train(frame, seed=settings.run.seed, kind=arguments.model,
                    control_start=settings.case.control_start,
-                   targets=arguments.targets)
+                   targets=arguments.targets, features=arguments.features)
     metadata = {
         "seed": settings.run.seed,
         "datasets": dataset_fingerprints(arguments.dataset),
@@ -70,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"отчёт:  {report_path}")
     print(f"train/test сценариев: {len(bundle.report.train_scenarios)}/"
           f"{len(bundle.report.test_scenarios)}")
-    print(f"в модель сохранён: {bundle.report.kind}, цели: {bundle.report.targets}")
+    print(f"в модель сохранён: {bundle.report.kind}, цели: {bundle.report.targets}, "
+          f"признаки: {bundle.report.features}")
     print(f"метрики считаны на {bundle.report.metric_rows} строках"
           + (f" с {bundle.report.metric_start}" if bundle.report.metric_start else ""))
     for dataset in metadata["datasets"]:

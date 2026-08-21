@@ -58,6 +58,20 @@ TARGET_COLUMNS = ("WLPT_Diff", "WOMT_Diff", "WWIT_Diff", "THP", "BHP")
 #: Сколько первых признаков описывают время, а не управление: номер месяца и две
 #: гармоники сезона. Всё, что дальше, — управляющие множители по `control_wells`.
 TIME_FEATURES = 3
+
+#: Какие управляющие признаки видит модель скважины.
+#:
+#: `all` — все множители фонда (на Модели Z это 112 столбцов). Так было до 21.08.
+#: `own` — собственные множители скважины плюс два агрегата по фонду: средний
+#: множитель добычи и средний множитель закачки.
+#:
+#: Различие измерено, а не выбрано по вкусу: на 112 признаках приходится ~216
+#: независимых точек управления, признаки сильно коллинеарны (внутри сценария
+#: множитель постоянен на периоде), и обученная модель проигрывает бейзлайну из
+#: одного коэффициента на скважину в разы. Агрегаты добавляют к собственным
+#: столбцам ровно то, чего бейзлайну не хватает, — межскважинное взаимодействие
+#: через общий пласт, — не возвращая 112 входов.
+FEATURE_KINDS = ("all", "own")
 REQUIRED_COLUMNS = frozenset(
     {"scenario", "DATA", "well", "multiplier", "WLPR", "WWIR", *TARGET_COLUMNS}
 )
@@ -131,6 +145,14 @@ class TrainingReport:
     исчезает бесшумно — `predict` идёт по `models`, поэтому прогноза по ней нет
     ни одной строки, ЧДД считается по остатку фонда, а поиск режимов про неё не
     знает. Список нужен, чтобы это было видно, а не выводилось сравнением.
+    """
+
+    features: str = "all"
+    """Какие управляющие признаки видит модель: `all` или `own` (см. `FEATURE_KINDS`).
+
+    Хранится в отчёте, а не только в конфиге прогона, потому что инференс обязан
+    собрать ровно тот же вход: набор признаков — часть модели, а не параметр
+    команды.
     """
 
     kind: str = "mlp"
@@ -246,11 +268,17 @@ class NeuralSurrogate:
         предсказывает цель целиком, и разделять нечего.
         """
         targets = self.bundle.report.targets
+        kind = getattr(self.bundle.report, "features", "all")
+        wells = self.bundle.control_wells
         levels = getattr(self.bundle, "levels", None)
         centre = getattr(self.bundle, "control_center", None)
         if not levels or centre is None:
-            return {well: _raw_space(model.predict(feature_matrix), targets)
-                    for well, model in self.bundle.models.items()}
+            return {
+                well: _raw_space(
+                    model.predict(_select_controls(feature_matrix, wells, well, kind)),
+                    targets)
+                for well, model in self.bundle.models.items()
+            }
 
         index = np.clip([self._month_number(month) for month in months],
                         0, self.bundle.month_span)
@@ -261,8 +289,10 @@ class NeuralSurrogate:
         ])
         return {
             well: _raw_space(
-                levels[well][index] + model.predict(feature_matrix)
-                - model.predict(base_matrix),
+                levels[well][index]
+                + _response(model,
+                            _select_controls(feature_matrix, wells, well, kind),
+                            _select_controls(base_matrix, wells, well, kind)),
                 targets,
             )
             for well, model in self.bundle.models.items()
@@ -490,7 +520,7 @@ class NeuralSurrogate:
 def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
           hidden_layers: tuple[int, ...] = (32, 16), max_iter: int = 300,
           kind: str = "mlp", control_start: date | None = None,
-          targets: str = "raw") -> NeuralBundle:
+          targets: str = "raw", features: str = "all") -> NeuralBundle:
     """Обучить модель на каждую скважину и измерить held-out ошибку.
 
     `kind` выбирает, какая из двух обученных моделей поедет в цикл: `mlp` или
@@ -514,6 +544,8 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         raise ValueError(f"неизвестный вид модели: {kind}")
     if targets not in ("raw", "watercut"):
         raise ValueError(f"неизвестное представление целей: {targets}")
+    if features not in FEATURE_KINDS:
+        raise ValueError(f"неизвестный набор признаков: {features}")
     _validate(frame, test_fraction)
     data = frame.copy()
     data["scenario"] = data["scenario"].astype(str)
@@ -549,9 +581,13 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
             if test_rows.empty:
                 continue
 
-        x_train = _features(train_rows, controls, start_month, month_span)
-        x_test = _features(test_rows, controls, start_month, month_span)
-        base_test = _centre_features(test_rows, centre, start_month, month_span)
+        wide_train = _features(train_rows, controls, start_month, month_span)
+        wide_test = _features(test_rows, controls, start_month, month_span)
+        wide_base = _centre_features(test_rows, centre, start_month, month_span)
+        control_wells = tuple(controls.columns)
+        x_train = _select_controls(wide_train, control_wells, str(well), features)
+        x_test = _select_controls(wide_test, control_wells, str(well), features)
+        base_test = _select_controls(wide_base, control_wells, str(well), features)
         y_test = test_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy()
 
         # уровень — среднее обучающих сценариев по паре «скважина × месяц»; учится
@@ -585,7 +621,8 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         neural_prediction = _raw_space(level_test + _response(neural, x_test, base_test), targets)
         linear_prediction = _raw_space(level_test + _response(baseline, x_test, base_test), targets)
         slope_prediction = _raw_space(level_test + _slope_response(
-            x_train, y_train, x_test, base_test, own_controls.get(str(well), ())), targets)
+            wide_train, y_train, wide_test, wide_base,
+            own_controls.get(str(well), ())), targets)
         neural_errors.append(np.abs(neural_prediction - y_test))
         linear_errors.append(np.abs(linear_prediction - y_test))
         neural_predictions.append(neural_prediction)
@@ -641,6 +678,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         ),
         metric_start="" if control_start is None else control_start.isoformat(),
         kind=kind,
+        features=features,
     )
     return NeuralBundle(
         tuple(controls.columns), models, start_month, month_span,
@@ -883,6 +921,61 @@ def _response(model: Any, features: np.ndarray, centre: np.ndarray) -> np.ndarra
     не обращаются, и остаток уровня продолжал бы жить в отклике.
     """
     return model.predict(features) - model.predict(centre)
+
+
+def _select_controls(wide: np.ndarray, control_wells: tuple[str, ...], well: str,
+                     kind: str) -> np.ndarray:
+    """Вход модели одной скважины из широкой матрицы «время + весь фонд».
+
+    При `own` остаются семь столбцов: три временных, два собственных множителя
+    скважины и два агрегата по фонду. Скважине, у которой такого столбца в
+    датасете нет вовсе, подставляется нейтральная единица — то же значение, каким
+    `_pivot_controls` заполняет пропуски, чтобы «нет управления» и «управление
+    нейтрально» кодировались одинаково.
+    """
+    if kind == "all":
+        return wide
+    controls = wide[:, TIME_FEATURES:]
+    roles = _role_columns(control_wells)
+    return np.column_stack((
+        wide[:, :TIME_FEATURES],
+        _one_control(controls, roles["production"].get(well)),
+        _one_control(controls, roles["injection"].get(well)),
+        _field_control(controls, roles["production"]),
+        _field_control(controls, roles["injection"]),
+    ))
+
+
+def _role_columns(control_wells: tuple[str, ...]) -> dict[str, dict[str, int]]:
+    """Позиция столбца управления по роли и скважине.
+
+    Датасет старого вида — одна колонка на скважину без префикса — считается
+    добычей: закачки в нём не размечено, и приписывать её некуда.
+    """
+    roles: dict[str, dict[str, int]] = {"production": {}, "injection": {}}
+    for position, key in enumerate(control_wells):
+        role, well = _control_key(key)
+        roles[role or "production"][well] = position
+    return roles
+
+
+def _one_control(controls: np.ndarray, position: int | None) -> np.ndarray:
+    return (np.ones(len(controls)) if position is None
+            else controls[:, position])
+
+
+def _field_control(controls: np.ndarray, positions: dict[str, int]) -> np.ndarray:
+    """Средний множитель фонда по роли — канал влияния соседей через пласт.
+
+    Соседство здесь не геометрическое: координат скважин модель не видит, а
+    общий отбор и общая закачка меняют энергию пласта для всех сразу. Это то
+    самое взаимодействие, отсутствие которого 20.08 стоило цикла: суррогат
+    предсказал, что при закачке, срезанной в 28 раз, нефть почти не пострадает,
+    а она упала вчетверо.
+    """
+    if not positions:
+        return np.ones(len(controls))
+    return controls[:, sorted(positions.values())].mean(axis=1)
 
 
 def _own_controls(control_wells: tuple[str, ...]) -> dict[str, tuple[int, ...]]:
