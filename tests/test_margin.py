@@ -12,9 +12,9 @@ from conftest import make_row, months
 from aios import economics
 from aios.margin import (
     Norms,
-    counted_by_methodology,
     breakeven_oil_t,
     breakeven_watercut,
+    counted_by_methodology,
     is_active,
     month_margin,
     screen,
