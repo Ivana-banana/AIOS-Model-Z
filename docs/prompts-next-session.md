@@ -50,7 +50,9 @@
    по собранному CSV и напиши число. Если доля 0 — сборщик взят старый.
 
 3. Обучи суррогат НА ОБЪЕДИНЕНИИ пакетов, не на одном:
-       python scripts/train_surrogate.py --dataset data/dataset-injection.csv data/dataset-all-near.csv data/dataset-all-wide.csv --model mlp
+       python scripts/train_surrogate.py --model mlp --dataset data/dataset-injection.csv data/dataset-all-near.csv data/dataset-all-wide.csv data/dataset-periods.csv
+   (пакет `periods` досчитан 20.08 и входит в объединение — см.
+   docs/handoff-datasets-2026-08-21.md, там же отпечатки датасетов.)
    и то же с `--model linear`. Причина именно объединения измерена: модель, обученная
    на одном пакете по нагнетателям, выдаёт 71 предупреждение «нет в обучающем датасете»
    на любое расписание, включая историческое.
