@@ -391,6 +391,45 @@ def test_envelope_answers_coverage_before_the_choice_is_made():
     assert not envelope.covers("prod:404", 1.0)
 
 
+def test_a_candidate_in_a_hole_between_training_points_is_not_covered():
+    """Покрытие — это близость обучающей точки, а не попадание между крайних.
+
+    Обучающая выборка — 48 сценариев, а не сетка, поэтому внутри отрезка
+    [min, max] остаются пустоты. Замер 21.08 на объединении четырёх пакетов:
+    ни один кандидат поиска (0, 0.5, 0.75, 1.0, 1.25, 1.5) не выходит за отрезок
+    **ни у одной** из 112 скважин, то есть прежняя проверка не отбрасывала
+    ничего; при этом до ×0.5 у 34 управлений ближайшая обучающая точка дальше
+    их собственного шага выборки, а у одного она дальше 0.25.
+    """
+    dense = [round(0.2 + 0.05 * step, 2) for step in range(21)]   # 0.2 … 1.2
+    hole = [value for value in dense if not 0.5 < value < 0.95]
+    envelope = TrainingEnvelope.fit([{"prod:1": value} for value in hole])
+
+    # внутри отрезка 0.2..1.2, но ближайшая обучающая точка в 0.2 от кандидата
+    assert not envelope.covers("prod:1", 0.7)
+    # рядом с обучающей точкой — покрыт
+    assert envelope.covers("prod:1", 0.24)
+    assert envelope.covers("prod:1", 1.2)
+    # за отрезком по-прежнему не покрыт, даже вплотную к краю
+    assert not envelope.covers("prod:1", 1.24)
+
+
+def test_the_neutral_multiplier_is_covered_whatever_the_threshold():
+    """×1.0 — точка отсчёта расписания, а не кандидат: покрыт всегда.
+
+    Тем же построением, что и в `_multiplier_range` (Р-44): опорный режим входит
+    в обучающие точки по определению, а не по факту выборки. Иначе порог
+    плотности запретил бы поиску единственный режим, который заведомо известен.
+    """
+    # ни один сценарий не подошёл к единице ближе чем на 0.6
+    envelope = TrainingEnvelope.fit([{"prod:1": 0.2}, {"prod:1": 0.4}])
+    assert envelope.covers("prod:1", 1.0)
+
+    # и на пустой области применимости (артефакт, обученный до 20.08) — тоже
+    empty = TrainingEnvelope({}, NumericRange(0.0, 0.0), NumericRange(0.0, 0.0))
+    assert empty.covers("prod:1", 1.0)
+
+
 def test_envelope_of_an_old_artifact_does_not_pretend_to_know_coverage():
     """Артефакт, обученный до перевода детектора на множители, честно говорит об этом.
 
