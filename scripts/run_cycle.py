@@ -125,17 +125,20 @@ def main(argv: list[str] | None = None) -> int:
             history, headers=economics.REQUIRED_COLUMNS,
             start_date=config.economics.start_date.isoformat(),
         )
-        confirmed = loop.confirm(result, rows, config.economics.start_date)
+        confirmed = loop.confirm(result, rows, config.economics.start_date,
+                                 base_rows=history)
 
         print("--- подтверждение полным расчётом ---")
-        print(f"ЧДД базового сценария (ГГДМ):  {base_npv.chdd_m:12.1f} млн руб.")
+        print(f"ЧДД базового сценария (ГГДМ):  {confirmed.base_chdd_m:12.1f} млн руб.")
         print(f"ЧДД сценария цикла (ГГДМ):     {confirmed.chdd_m:12.1f} млн руб.")
-        print(f"прирост:                       {confirmed.chdd_m - base_npv.chdd_m:+12.1f} млн руб. "
-              f"({100.0 * (confirmed.chdd_m - base_npv.chdd_m) / abs(base_npv.chdd_m):+.2f} %)")
+        # печатается gain_m самого результата, а не своя разность рядом: теперь
+        # обе величины в нём из полного расчёта, и расходиться им негде
+        print(f"прирост:                       {confirmed.gain_m:+12.1f} млн руб. "
+              f"({100.0 * confirmed.gain_m / abs(confirmed.base_chdd_m):+.2f} %)")
         print()
         print(f"прогноз суррогата обещал:      {result.gain_m:+12.1f} млн руб.")
         print(f"ошибка прогноза:               "
-              f"{result.gain_m - (confirmed.chdd_m - base_npv.chdd_m):+12.1f} млн руб.")
+              f"{result.gain_m - confirmed.gain_m:+12.1f} млн руб.")
         print()
         # обе величины берутся из эталонного расчётчика и потому заведомо за один
         # период — тот, что дисконтируется. Сумма по всей выгрузке рядом с ними

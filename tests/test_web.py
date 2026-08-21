@@ -635,3 +635,40 @@ def test_without_the_deck_the_page_says_why_there_is_no_button(client):
 
     assert "Собрать кейс в runs/" not in text
     assert "Дек модели недоступен" in text
+
+
+def test_comparison_covers_both_funds_not_only_the_left_one():
+    """«Где разошлись деньги» обязано смотреть в обе стороны.
+
+    Дельты считались перебором фонда левого прогона, а отсутствующей справа
+    скважине подставлялся ноль. Замер 21.08: скважина, которой нет справа,
+    показывалась как «справа +0.00, дельта −1.08» — будто потеряла все деньги, —
+    а скважина, которой нет слева, не показывалась вовсе.
+
+    На двух прогонах одного дека фонд совпадает и разницы не видно. Она видна
+    там, где сравнение и нужно: наш прогон против прогона на кейсе организаторов,
+    где фонд другой.
+    """
+    from conftest import make_row
+
+    from aios import economics
+    from aios.margin import Norms
+    from aios.web.app import margin_deltas
+
+    assumptions, _ = economics.load_norms()
+    norms = Norms.from_assumptions(assumptions)
+    left = [make_row("2007-01-01", "общая", wlpr=30, womr=5, liquid=900, oil=150),
+            make_row("2007-01-01", "только слева", wlpr=30, womr=5, liquid=900, oil=150)]
+    right = [make_row("2007-01-01", "общая", wlpr=30, womr=4, liquid=900, oil=120),
+             make_row("2007-01-01", "только справа", wlpr=30, womr=9, liquid=900, oil=270)]
+
+    deltas = margin_deltas(left, right, norms)
+    by_well = {well: (before, after) for well, before, after in deltas}
+
+    assert "только справа" in by_well, "скважина, которой нет слева, выпала из сравнения"
+    assert by_well["только слева"][1] is None, (
+        "отсутствующая скважина показана нулём — это «работала и не заработала», "
+        "а не «её здесь нет»"
+    )
+    assert by_well["только справа"][0] is None
+    assert by_well["общая"][0] is not None and by_well["общая"][1] is not None

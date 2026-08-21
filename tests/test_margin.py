@@ -145,3 +145,29 @@ def test_shutting_a_screened_well_actually_raises_the_reference_npv(norms):
 
     assert after.start_stop_count == 1          # одна остановка, пуска не было
     assert after.chdd_m > as_is.chdd_m
+
+
+def test_the_screen_matches_the_reference_ebitda_even_with_an_excluded_row(norms):
+    """Равенство «сумма марж = EBITDA» обязано держаться и на отрицательных строках.
+
+    Оно проверялось только на чистой выгрузке — и там держалось. Методика же
+    исключает строку с отрицательным приращением **целиком**, а `screen`
+    суммировал её как есть. Замер 21.08 на двенадцати месяцах с одной такой
+    строкой: наша сумма 10,460 против EBITDA расчётчика 11,887 — расхождение
+    1,427 млн руб. на одну строку. После фильтрации совпадение точное.
+
+    Цена не только в числе: страница прогона утверждает, что скважины
+    отбираются «по тем же деньгам, по каким нас будут оценивать», и ссылается
+    на этот самый тест. Утверждение обязано быть верным на том материале, который
+    бывает: 102 отрицательные строки за 2025-09 в выгрузке организаторов.
+    """
+    rows = [make_row(f"2007-{month:02d}-01", "1", wlpr=30, womr=5, liquid=900, oil=150)
+            for month in range(1, 13)]
+    rows[5]["WOMT_Diff"] = -150.0
+
+    ours = sum(verdict.total_margin_m for verdict in screen(rows, norms))
+    theirs = economics.compute_npv(
+        rows, headers=economics.REQUIRED_COLUMNS, start_date="2007-01-01"
+    ).raw["annual"][0]["ebitdaM"]
+
+    assert ours == pytest.approx(theirs, abs=1e-9)

@@ -81,10 +81,16 @@
       {% for well, before, after in deltas %}
         <tr>
           <td>{{ well }}</td>
-          <td class="{{ 'bad' if before < 0 else '' }}">{{ '%+.2f'|format(before) }}</td>
-          <td class="{{ 'bad' if after < 0 else '' }}">{{ '%+.2f'|format(after) }}</td>
-          <td class="{{ 'good' if after > before else 'bad' }}">
-            {{ '%+.2f'|format(after - before) }}
+          {# «нет в прогоне» и «заработала ноль» — разные вещи, и подписаны они по-разному #}
+          <td class="{{ 'bad' if before is not none and before < 0 else 'muted' }}">
+            {{ '%+.2f'|format(before) if before is not none else 'нет в прогоне' }}
+          </td>
+          <td class="{{ 'bad' if after is not none and after < 0 else 'muted' }}">
+            {{ '%+.2f'|format(after) if after is not none else 'нет в прогоне' }}
+          </td>
+          <td class="{{ 'good' if (after or 0) > (before or 0) else 'bad' }}">
+            {% if before is none or after is none %}—
+            {% else %}{{ '%+.2f'|format(after - before) }}{% endif %}
           </td>
         </tr>
       {% endfor %}
