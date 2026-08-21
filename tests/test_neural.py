@@ -1089,3 +1089,43 @@ def test_the_default_feature_set_is_the_one_that_passes_the_gate():
     bundle = train(_dataset_frame(), seed=7, hidden_layers=(4,), max_iter=50)
 
     assert bundle.report.features == "own"
+
+
+def test_a_model_that_wins_on_average_but_loses_on_most_scenarios_is_refused():
+    """Порог по медиане ловит то, чего не ловит порог по среднему.
+
+    Замер 22.08 на четырёх пакетах: по нефти `R²` отклика 0,4215 — порог пройден,
+    средний `Skill_MAE` +0,0444 — тоже, а медиана по сценариям −0,0581. Выигрыш
+    создаётся меньшинством сценариев, решение принимается на каждом.
+    """
+    report = _report_with(neural_response_r2=0.42, neural_skill=0.044,
+                          neural_skill_median=-0.058)
+
+    with pytest.raises(ValueError, match="хуже бездействия"):
+        assert_quality(report)
+
+
+def test_a_positive_median_skill_passes():
+    report = _report_with(neural_response_r2=0.62, neural_skill=0.354,
+                          neural_skill_median=0.365)
+
+    assert_quality(report)
+
+
+def test_an_unmeasured_median_skill_is_not_treated_as_failure():
+    """`None` — «не измерено»: артефакты до 22.08 этого поля не несут."""
+    report = _report_with(neural_response_r2=0.62, neural_skill=None,
+                          neural_skill_median=None)
+
+    assert_quality(report)
+
+
+def _report_with(**values) -> TrainingReport:
+    metric = TargetMetric(
+        neural_mae=1.0, linear_mae=2.0, neural_r2=0.95, linear_r2=0.9,
+        level_r2=0.91, linear_response_r2=0.5, **values,
+    )
+    return TrainingReport(
+        train_scenarios=("s1",), test_scenarios=("s2",), wells=1, rows=10,
+        metrics=dict.fromkeys(TARGET_COLUMNS, metric),
+    )

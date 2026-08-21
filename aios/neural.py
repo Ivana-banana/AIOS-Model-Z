@@ -112,6 +112,34 @@ class TargetMetric:
     linear_response_r2: float | None = None
     slope_response_r2: float | None = None
 
+    neural_skill: float | None = None
+    linear_skill: float | None = None
+    slope_skill: float | None = None
+    """`Skill_MAE = 1 − MAE(Δŷ, Δy) / MAE(0, Δy)` — выигрыш против нулевого отклика.
+
+    Базовый предсказатель здесь — «сохранить базовый режим», то есть `Δŷ = 0`.
+    Это честнее `R²` отклика: у `R²` знаменатель — среднее отклика по обучению,
+    величина без инженерного смысла, а «ничего не менять» — реальная альтернатива,
+    с которой решение и сравнивают. Положительное значение означает, что модель
+    полезнее бездействия; ноль и ниже — что нет (разбор 4-5).
+    """
+
+    neural_nrmse: float | None = None
+    """`RMSE_Δ / P90(|Δy|)` — ошибка отклика в долях его же характерного размаха.
+
+    `P90`, а не максимум: один выброс не должен задавать шкалу.
+    """
+
+    neural_skill_median: float | None = None
+    neural_skill_iqr: float | None = None
+    """Медиана и межквартильный размах `Skill_MAE` **по отложенным сценариям**.
+
+    Одно среднее число скрывает главное: разбор 4-5 требует показывать разброс,
+    потому что один богатый на отклик сценарий вытягивает среднее и прячет провал
+    на остальных. Решение об использовании модели принимается по медиане, а не по
+    среднему.
+    """
+
 
 @dataclass(frozen=True)
 class TrainingReport:
@@ -600,6 +628,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     slope_predictions: list[np.ndarray] = []
     level_predictions: list[np.ndarray] = []
     test_targets: list[np.ndarray] = []
+    test_scenarios_of_row: list[np.ndarray] = []
     own_controls = _own_controls(tuple(controls.columns))
     for well, rows in data.groupby("well", sort=True):
         train_rows = rows[rows["scenario"].isin(train_scenarios)]
@@ -661,6 +690,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         slope_predictions.append(slope_prediction)
         level_predictions.append(_raw_space(level_test, targets))
         test_targets.append(y_test)
+        test_scenarios_of_row.append(test_rows["scenario"].to_numpy())
         models[well] = neural if kind == "mlp" else baseline
         levels[well] = level
 
@@ -678,6 +708,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     # из разности уходит, поэтому `R²` остатка отличается от `R²` цели только
     # знаменателем
     residual = actual - level_predicted
+    scenario_of_row = np.concatenate(test_scenarios_of_row)
     metrics = {
         target: TargetMetric(
             neural_mae=float(neural_mae[index]),
@@ -693,6 +724,20 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
                 residual[:, index], linear_predicted[:, index] - level_predicted[:, index]),
             slope_response_r2=_score(
                 residual[:, index], slope_predicted[:, index] - level_predicted[:, index]),
+            neural_skill=_skill(residual[:, index],
+                                neural_predicted[:, index] - level_predicted[:, index]),
+            linear_skill=_skill(residual[:, index],
+                                linear_predicted[:, index] - level_predicted[:, index]),
+            slope_skill=_skill(residual[:, index],
+                               slope_predicted[:, index] - level_predicted[:, index]),
+            neural_nrmse=_nrmse(residual[:, index],
+                                neural_predicted[:, index] - level_predicted[:, index]),
+            neural_skill_median=_skill_spread(
+                residual[:, index], neural_predicted[:, index] - level_predicted[:, index],
+                scenario_of_row)[0],
+            neural_skill_iqr=_skill_spread(
+                residual[:, index], neural_predicted[:, index] - level_predicted[:, index],
+                scenario_of_row)[1],
         )
         for index, target in enumerate(TARGET_COLUMNS)
     }
@@ -717,6 +762,41 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     )
 
 
+def _skill(actual_response: np.ndarray, predicted_response: np.ndarray) -> float | None:
+    """`1 − MAE(Δŷ, Δy) / MAE(0, Δy)`. `None`, когда отклика нет вовсе."""
+    denominator = float(np.abs(actual_response).mean())
+    if denominator <= 0:
+        return None
+    return float(1.0 - np.abs(predicted_response - actual_response).mean() / denominator)
+
+
+def _nrmse(actual_response: np.ndarray, predicted_response: np.ndarray) -> float | None:
+    """`RMSE_Δ / P90(|Δy|)` — ошибка в долях характерного размаха отклика."""
+    scale = float(np.percentile(np.abs(actual_response), 90))
+    if scale <= 0:
+        return None
+    return float(np.sqrt(((predicted_response - actual_response) ** 2).mean()) / scale)
+
+
+def _skill_spread(actual_response: np.ndarray, predicted_response: np.ndarray,
+                  scenario_of_row: np.ndarray) -> tuple[float | None, float | None]:
+    """Медиана и межквартильный размах `Skill_MAE` по отложенным сценариям.
+
+    Единица усреднения — сценарий, а не строка: строки одного прогона зависимы
+    через общее расписание, и среднее по ним говорит о том, сколько месяцев в
+    сценарии, а не о том, на скольких сценариях модель полезна.
+    """
+    per_scenario = [
+        value for name in np.unique(scenario_of_row)
+        if (value := _skill(actual_response[scenario_of_row == name],
+                            predicted_response[scenario_of_row == name])) is not None
+    ]
+    if not per_scenario:
+        return None, None
+    quartiles = np.percentile(per_scenario, [25, 50, 75])
+    return float(quartiles[1]), float(quartiles[2] - quartiles[0])
+
+
 def assert_quality(report: TrainingReport) -> None:
     """Не пустить в цикл модель, которая не годится вести оптимизацию.
 
@@ -739,6 +819,24 @@ def assert_quality(report: TrainingReport) -> None:
     7–8 %, и качество там до 21.08 не измерялось ни разу. Порог, не смотрящий на
     отклик, — открытые ворота: 20.08 прошедшая его модель обещала в полном цикле
     +34 772,4 млн руб., а расчёт ГГДМ дал −9 409,2.
+
+    **Медианный `Skill_MAE` по сценариям** — четвёртая проверка, добавлена 22.08
+    по разбору 4-5, и она поймала то, чего три предыдущие не ловили. Замер на
+    четырёх пакетах (48 сценариев, признаки `own`) по **нефти**:
+
+    | Показатель | Значение | Что говорит |
+    |---|---:|---|
+    | `neural_r2` | 0,9504 | модель отличная |
+    | `level_r2` | 0,9142 | …но 91 % этого даёт тривиальный уровень |
+    | `neural_response_r2` | 0,4215 | порог допуска пройден |
+    | `neural_skill` (среднее) | +0,0444 | едва лучше бездействия |
+    | **`neural_skill_median`** | **−0,0581** | **на большинстве сценариев хуже бездействия** |
+
+    Среднее положительное, медиана отрицательная — значит выигрыш создаётся
+    меньшинством сценариев, а решение принимается на каждом. Модель, прошедшая
+    `R² отклика > 0`, на типичном сценарии проигрывает правилу «ничего не
+    менять». Это и есть механизм провала Р-57: поиск доверился прогнозу, ГГДМ дал
+    −14,46 %.
 
     Чего эта проверка по-прежнему не делает: она не требует бить тупой бейзлайн
     «свой наклон на собственный множитель» (`slope_response_r2`). Он печатается
@@ -782,6 +880,15 @@ def assert_quality(report: TrainingReport) -> None:
             + ", ".join(deaf)
             + " — прогноз держится на уровне скважины, а оптимизатор ходит "
             "по градиенту отклика"
+        )
+
+    useless = _failing(report, "neural_skill_median")
+    if useless:
+        raise ValueError(
+            f"{name} на большинстве отложенных сценариев хуже бездействия "
+            f"(медианный Skill_MAE ≤ 0): " + ", ".join(useless)
+            + " — среднее по всем строкам может быть положительным за счёт одного "
+            "богатого откликом сценария, но решение принимается на каждом"
         )
 
 
