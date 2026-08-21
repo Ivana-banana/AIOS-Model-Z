@@ -7,7 +7,7 @@ from datetime import date
 import pytest
 from conftest import make_row
 
-from aios import economics, optimise, summary
+from aios import economics, optimise, planner, summary
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.margin import Norms
 from aios.schedule import MAX_LIQUID_RATE_M3_PER_DAY, validate
@@ -466,6 +466,114 @@ def test_explain_reports_candidates_withheld_even_without_a_change():
 
     assert "вне обучения" in text
     assert "1" in text
+
+
+# ── общий ресурс учитывается до выбора, а не после ───────────────────────────
+
+
+class WaterBoundSurrogate:
+    """Отклик, где закачка двух скважин упирается в общий ресурс — добытую воду.
+
+    Нефть растёт от закачки, но у `i2` она в двенадцать раз полезнее, чем у `i1`. Воды на
+    объекте ровно столько, сколько подняли (`docs/method/qa-organisers.md`),
+    поэтому лишняя закачка одной скважины отнимается у другой: планировщик режет
+    всех пропорционально.
+    """
+
+    def predict(self, steps):
+        rows = []
+        for step in steps:
+            injection = {control.well: (control.rate or 0.0) if control.status == "OPEN" else 0.0
+                         for control in step.injectors}
+            oil = 100.0 + injection.get("i1", 0.0) + 12.0 * injection.get("i2", 0.0)
+            rows.append(make_row(step.date.isoformat(), "p", wlpr=100.0, womr=oil / 30.0,
+                                 liquid=1000.0, oil=oil))
+            rows.extend(
+                make_row(step.date.isoformat(), well, wwir=rate, injection=rate * 30.0)
+                for well, rate in injection.items()
+            )
+        return rows
+
+    def in_training_range(self, steps):
+        return []
+
+
+def water_bound_plan(months: int = 12):
+    return [
+        ScheduleStep(
+            date(2014 + index // 12, index % 12 + 1, 1),
+            (ProducerControl("p", "OPEN", "LRAT", 100.0, 50.0),),
+            (InjectorControl("i1", "WATER", "OPEN", "RATE", 10.0, 300.0),
+             InjectorControl("i2", "WATER", "OPEN", "RATE", 10.0, 300.0)),
+        )
+        for index in range(months)
+    ]
+
+
+def _after_planner(model, steps, norms, limits):
+    fitted, _decisions = planner.enforce(steps, model.predict(steps), norms, limits, FLUIDS)
+    return economics.compute_npv(
+        model.predict(fitted), headers=economics.REQUIRED_COLUMNS, start_date=START.isoformat()
+    ).chdd_m
+
+
+def test_a_candidate_the_planner_will_cut_does_not_win(norms):
+    """Кандидат оценивается уже с учётом общего ресурса, а не до срезки.
+
+    Замер 21.08 на Модели Z и обученном суррогате: поиск выбрал режимы на
+    110 391,5 млн руб., после планировщика осталось 84 740,8 — минус 25 650,8
+    (−23,2 %), и 23 нагнетательных режима из выбранных поиском изменены чужим
+    решением. Значит поиск принимал решение по числу, которого не будет.
+
+    Здесь то же самое на синтетике, где ответ известен: слепой поиск обещает
+    18,80 и отдаёт 14,02 при исходных 13,99 — то есть весь его прирост срезается;
+    согласованный обещает 18,55 и отдаёт ровно столько же.
+    """
+    model = WaterBoundSurrogate()
+    base = water_bound_plan()
+    limits = planner.Limits(enforce_water_balance=True, water_tolerance=1.0)
+
+    blind = optimise.choose_joint_rates(model, base, start_date=START)
+    aware = optimise.choose_joint_rates(model, base, start_date=START,
+                                        limits=limits, norms=norms, fluids=FLUIDS)
+
+    baseline = _after_planner(model, base, norms, limits)
+    blind_chdd = _after_planner(model, optimise.apply_choices(base, blind), norms, limits)
+    aware_chdd = _after_planner(model, optimise.apply_choices(base, aware), norms, limits)
+
+    # слепой поиск форсирует ту закачку, которую планировщик потом урежет, —
+    # и обещает за это прирост, которого не будет
+    assert next(c for c in blind if c.well == "i1").multiplier > 1.0
+    assert blind[-1].chosen_chdd_m > blind_chdd
+
+    # согласованный видит общий ресурс и отдаёт воду i1 более полезному i2 —
+    # то есть распоряжается дефицитом, а не соревнуется за него
+    assert next(c for c in aware if c.well == "i1").multiplier < 1.0
+    assert next(c for c in aware if c.well == "i2").multiplier > 1.0
+    assert aware_chdd > blind_chdd
+    assert aware_chdd > baseline
+
+
+def test_the_gain_the_coordinated_search_reports_is_the_one_that_survives(norms):
+    """Обещанное число — то же, что останется после планировщика, а не до него."""
+    model = WaterBoundSurrogate()
+    base = water_bound_plan()
+    limits = planner.Limits(enforce_water_balance=True, water_tolerance=1.0)
+
+    choices = optimise.choose_joint_rates(model, base, start_date=START,
+                                          limits=limits, norms=norms, fluids=FLUIDS)
+    realised = _after_planner(model, optimise.apply_choices(base, choices), norms, limits)
+
+    assert choices[-1].chosen_chdd_m == pytest.approx(realised)
+
+
+def test_limits_without_norms_are_refused():
+    """Планировщику нужна маржа, чтобы решать, кого резать: молча обойтись нечем."""
+    with pytest.raises(ValueError, match="норматив"):
+        optimise.choose_joint_rates(
+            WaterBoundSurrogate(), water_bound_plan(months=1), start_date=START,
+            limits=planner.Limits(),
+        )
 
 
 def test_coverage_is_asked_about_the_schedule_the_search_scales():

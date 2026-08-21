@@ -35,10 +35,11 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from aios import economics
+from aios import economics, planner
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.margin import Norms, counted_by_methodology, month_margin
 from aios.schedule import MAX_INJECTION_BHP_ATM, MAX_LIQUID_RATE_M3_PER_DAY
+from aios.summary import Fluids
 from aios.surrogate import Surrogate
 
 #: Множители к дебиту базового сценария. Ноль — остановка, это тоже режим.
@@ -219,6 +220,9 @@ def choose_joint_rates(
     *,
     start_date: date,
     multipliers: tuple[float, ...] = JOINT_MULTIPLIERS,
+    limits: planner.Limits | None = None,
+    norms: Norms | None = None,
+    fluids: Fluids | None = None,
 ) -> list[JointRateChoice]:
     """Координатный поиск для суррогата с межскважинными связями.
 
@@ -233,9 +237,31 @@ def choose_joint_rates(
     тянет решение ровно туда, где суррогат ошибается в нашу пользу (`CLAUDE.md`).
     Отброшенное записывается в `JointRateChoice.outside_training` и попадает в
     объяснение решения: молча сузить перебор нельзя.
+
+    **Общий ресурс учитывается до выбора, а не после.** `limits` — те же
+    ограничения уровня объекта, которыми `aios.planner` согласует предложения
+    скважинных агентов. Когда они переданы, кандидат оценивается по ЧДД
+    расписания, **уже приведённого** к ним: сначала срезка, потом деньги. Без
+    этого поиск выбирает режим по числу, которого не будет, — вода на закачку
+    принадлежит объекту целиком, и прибавка одной скважины отнимается у соседей.
+
+    Замер 21.08 на Модели Z (обученный суррогат, 113 управлений): поиск выбрал
+    режимы на 110 391,5 млн руб., после планировщика осталось 84 740,8 — минус
+    25 650,8, то есть 23,2 % заявленного прироста. Планировщик изменил 23
+    нагнетательных режима, 22 из них поиск считал своим решением
+    (`docs/experiments.md`, Р-53).
+
+    Цена согласования — второй `predict` на кандидата: расписание считается до
+    срезки (планировщику нужен отклик, чтобы знать, сколько воды поднято) и
+    после. Без `limits` поведение прежнее, лишних расчётов нет.
     """
     if 1.0 not in multipliers:
         raise ValueError("в наборе множителей обязан быть 1.0 — режим «как есть» это база")
+    if limits is not None and norms is None:
+        raise ValueError(
+            "с ограничениями объекта нужны нормативы: планировщик режет по удельной "
+            "марже, и без неё ему нечем решать, кого"
+        )
 
     producer_wells = sorted(
         {control.well for step in base_steps for control in step.producers}, key=_well_key
@@ -249,7 +275,7 @@ def choose_joint_rates(
     ]
     selected = dict.fromkeys(controls, 1.0)
     current_steps = _scale_individually(base_steps, selected)
-    current_chdd = _chdd(surrogate.predict(current_steps), start_date)
+    current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids)
     choices: list[JointRateChoice] = []
 
     for kind, well in controls:
@@ -263,7 +289,7 @@ def choose_joint_rates(
         for multiplier in covered:
             candidate_multipliers = selected | {(kind, well): multiplier}
             candidate = _scale_individually(base_steps, candidate_multipliers)
-            candidate_chdd = _chdd(surrogate.predict(candidate), start_date)
+            candidate_chdd = _value_of(surrogate, candidate, start_date, limits, norms, fluids)
             if candidate_chdd > best_chdd + 1e-9:
                 best_multiplier = multiplier
                 best_steps = candidate
@@ -276,6 +302,28 @@ def choose_joint_rates(
             JointRateChoice(well, best_multiplier, before, best_chdd, kind, outside)
         )
     return choices
+
+
+def _value_of(
+    surrogate: Surrogate,
+    steps: list[ScheduleStep],
+    start_date: date,
+    limits: planner.Limits | None,
+    norms: Norms | None,
+    fluids: Fluids | None,
+) -> float:
+    """Чего кандидат стоит — уже с учётом общего ресурса, если он задан.
+
+    Порядок именно такой: планировщику нужен отклик на предложенное расписание,
+    чтобы знать, сколько воды поднято, поэтому прогноз считается дважды — до
+    срезки и после неё. Деньги берутся со второго: первое расписание
+    неисполнимо, и его ЧДД не значит ничего.
+    """
+    forecast = surrogate.predict(steps)
+    if limits is None:
+        return _chdd(forecast, start_date)
+    fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids)
+    return _chdd(surrogate.predict(fitted), start_date)
 
 
 def _covered_multipliers(
