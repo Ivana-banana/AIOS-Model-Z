@@ -20,3 +20,6 @@ vendor/Model_Z_OPM/
 *.pptx
 *.pdf
 docs/method/transcripts/
+data/
+data.7z
+artifacts/
