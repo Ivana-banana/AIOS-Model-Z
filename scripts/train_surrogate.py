@@ -21,7 +21,12 @@ import pandas as pd  # noqa: E402
 import sklearn  # noqa: E402
 
 from aios import config as config_module  # noqa: E402
-from aios.neural import TrainingReport, assert_quality, train  # noqa: E402
+from aios.neural import (  # noqa: E402
+    FEATURE_KINDS,
+    TrainingReport,
+    assert_quality,
+    train,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         help="как представлять нефть: своей величиной или через долю воды",
     )
     parser.add_argument(
+        "--features", choices=FEATURE_KINDS, default="own",
+        help="что видит модель скважины: весь фонд (all) или свои столбцы плюс "
+             "агрегаты по фонду (own)",
+    )
+    parser.add_argument(
         "--model", choices=("mlp", "linear"), default="mlp",
         help="какая из двух обученных моделей поедет в цикл; меряются обе в любом случае",
     )
@@ -49,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     # сценариев одна и по входу, и по отклику, поэтому по ней меряется память
     bundle = train(frame, seed=settings.run.seed, kind=arguments.model,
                    control_start=settings.case.control_start,
-                   targets=arguments.targets)
+                   targets=arguments.targets, features=arguments.features)
     metadata = {
         "seed": settings.run.seed,
         "datasets": dataset_fingerprints(arguments.dataset),
@@ -70,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"отчёт:  {report_path}")
     print(f"train/test сценариев: {len(bundle.report.train_scenarios)}/"
           f"{len(bundle.report.test_scenarios)}")
-    print(f"в модель сохранён: {bundle.report.kind}, цели: {bundle.report.targets}")
+    print(f"в модель сохранён: {bundle.report.kind}, цели: {bundle.report.targets}, "
+          f"признаки: {bundle.report.features}")
     print(f"метрики считаны на {bundle.report.metric_rows} строках"
           + (f" с {bundle.report.metric_start}" if bundle.report.metric_start else ""))
     for dataset in metadata["datasets"]:
@@ -83,7 +94,46 @@ def main(argv: list[str] | None = None) -> int:
             f"linear MAE={metric.linear_mae:.4g}, RMSE={metric.linear_rmse:.4g}, "
             f"R²={metric.linear_r2:.4g}"
         )
+    print("R² выше — по цели целиком, и в ней около 92 % занимает уровень скважины "
+          "(замер 21.08): его высокое значение получает и модель, которая про "
+          "управление не знает вовсе. Ниже — та же ошибка, отнесённая к дисперсии "
+          "отклика, то есть к той части, по градиенту которой ходит оптимизатор.")
+    for target, metric in bundle.report.metrics.items():
+        print(
+            f"{target}: уровень R²={_r2(metric.level_r2)}; отклик R² — "
+            f"MLP={_r2(metric.neural_response_r2)}, "
+            f"linear={_r2(metric.linear_response_r2)}, "
+            f"наклон={_r2(metric.slope_response_r2)}"
+        )
+    print(f"планка отклика: {response_verdict(bundle.report)}")
     return 0
+
+
+def _r2(value: float | None) -> str:
+    """`None` — это «не измерено»: у постоянной цели знаменатель `R²` нулевой."""
+    return "нет" if value is None else f"{value:.4g}"
+
+
+def response_verdict(report: TrainingReport) -> str:
+    """Бьёт ли уехавшая в цикл модель тупой бейзлайн «свой наклон» — одной строкой.
+
+    Порог этого не требует: `assert_quality` отвечает за «не хуже, чем ничего».
+    Но принцип 3 `CLAUDE.md` требует, чтобы каждое усложнение доказывало
+    превосходство над предыдущим уровнем числом, а не намерением, — и число это
+    видно должно быть при обучении, а не восстанавливаться потом из журнала.
+    """
+    field = "linear_response_r2" if report.kind == "linear" else "neural_response_r2"
+    lines = []
+    for target in ("WLPT_Diff", "WOMT_Diff"):
+        metric = report.metrics[target]
+        model = getattr(metric, field, None)
+        slope = getattr(metric, "slope_response_r2", None)
+        if model is None or slope is None:
+            lines.append(f"{target}: отклик не измерен")
+            continue
+        lines.append(f"{target}: {model:.4g} против {slope:.4g} — "
+                     + ("бьёт" if model > slope else "НЕ бьёт"))
+    return "; ".join(lines)
 
 
 def quality_verdict(report: TrainingReport) -> str:
@@ -100,9 +150,11 @@ def quality_verdict(report: TrainingReport) -> str:
     except ValueError as error:
         return f"НЕ ПРОЙДЕН — {error}; в цикл такая модель не загрузится"
     if report.kind == "linear":
-        return ("пройден, линейный суррогат объясняет отложенные сценарии "
-                "(порог «лучше бейзлайна» к нему неприменим — он и есть бейзлайн)")
-    return "пройден, MLP лучше линейного бейзлайна по нефти и жидкости"
+        return ("пройден, линейный суррогат объясняет отложенные сценарии и отклик "
+                "на управление (порог «лучше бейзлайна» к нему неприменим — он и "
+                "есть бейзлайн)")
+    return ("пройден, MLP лучше линейного бейзлайна и объясняет отклик на "
+            "управление по нефти и жидкости")
 
 
 def load_datasets(paths: list[str]) -> pd.DataFrame:

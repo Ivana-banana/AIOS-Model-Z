@@ -95,11 +95,20 @@ class InvalidModel:
 
 
 class RecordingModel(ConstantModel):
+    """Запоминает каждый вызов: с разделением уровня и отклика их два на прогноз.
+
+    Второй — точка центра (`_response` берёт разность), и он ничего не говорит о
+    поданном расписании. Поэтому вызовы копятся списком, а `features` остаётся
+    последним для тестов, где путь без разделения и вызов один.
+    """
+
     def __init__(self):
         self.features = None
+        self.calls = []
 
     def predict(self, features):
         self.features = features.copy()
+        self.calls.append(features.copy())
         return np.tile([900.0, 500.0, 0.0, 200.0, 50.0], (len(features), 1))
 
 
@@ -442,10 +451,20 @@ def test_a_linear_surrogate_explaining_nothing_is_still_refused():
 
 
 def _dataset_frame():
-    """Крошечный датасет в контракте обучения: три сценария, две скважины."""
+    """Крошечный датасет в контракте обучения: шесть сценариев, две скважины.
+
+    Шесть, а не четыре, — чтобы в отложенную часть попал не один сценарий, а два.
+    При одном остаток `y − уровень` оказывается одной константой на всю
+    отложенную часть, дисперсия отклика — нулевой, и `R²` отклика мерить не на
+    чем: фикстура вырождается ровно в той величине, ради которой заведена.
+
+    Диапазон множителей 0.8…1.5 сохранён: на нём стоят проверки области
+    применимости в этом же файле.
+    """
     rows = []
     for index, (scenario, multiplier) in enumerate(
-        (("doe-000", 0.8), ("doe-001", 1.0), ("doe-002", 1.3), ("doe-003", 1.5))
+        (("doe-000", 0.8), ("doe-001", 1.0), ("doe-002", 1.3), ("doe-003", 1.5),
+         ("doe-004", 0.9), ("doe-005", 1.2))
     ):
         for month in range(1, 13):
             for well in ("1", "2"):
@@ -802,3 +821,271 @@ def test_a_well_without_a_model_is_named_not_silently_dropped():
     assert any("2" in warning and "модел" in warning for warning in warnings), (
         f"скважина без модели не названа ни одним предупреждением: {warnings}"
     )
+
+
+class SlopeModel:
+    """Модель, чей прогноз зависит от управления, а не от одного времени.
+
+    Нужна там, где проверяется само разделение: с постоянным прогнозом отклик
+    равен нулю при любом управлении, и проверка вырождается в тавтологию.
+    """
+
+    def predict(self, features):
+        control = features[:, 3:].sum(axis=1)
+        return np.column_stack([
+            100.0 * control, 60.0 * control, np.zeros_like(control),
+            np.zeros_like(control), np.zeros_like(control),
+        ])
+
+
+def _decomposed(model=None) -> NeuralBundle:
+    """Пучок, обученный с разделением уровня и отклика (`Р-55`).
+
+    Уровень задан константой по обоим месяцам горизонта, центр управлений —
+    единица, то есть опорный режим и есть центр.
+    """
+    trained = bundle()
+    trained.models["1"] = model or SlopeModel()
+    trained.levels = {"1": np.tile([900.0, 500.0, 0.0, 200.0, 50.0], (2, 1))}
+    trained.control_center = np.ones((2, 1))
+    return trained
+
+
+def test_the_gate_refuses_a_model_that_only_knows_the_well_level():
+    """Порог мерил уровень, а оптимизатор ходит по отклику — и порог его пускал.
+
+    Замер 21.08 (`docs/experiments.md`): на объединении четырёх пакетов 92 %
+    дисперсии целей приходится на уровень скважины в этом месяце, и тривиальный
+    предсказатель «среднее по (скважина, месяц) поперёк сценариев», который про
+    управление не знает вовсе, даёт `R² = 0.918` по жидкости и `0.933` по нефти.
+    Абсолютная проверка `R² > 0` на такой величине не отсеивает ничего: её
+    проходит модель, у которой отклика нет вовсе.
+
+    Цена ошибки известна: прошедшая порог модель 20.08 обещала в полном цикле
+    +34 772,4 млн руб., а расчёт ГГДМ дал −9 409,2 (`docs/report.md`).
+    """
+    good = {"neural_r2": 0.918, "linear_r2": 0.900, "level_r2": 0.918,
+            "neural_response_r2": 0.40, "linear_response_r2": 0.30,
+            "slope_response_r2": 0.530}
+    metrics = {target: TargetMetric(1.0, 2.0, 1.0, 2.0, **good) for target in TARGET_COLUMNS}
+    metrics["WOMT_Diff"] = TargetMetric(
+        1.0, 2.0, 1.0, 2.0, neural_r2=0.933, linear_r2=0.900, level_r2=0.933,
+        neural_response_r2=-0.024, linear_response_r2=0.10, slope_response_r2=0.285,
+    )
+    deaf = TrainingReport(("train",), ("test",), 1, 2, metrics)
+
+    assert all(metrics[target].neural_r2 > 0 for target in ("WLPT_Diff", "WOMT_Diff")), (
+        "проверка вырождена: старый порог обязан такую модель пропускать"
+    )
+    with pytest.raises(ValueError, match="отклик"):
+        assert_quality(deaf)
+
+
+def test_the_response_is_exactly_zero_at_the_centre_of_the_training_controls():
+    """В центре обучающих управлений прогноз равен уровню — точно, а не примерно.
+
+    Отклик берётся разностью прогноза модели в запрошенной точке и в центре, и
+    в самом центре обе точки совпадают побайтово. Свойство нужно именно точное:
+    приблизительный ноль означал бы, что часть уровня продолжает жить в отклике,
+    а значит `R²` отклика снова меряет уровень.
+    """
+    surrogate = NeuralSurrogate.create(_decomposed(), [step(30.0)])
+
+    centred = surrogate.predict([step(30.0)])    # множитель ровно 1.0 — это центр
+    forced = surrogate.predict([step(45.0)])     # ×1.5 — отклик обязан появиться
+
+    assert centred[0]["WLPT_Diff"] == 900.0
+    assert centred[0]["WOMT_Diff"] == 500.0
+    assert forced[0]["WLPT_Diff"] != 900.0, "проверка вырождена: модель не реагирует"
+
+
+def test_the_decomposed_prediction_keeps_the_reference_calculator_contract():
+    """Параметризация внутренняя: наружу идут те же 14 колонок в тех же единицах.
+
+    Экономика и санити-чеки стоят ниже по течению и о разделении уровня и
+    отклика знать не должны — накопленные величины остаются накопленными, а
+    `WOMR` остаётся суточным дебитом, а не месячной добычей.
+    """
+    february = ScheduleStep(
+        pd.Timestamp("2014-02-01").date(),
+        (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),),
+        (),
+    )
+    surrogate = NeuralSurrogate.create(_decomposed(), [step(30.0)])
+
+    rows = surrogate.predict([step(30.0), february])
+
+    assert [list(row) for row in rows] == [economics.REQUIRED_COLUMNS] * 2
+    assert rows[0]["WLPT_Diff"] == pytest.approx(900.0), "уровень не дошёл до контракта"
+    assert rows[0]["WLPT"] == pytest.approx(rows[0]["WLPT_Diff"])
+    assert rows[1]["WLPT"] == pytest.approx(rows[0]["WLPT_Diff"] + rows[1]["WLPT_Diff"])
+    assert rows[0]["WOMR"] == pytest.approx(rows[0]["WOMT_Diff"] / 31)
+    assert rows[1]["WOMR"] == pytest.approx(rows[1]["WOMT_Diff"] / 28)
+
+
+def test_the_level_is_the_predictor_that_knows_nothing_about_control():
+    """Уровень зависит только от пары «скважина × месяц» — и ни от чего больше.
+
+    Это тот самый тривиальный предсказатель, которым 21.08 измерена планка. Если
+    в него просочится что-нибудь от кандидата, модель снова начнёт угадывать
+    уровень, и `R²` отклика станет таким же красивым и бессмысленным, каким был
+    `R²` по уровню.
+
+    Считается он по обучающим сценариям: взять среднее по всем — значит занести
+    отклик отложенных сценариев в собственный прогноз.
+    """
+    frame = _dataset_frame()
+
+    trained = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+
+    learned = frame[frame["scenario"].isin(trained.report.train_scenarios)]
+    expected = (learned[learned["well"] == "1"]
+                .groupby("DATA")[list(TARGET_COLUMNS)].mean().to_numpy())
+    np.testing.assert_allclose(trained.levels["1"], expected)
+
+
+def test_response_metrics_are_measured_for_both_models_and_the_slope_baseline():
+    """Оба набора метрик печатаются: по уровню — для сравнимости с журналом.
+
+    Старые числа не выбрасываются, потому что в них написаны отчёт и
+    `docs/experiments.md`, и без них прогоны разных дней перестанут
+    сравниваться. Новые добавляются рядом.
+    """
+    trained = train(_dataset_frame(), seed=7, hidden_layers=(4,), max_iter=50)
+
+    for target in ("WLPT_Diff", "WOMT_Diff"):
+        metric = trained.report.metrics[target]
+        measured = (metric.level_r2, metric.neural_response_r2,
+                    metric.linear_response_r2, metric.slope_response_r2)
+        assert all(value is not None for value in measured), (target, measured)
+        assert all(np.isfinite(value) for value in measured), (target, measured)
+
+
+def test_the_training_script_says_whether_the_response_beats_the_dumb_slope():
+    """Превосходство над предыдущим уровнем — число при обучении, а не намерение.
+
+    Порог его не требует, и это осознанно: ворота отвечают за «не хуже, чем
+    ничего». Но узнавать, что обученная модель проиграла бейзлайну «один наклон
+    на собственный множитель», надо там же, где считаются метрики, — иначе
+    прогон уйдёт в журнал как «сеть обучена», а сравнение придётся
+    восстанавливать задним числом.
+    """
+    from scripts.train_surrogate import response_verdict
+
+    metrics = {target: TargetMetric(1.0, 2.0, neural_response_r2=0.60,
+                                    slope_response_r2=0.530)
+               for target in TARGET_COLUMNS}
+    metrics["WOMT_Diff"] = TargetMetric(1.0, 2.0, neural_response_r2=0.10,
+                                        slope_response_r2=0.285)
+
+    verdict = response_verdict(TrainingReport(("train",), ("test",), 1, 2, metrics))
+
+    assert "WLPT_Diff: 0.6 против 0.53 — бьёт" in verdict, verdict
+    assert "WOMT_Diff: 0.1 против 0.285 — НЕ бьёт" in verdict, verdict
+
+
+def _own_feature_bundle(model) -> NeuralBundle:
+    """Пучок с признаками `own`: скважина-добытчик и скважина-нагнетатель."""
+    trained = bundle(TrainingReport(
+        ("train",), ("test",), 1, 2,
+        {target: TargetMetric(1.0, 2.0) for target in TARGET_COLUMNS},
+        features="own",
+    ))
+    trained.control_wells = ("prod:1", "inj:2")
+    trained.models = {"1": model}
+    trained.levels = {"1": np.tile([900.0, 500.0, 0.0, 200.0, 50.0], (2, 1))}
+    trained.control_center = np.ones((2, 2))
+    return trained
+
+
+def _pair(producer: float, injector: float) -> ScheduleStep:
+    return ScheduleStep(
+        pd.Timestamp("2014-01-01").date(),
+        (ProducerControl("1", "OPEN", "LRAT", producer, 50.0),),
+        (InjectorControl("2", "WATER", "OPEN", "RATE", injector, 300.0),),
+    )
+
+
+def test_own_features_are_seven_columns_and_carry_the_wells_own_control():
+    """При `own` модель видит семь столбцов, а не весь фонд.
+
+    Три временных, два собственных множителя скважины и два агрегата. Столбца
+    `inj:1` в датасете нет вовсе, и на его месте стоит нейтральная единица — то
+    же значение, каким `_pivot_controls` заполняет пропуски: «нет управления» и
+    «управление нейтрально» обязаны кодироваться одинаково, иначе отсутствующая
+    роль читается как остановка.
+    """
+    recorder = RecordingModel()
+    surrogate = NeuralSurrogate.create(
+        _own_feature_bundle(recorder), [_pair(30.0, 40.0)], require_quality=False
+    )
+
+    surrogate.predict([_pair(45.0, 40.0)])
+
+    asked = recorder.calls[0]         # второй вызов — центр, про расписание он молчит
+    assert asked.shape[1] == 7, asked.shape
+    own_production, own_injection = asked[0, 3], asked[0, 4]
+    assert own_production == pytest.approx(1.5), "собственный множитель не дошёл"
+    assert own_injection == pytest.approx(1.0), "отсутствующая роль обязана быть нейтральной"
+
+
+def test_a_neighbour_reaches_the_model_through_the_field_aggregate():
+    """Сосед обязан менять вход модели, иначе взаимодействие через пласт потеряно.
+
+    Ради этого агрегаты и заведены. Цена их отсутствия измерена 20.08: суррогат
+    предсказал, что при закачке, срезанной в 28 раз, нефть почти не пострадает,
+    — она упала вчетверо, и цикл на суррогате дал −79,4 % ЧДД. Сокращая 112
+    признаков до собственных, канал влияния соседа легко потерять целиком, и
+    тогда правка чинила бы метрику ценой ровно того, что 20.08 стоило прогона.
+    """
+    recorder = RecordingModel()
+    surrogate = NeuralSurrogate.create(
+        _own_feature_bundle(recorder), [_pair(30.0, 40.0)], require_quality=False
+    )
+
+    surrogate.predict([_pair(30.0, 40.0)])
+    unchanged = recorder.calls[0][0].copy()
+    recorder.calls.clear()
+    surrogate.predict([_pair(30.0, 80.0)])   # сосед-нагнетатель ×2, своя скважина та же
+    with_neighbour = recorder.calls[0][0].copy()
+
+    assert with_neighbour[3] == pytest.approx(unchanged[3]), "свой множитель не менялся"
+    assert with_neighbour[6] == pytest.approx(2.0 * unchanged[6]), (
+        "агрегат закачки по фонду обязан отследить соседа"
+    )
+
+
+def test_own_features_keep_the_contract_and_the_exact_zero_at_the_centre():
+    """Сокращение признаков — внутреннее дело модели: наружу тот же контракт."""
+    surrogate = NeuralSurrogate.create(
+        _own_feature_bundle(SlopeModel()), [_pair(30.0, 40.0)], require_quality=False
+    )
+
+    centred = surrogate.predict([_pair(30.0, 40.0)])
+    forced = surrogate.predict([_pair(45.0, 40.0)])
+
+    assert list(centred[0]) == economics.REQUIRED_COLUMNS
+    assert centred[0]["WLPT_Diff"] == 900.0, "в центре обязан остаться уровень"
+    assert forced[0]["WLPT_Diff"] != 900.0, "проверка вырождена: модель не реагирует"
+
+
+def test_an_unknown_feature_set_is_refused_by_name():
+    with pytest.raises(ValueError, match="набор признаков"):
+        train(_dataset_frame(), seed=7, features="соседи")
+
+
+def test_the_default_feature_set_is_the_one_that_passes_the_gate():
+    """Умолчание обучения — `own`: на `all` порог не проходит ни одна модель.
+
+    Замер 21.08 на четырёх пакетах: `R²` отклика по нефти у сети −0,189, у
+    линейной −11,96, то есть выбора между наборами по существу нет — `all` в
+    цикл не попадает вовсе. Проверяется именно умолчание, а не наличие
+    параметра: в артефакт уходит то, чем обучили по умолчанию, и молчаливый
+    возврат к 112 признакам не должен быть возможен опечаткой в команде.
+
+    Умолчание флага `--features` этим тестом не покрыто: парсер собирается
+    внутри `main`, и вытащить его значение можно только разобрав текст файла.
+    """
+    bundle = train(_dataset_frame(), seed=7, hidden_layers=(4,), max_iter=50)
+
+    assert bundle.report.features == "own"
