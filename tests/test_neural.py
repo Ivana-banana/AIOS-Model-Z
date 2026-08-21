@@ -442,10 +442,20 @@ def test_a_linear_surrogate_explaining_nothing_is_still_refused():
 
 
 def _dataset_frame():
-    """Крошечный датасет в контракте обучения: три сценария, две скважины."""
+    """Крошечный датасет в контракте обучения: шесть сценариев, две скважины.
+
+    Шесть, а не четыре, — чтобы в отложенную часть попал не один сценарий, а два.
+    При одном остаток `y − уровень` оказывается одной константой на всю
+    отложенную часть, дисперсия отклика — нулевой, и `R²` отклика мерить не на
+    чем: фикстура вырождается ровно в той величине, ради которой заведена.
+
+    Диапазон множителей 0.8…1.5 сохранён: на нём стоят проверки области
+    применимости в этом же файле.
+    """
     rows = []
     for index, (scenario, multiplier) in enumerate(
-        (("doe-000", 0.8), ("doe-001", 1.0), ("doe-002", 1.3), ("doe-003", 1.5))
+        (("doe-000", 0.8), ("doe-001", 1.0), ("doe-002", 1.3), ("doe-003", 1.5),
+         ("doe-004", 0.9), ("doe-005", 1.2))
     ):
         for month in range(1, 13):
             for well in ("1", "2"):
@@ -802,3 +812,164 @@ def test_a_well_without_a_model_is_named_not_silently_dropped():
     assert any("2" in warning and "модел" in warning for warning in warnings), (
         f"скважина без модели не названа ни одним предупреждением: {warnings}"
     )
+
+
+class SlopeModel:
+    """Модель, чей прогноз зависит от управления, а не от одного времени.
+
+    Нужна там, где проверяется само разделение: с постоянным прогнозом отклик
+    равен нулю при любом управлении, и проверка вырождается в тавтологию.
+    """
+
+    def predict(self, features):
+        control = features[:, 3:].sum(axis=1)
+        return np.column_stack([
+            100.0 * control, 60.0 * control, np.zeros_like(control),
+            np.zeros_like(control), np.zeros_like(control),
+        ])
+
+
+def _decomposed(model=None) -> NeuralBundle:
+    """Пучок, обученный с разделением уровня и отклика (`Р-53`).
+
+    Уровень задан константой по обоим месяцам горизонта, центр управлений —
+    единица, то есть опорный режим и есть центр.
+    """
+    trained = bundle()
+    trained.models["1"] = model or SlopeModel()
+    trained.levels = {"1": np.tile([900.0, 500.0, 0.0, 200.0, 50.0], (2, 1))}
+    trained.control_center = np.ones((2, 1))
+    return trained
+
+
+def test_the_gate_refuses_a_model_that_only_knows_the_well_level():
+    """Порог мерил уровень, а оптимизатор ходит по отклику — и порог его пускал.
+
+    Замер 21.08 (`docs/experiments.md`): на объединении четырёх пакетов 92 %
+    дисперсии целей приходится на уровень скважины в этом месяце, и тривиальный
+    предсказатель «среднее по (скважина, месяц) поперёк сценариев», который про
+    управление не знает вовсе, даёт `R² = 0.918` по жидкости и `0.933` по нефти.
+    Абсолютная проверка `R² > 0` на такой величине не отсеивает ничего: её
+    проходит модель, у которой отклика нет вовсе.
+
+    Цена ошибки известна: прошедшая порог модель 20.08 обещала в полном цикле
+    +34 772,4 млн руб., а расчёт ГГДМ дал −9 409,2 (`docs/report.md`).
+    """
+    good = {"neural_r2": 0.918, "linear_r2": 0.900, "level_r2": 0.918,
+            "neural_response_r2": 0.40, "linear_response_r2": 0.30,
+            "slope_response_r2": 0.530}
+    metrics = {target: TargetMetric(1.0, 2.0, 1.0, 2.0, **good) for target in TARGET_COLUMNS}
+    metrics["WOMT_Diff"] = TargetMetric(
+        1.0, 2.0, 1.0, 2.0, neural_r2=0.933, linear_r2=0.900, level_r2=0.933,
+        neural_response_r2=-0.024, linear_response_r2=0.10, slope_response_r2=0.285,
+    )
+    deaf = TrainingReport(("train",), ("test",), 1, 2, metrics)
+
+    assert all(metrics[target].neural_r2 > 0 for target in ("WLPT_Diff", "WOMT_Diff")), (
+        "проверка вырождена: старый порог обязан такую модель пропускать"
+    )
+    with pytest.raises(ValueError, match="отклик"):
+        assert_quality(deaf)
+
+
+def test_the_response_is_exactly_zero_at_the_centre_of_the_training_controls():
+    """В центре обучающих управлений прогноз равен уровню — точно, а не примерно.
+
+    Отклик берётся разностью прогноза модели в запрошенной точке и в центре, и
+    в самом центре обе точки совпадают побайтово. Свойство нужно именно точное:
+    приблизительный ноль означал бы, что часть уровня продолжает жить в отклике,
+    а значит `R²` отклика снова меряет уровень.
+    """
+    surrogate = NeuralSurrogate.create(_decomposed(), [step(30.0)])
+
+    centred = surrogate.predict([step(30.0)])    # множитель ровно 1.0 — это центр
+    forced = surrogate.predict([step(45.0)])     # ×1.5 — отклик обязан появиться
+
+    assert centred[0]["WLPT_Diff"] == 900.0
+    assert centred[0]["WOMT_Diff"] == 500.0
+    assert forced[0]["WLPT_Diff"] != 900.0, "проверка вырождена: модель не реагирует"
+
+
+def test_the_decomposed_prediction_keeps_the_reference_calculator_contract():
+    """Параметризация внутренняя: наружу идут те же 14 колонок в тех же единицах.
+
+    Экономика и санити-чеки стоят ниже по течению и о разделении уровня и
+    отклика знать не должны — накопленные величины остаются накопленными, а
+    `WOMR` остаётся суточным дебитом, а не месячной добычей.
+    """
+    february = ScheduleStep(
+        pd.Timestamp("2014-02-01").date(),
+        (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),),
+        (),
+    )
+    surrogate = NeuralSurrogate.create(_decomposed(), [step(30.0)])
+
+    rows = surrogate.predict([step(30.0), february])
+
+    assert [list(row) for row in rows] == [economics.REQUIRED_COLUMNS] * 2
+    assert rows[0]["WLPT_Diff"] == pytest.approx(900.0), "уровень не дошёл до контракта"
+    assert rows[0]["WLPT"] == pytest.approx(rows[0]["WLPT_Diff"])
+    assert rows[1]["WLPT"] == pytest.approx(rows[0]["WLPT_Diff"] + rows[1]["WLPT_Diff"])
+    assert rows[0]["WOMR"] == pytest.approx(rows[0]["WOMT_Diff"] / 31)
+    assert rows[1]["WOMR"] == pytest.approx(rows[1]["WOMT_Diff"] / 28)
+
+
+def test_the_level_is_the_predictor_that_knows_nothing_about_control():
+    """Уровень зависит только от пары «скважина × месяц» — и ни от чего больше.
+
+    Это тот самый тривиальный предсказатель, которым 21.08 измерена планка. Если
+    в него просочится что-нибудь от кандидата, модель снова начнёт угадывать
+    уровень, и `R²` отклика станет таким же красивым и бессмысленным, каким был
+    `R²` по уровню.
+
+    Считается он по обучающим сценариям: взять среднее по всем — значит занести
+    отклик отложенных сценариев в собственный прогноз.
+    """
+    frame = _dataset_frame()
+
+    trained = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+
+    learned = frame[frame["scenario"].isin(trained.report.train_scenarios)]
+    expected = (learned[learned["well"] == "1"]
+                .groupby("DATA")[list(TARGET_COLUMNS)].mean().to_numpy())
+    np.testing.assert_allclose(trained.levels["1"], expected)
+
+
+def test_response_metrics_are_measured_for_both_models_and_the_slope_baseline():
+    """Оба набора метрик печатаются: по уровню — для сравнимости с журналом.
+
+    Старые числа не выбрасываются, потому что в них написаны отчёт и
+    `docs/experiments.md`, и без них прогоны разных дней перестанут
+    сравниваться. Новые добавляются рядом.
+    """
+    trained = train(_dataset_frame(), seed=7, hidden_layers=(4,), max_iter=50)
+
+    for target in ("WLPT_Diff", "WOMT_Diff"):
+        metric = trained.report.metrics[target]
+        measured = (metric.level_r2, metric.neural_response_r2,
+                    metric.linear_response_r2, metric.slope_response_r2)
+        assert all(value is not None for value in measured), (target, measured)
+        assert all(np.isfinite(value) for value in measured), (target, measured)
+
+
+def test_the_training_script_says_whether_the_response_beats_the_dumb_slope():
+    """Превосходство над предыдущим уровнем — число при обучении, а не намерение.
+
+    Порог его не требует, и это осознанно: ворота отвечают за «не хуже, чем
+    ничего». Но узнавать, что обученная модель проиграла бейзлайну «один наклон
+    на собственный множитель», надо там же, где считаются метрики, — иначе
+    прогон уйдёт в журнал как «сеть обучена», а сравнение придётся
+    восстанавливать задним числом.
+    """
+    from scripts.train_surrogate import response_verdict
+
+    metrics = {target: TargetMetric(1.0, 2.0, neural_response_r2=0.60,
+                                    slope_response_r2=0.530)
+               for target in TARGET_COLUMNS}
+    metrics["WOMT_Diff"] = TargetMetric(1.0, 2.0, neural_response_r2=0.10,
+                                        slope_response_r2=0.285)
+
+    verdict = response_verdict(TrainingReport(("train",), ("test",), 1, 2, metrics))
+
+    assert "WLPT_Diff: 0.6 против 0.53 — бьёт" in verdict, verdict
+    assert "WOMT_Diff: 0.1 против 0.285 — НЕ бьёт" in verdict, verdict

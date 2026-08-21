@@ -4,6 +4,19 @@
 прогона слишком похожи, и их попадание одновременно в train и test завышает
 качество. Для каждой скважины обучается небольшой MLP, который видит время и
 совместное управление всем добывающим фондом.
+
+Прогноз разделён на **уровень** и **отклик** (`Р-53`):
+
+    predict = level(скважина, месяц) + response(управление)
+
+Уровень — среднее обучающих сценариев для пары «скважина × месяц»; он про
+управление не знает вовсе и на выводе является константой. Отклик — разность
+прогноза модели в запрошенной точке и в центре обучающих управлений, поэтому в
+самом центре он равен нулю точно. Учится модель на остатке, и метрики считаются
+на обеих величинах порознь: замер 21.08 на объединении четырёх пакетов показал,
+что на уровень приходится 92 % дисперсии целей, а оптимизатор ходит по
+оставшимся 7–8 % — по той части, качество которой до 21.08 не измерялось ни
+разу.
 """
 
 from __future__ import annotations
@@ -41,6 +54,10 @@ from aios.surrogate import TrainingEnvelope, expand
 RESTART_MULTIPLIER = -1.0
 
 TARGET_COLUMNS = ("WLPT_Diff", "WOMT_Diff", "WWIT_Diff", "THP", "BHP")
+
+#: Сколько первых признаков описывают время, а не управление: номер месяца и две
+#: гармоники сезона. Всё, что дальше, — управляющие множители по `control_wells`.
+TIME_FEATURES = 3
 REQUIRED_COLUMNS = frozenset(
     {"scenario", "DATA", "well", "multiplier", "WLPR", "WWIR", *TARGET_COLUMNS}
 )
@@ -48,12 +65,33 @@ REQUIRED_COLUMNS = frozenset(
 
 @dataclass(frozen=True)
 class TargetMetric:
+    """Ошибка на отложенных сценариях: по уровню и по отклику порознь.
+
+    `neural_r2` / `linear_r2` — `R²` по самой цели. В нём 92 % занимает уровень
+    скважины, поэтому число получается высоким у модели, которая про управление
+    не знает вовсе. Старые поля оставлены намеренно: в них написаны отчёт и
+    `docs/experiments.md`, и без них прогоны разных дней перестанут сравниваться.
+
+    `level_r2` — тот самый тривиальный предсказатель «среднее по (скважина,
+    месяц) поперёк сценариев». Это нижняя отметка, ниже которой обученная модель
+    не имеет права опускаться, а не достижение.
+
+    `*_response_r2` — `R²` на остатке `y − level`, то есть ровно на той части,
+    по градиенту которой ходит оптимизатор. `slope_response_r2` — тупой бейзлайн
+    «у каждой скважины свой наклон на собственный множитель»; он планка
+    (принцип 3 `CLAUDE.md`), а не справка.
+    """
+
     neural_mae: float
     linear_mae: float
     neural_rmse: float | None = None
     linear_rmse: float | None = None
     neural_r2: float | None = None
     linear_r2: float | None = None
+    level_r2: float | None = None
+    neural_response_r2: float | None = None
+    linear_response_r2: float | None = None
+    slope_response_r2: float | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +155,25 @@ class NeuralBundle:
     report: TrainingReport
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    levels: dict[str, np.ndarray] = field(default_factory=dict)
+    """Уровень скважины по месяцам: `(month_span + 1) × len(TARGET_COLUMNS)`.
+
+    Среднее обучающих сценариев для пары «скважина × месяц» в том же
+    представлении целей, в каком учится модель (`targets`). Месяцы, которых у
+    скважины в обучении не было, заполнены её средним по всему горизонту.
+
+    Пустой словарь — артефакт, обученный до `Р-53`: у такого модель предсказывает
+    уровень сама, и разделять в нём нечего.
+    """
+
+    control_center: np.ndarray | None = None
+    """Центр обучающих управлений по месяцам: `(month_span + 1) × len(control_wells)`.
+
+    Средний управляющий вектор обучающих сценариев. Это центр **выборки DoE**, а
+    не история: для расписания, далёкого от обучающего облака, отклик считается
+    от смещённой точки, и настолько же смещён.
+    """
+
 
 @dataclass(frozen=True)
 class NeuralSurrogate:
@@ -148,10 +205,7 @@ class NeuralSurrogate:
             )[0]
             for month_start in months
         ])
-        predictions = {
-            well: _raw_space(model.predict(feature_matrix), self.bundle.report.targets)
-            for well, model in self.bundle.models.items()
-        }
+        predictions = self._level_and_response(months, feature_matrix)
         cumulative: dict[str, list[float]] = {}
         rows: list[dict[str, Any]] = []
 
@@ -178,6 +232,45 @@ class NeuralSurrogate:
                     liquid, oil, injection, thp, bhp, days
                 ))
         return rows
+
+    def _level_and_response(self, months: list[date],
+                            feature_matrix: np.ndarray) -> dict[str, np.ndarray]:
+        """Прогноз каждой скважины: уровень месяца плюс отклик на управление.
+
+        Отклик берётся разностью прогноза модели в запрошенной точке и в центре
+        обучающих управлений. В центре обе точки совпадают побайтово, поэтому
+        отклик там равен нулю точно, а не приблизительно — иначе часть уровня
+        продолжала бы жить в отклике, и `R²` отклика снова мерил бы уровень.
+
+        Пустой `levels` — артефакт, обученный до `Р-53`: у него модель
+        предсказывает цель целиком, и разделять нечего.
+        """
+        targets = self.bundle.report.targets
+        levels = getattr(self.bundle, "levels", None)
+        centre = getattr(self.bundle, "control_center", None)
+        if not levels or centre is None:
+            return {well: _raw_space(model.predict(feature_matrix), targets)
+                    for well, model in self.bundle.models.items()}
+
+        index = np.clip([self._month_number(month) for month in months],
+                        0, self.bundle.month_span)
+        base_matrix = np.vstack([
+            _inference_features(month, centre[position], self.bundle.start_month,
+                                self.bundle.month_span)[0]
+            for month, position in zip(months, index, strict=True)
+        ])
+        return {
+            well: _raw_space(
+                levels[well][index] + model.predict(feature_matrix)
+                - model.predict(base_matrix),
+                targets,
+            )
+            for well, model in self.bundle.models.items()
+        }
+
+    def _month_number(self, month_start: date) -> int:
+        return ((month_start.year - self.bundle.start_month.year) * 12
+                + month_start.month - self.bundle.start_month.month)
 
     def _multipliers(
         self,
@@ -278,10 +371,7 @@ class NeuralSurrogate:
             for step in steps if step.date not in reference_dates
         )
         for step in steps:
-            month_number = (
-                (step.date.year - self.bundle.start_month.year) * 12
-                + step.date.month - self.bundle.start_month.month
-            )
+            month_number = self._month_number(step.date)
             if month_number < 0 or month_number > self.bundle.month_span:
                 warnings.append(
                     f"{step.date.isoformat()}: дата вне обучающего горизонта "
@@ -406,6 +496,12 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     `kind` выбирает, какая из двух обученных моделей поедет в цикл: `mlp` или
     `linear`. Меряются обе в любом случае — сравнение и есть смысл упражнения.
 
+    Модель учится **на остатке** `y − level(скважина, месяц)`, а не на самой цели:
+    на уровень приходится 92 % дисперсии (замер 21.08), и модель, потратившая
+    ёмкость на него, получает высокий `R²`, ничего не зная про управление.
+    Уровень считается по обучающим сценариям — среднее по всем занесло бы отклик
+    отложенных в собственный прогноз.
+
     `control_start` отделяет управляемую часть горизонта от истории. **Учимся на
     всей выборке, меряемся только на управляемой.** История до этой даты у всех
     сценариев побайтово одна: сценарий DoE меняет расписание только с неё. После
@@ -429,14 +525,19 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     )
     controls = _control_matrix(data)
     start_month = data["DATA"].min()
-    month_span = max(_month_number(data["DATA"], start_month).max(), 1)
+    month_span = int(max(_month_number(data["DATA"], start_month).max(), 1))
+    centre = _control_centre(controls, train_scenarios, start_month, month_span)
 
     models: dict[str, Any] = {}
+    levels: dict[str, np.ndarray] = {}
     neural_errors: list[np.ndarray] = []
     linear_errors: list[np.ndarray] = []
     neural_predictions: list[np.ndarray] = []
     linear_predictions: list[np.ndarray] = []
+    slope_predictions: list[np.ndarray] = []
+    level_predictions: list[np.ndarray] = []
     test_targets: list[np.ndarray] = []
+    own_controls = _own_controls(tuple(controls.columns))
     for well, rows in data.groupby("well", sort=True):
         train_rows = rows[rows["scenario"].isin(train_scenarios)]
         test_rows = rows[rows["scenario"].isin(test_scenarios)]
@@ -450,10 +551,21 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
 
         x_train = _features(train_rows, controls, start_month, month_span)
         x_test = _features(test_rows, controls, start_month, month_span)
+        base_test = _centre_features(test_rows, centre, start_month, month_span)
         y_test = test_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy()
+
+        # уровень — среднее обучающих сценариев по паре «скважина × месяц»; учится
+        # модель на остатке, то есть ровно на отклике (`Р-53`)
+        level = _level_table(
+            _month_number(train_rows["DATA"], start_month).to_numpy(),
+            _model_space(train_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy(), targets),
+            month_span,
+        )
+        level_train = level[_clipped_months(train_rows["DATA"], start_month, month_span)]
+        level_test = level[_clipped_months(test_rows["DATA"], start_month, month_span)]
         y_train = _model_space(
             train_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy(), targets
-        )
+        ) - level_train
 
         neural = _regressor(MLPRegressor(
             hidden_layer_sizes=hidden_layers,
@@ -470,14 +582,19 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
 
         # метрики считаются в исходных единицах при любом представлении целей,
         # иначе сравнение параметризаций перестаёт быть сравнением
-        neural_prediction = _raw_space(neural.predict(x_test), targets)
-        linear_prediction = _raw_space(baseline.predict(x_test), targets)
+        neural_prediction = _raw_space(level_test + _response(neural, x_test, base_test), targets)
+        linear_prediction = _raw_space(level_test + _response(baseline, x_test, base_test), targets)
+        slope_prediction = _raw_space(level_test + _slope_response(
+            x_train, y_train, x_test, base_test, own_controls.get(str(well), ())), targets)
         neural_errors.append(np.abs(neural_prediction - y_test))
         linear_errors.append(np.abs(linear_prediction - y_test))
         neural_predictions.append(neural_prediction)
         linear_predictions.append(linear_prediction)
+        slope_predictions.append(slope_prediction)
+        level_predictions.append(_raw_space(level_test, targets))
         test_targets.append(y_test)
         models[well] = neural if kind == "mlp" else baseline
+        levels[well] = level
 
     if not models:
         raise ValueError("после разбиения не осталось скважин с train и test строками")
@@ -487,6 +604,12 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     actual = np.concatenate(test_targets)
     neural_predicted = np.concatenate(neural_predictions)
     linear_predicted = np.concatenate(linear_predictions)
+    slope_predicted = np.concatenate(slope_predictions)
+    level_predicted = np.concatenate(level_predictions)
+    # остаток — то, что видит оптимизатор: уровень одинаков у всех трёх моделей и
+    # из разности уходит, поэтому `R²` остатка отличается от `R²` цели только
+    # знаменателем
+    residual = actual - level_predicted
     metrics = {
         target: TargetMetric(
             neural_mae=float(neural_mae[index]),
@@ -495,6 +618,13 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
             linear_rmse=float(mean_squared_error(actual[:, index], linear_predicted[:, index]) ** 0.5),
             neural_r2=float(r2_score(actual[:, index], neural_predicted[:, index])),
             linear_r2=float(r2_score(actual[:, index], linear_predicted[:, index])),
+            level_r2=_score(actual[:, index], level_predicted[:, index]),
+            neural_response_r2=_score(
+                residual[:, index], neural_predicted[:, index] - level_predicted[:, index]),
+            linear_response_r2=_score(
+                residual[:, index], linear_predicted[:, index] - level_predicted[:, index]),
+            slope_response_r2=_score(
+                residual[:, index], slope_predicted[:, index] - level_predicted[:, index]),
         )
         for index, target in enumerate(TARGET_COLUMNS)
     }
@@ -513,8 +643,8 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         kind=kind,
     )
     return NeuralBundle(
-        tuple(controls.columns), models, start_month, int(month_span),
-        _envelope(controls), report
+        tuple(controls.columns), models, start_month, month_span,
+        _envelope(controls), report, levels=levels, control_center=centre
     )
 
 
@@ -528,9 +658,23 @@ def assert_quality(report: TrainingReport) -> None:
     `CLAUDE.md`). К самой линейной модели она неприменима: бейзлайн отверг бы сам
     себя.
 
-    **Абсолютная** — для обеих: `R² > 0` на отложенных сценариях по жидкости и
-    нефти. `R² ≤ 0` означает «хуже, чем среднее по этим же сценариям», то есть
-    модель не объясняет ничего сверх уровня скважины.
+    **Абсолютная по цели** — для обеих: `R² > 0` на отложенных сценариях по
+    жидкости и нефти. `R² ≤ 0` означает «хуже, чем среднее по этим же
+    сценариям».
+
+    **Абсолютная по отклику** — для обеих, и она здесь главная. Замер 21.08:
+    92 % дисперсии целей приходится на уровень скважины, поэтому `R² > 0` по
+    цели проходит модель, которая про управление не знает вовсе — тривиальный
+    предсказатель «среднее по (скважина, месяц)» даёт 0.918 по жидкости и 0.933
+    по нефти. Оптимизатор же ходит по градиенту отклика, то есть по оставшимся
+    7–8 %, и качество там до 21.08 не измерялось ни разу. Порог, не смотрящий на
+    отклик, — открытые ворота: 20.08 прошедшая его модель обещала в полном цикле
+    +34 772,4 млн руб., а расчёт ГГДМ дал −9 409,2.
+
+    Чего эта проверка по-прежнему не делает: она не требует бить тупой бейзлайн
+    «свой наклон на собственный множитель» (`slope_response_r2`). Он печатается
+    рядом и сравнивается человеком — ворота отвечают за «не хуже, чем ничего», а
+    выбор между моделями остаётся решением с числом в журнале.
 
     До 20.08 абсолютная проверка стояла только на линейной модели, и это была
     асимметрия, а не строгость: на полном датасете MLP выиграл у линейной по MAE
@@ -551,19 +695,35 @@ def assert_quality(report: TrainingReport) -> None:
                 + ", ".join(failed)
             )
 
-    scores = (
-        (target, report.metrics[target].linear_r2 if report.kind == "linear"
-         else report.metrics[target].neural_r2)
-        for target in ("WLPT_Diff", "WOMT_Diff")
-    )
+    name = "линейный суррогат" if report.kind == "linear" else "MLP"
     # `None` — это «не измерено», а не «плохо»: у отчётов, собранных до появления
     # R² (и у синтетических в тестах), его нет, и отвергать их не за что.
-    blind = [target for target, score in scores if score is not None and score <= 0.0]
+    blind = _failing(report, "linear_r2" if report.kind == "linear" else "neural_r2")
     if blind:
-        name = "линейный суррогат" if report.kind == "linear" else "MLP"
         raise ValueError(
             f"{name} не объясняет отложенные сценарии (R² ≤ 0): " + ", ".join(blind)
         )
+
+    deaf = _failing(
+        report, "linear_response_r2" if report.kind == "linear" else "neural_response_r2"
+    )
+    if deaf:
+        raise ValueError(
+            f"{name} не объясняет отклик на управление (R² отклика ≤ 0): "
+            + ", ".join(deaf)
+            + " — прогноз держится на уровне скважины, а оптимизатор ходит "
+            "по градиенту отклика"
+        )
+
+
+def _failing(report: TrainingReport, field_name: str) -> list[str]:
+    """Цели, по которым измеренный `R²` не выше нуля."""
+    failing = []
+    for target in ("WLPT_Diff", "WOMT_Diff"):
+        score = getattr(report.metrics[target], field_name, None)
+        if score is not None and score <= 0.0:
+            failing.append(target)
+    return failing
 
 
 def split_scenarios(scenarios: list[str], *, seed: int,
@@ -650,16 +810,117 @@ def _envelope(controls: pd.DataFrame) -> TrainingEnvelope:
 
 def _features(rows: pd.DataFrame, controls: pd.DataFrame, start: pd.Timestamp,
               month_span: int) -> np.ndarray:
-    dates = rows["DATA"]
-    month = _month_number(dates, start).to_numpy(dtype=float) / month_span
-    season = dates.dt.month.to_numpy(dtype=float)
-    time = np.column_stack((month, np.sin(2 * np.pi * season / 12),
-                            np.cos(2 * np.pi * season / 12)))
     keys = pd.MultiIndex.from_arrays(
         [rows["scenario"].to_numpy(), rows["DATA"].to_numpy()], names=controls.index.names
     )
     scenario_controls = controls.reindex(keys).to_numpy(dtype=float)
-    return np.column_stack((time, scenario_controls))
+    return np.column_stack((_time_features(rows["DATA"], start, month_span),
+                            scenario_controls))
+
+
+def _centre_features(rows: pd.DataFrame, centre: np.ndarray, start: pd.Timestamp,
+                     month_span: int) -> np.ndarray:
+    """Те же строки признаков, но с управлением в центре обучающей выборки."""
+    return np.column_stack((
+        _time_features(rows["DATA"], start, month_span),
+        centre[_clipped_months(rows["DATA"], start, month_span)],
+    ))
+
+
+def _time_features(dates: pd.Series, start: pd.Timestamp, month_span: int) -> np.ndarray:
+    month = _month_number(dates, start).to_numpy(dtype=float) / month_span
+    season = dates.dt.month.to_numpy(dtype=float)
+    return np.column_stack((month, np.sin(2 * np.pi * season / 12),
+                            np.cos(2 * np.pi * season / 12)))
+
+
+def _clipped_months(dates: pd.Series, start: pd.Timestamp, month_span: int) -> np.ndarray:
+    return np.clip(_month_number(dates, start).to_numpy(), 0, month_span)
+
+
+def _control_centre(controls: pd.DataFrame, scenarios: frozenset[str],
+                    start: pd.Timestamp, month_span: int) -> np.ndarray:
+    """Средний управляющий вектор обучающих сценариев по месяцам.
+
+    Это центр выборки DoE, а не история: месяц, которого в обучении нет, остаётся
+    нейтральной единицей. Для расписания, далёкого от обучающего облака, отклик
+    отсчитывается от смещённой точки и настолько же смещён — числом это здесь не
+    закрывается, только пометкой `in_training_range`.
+    """
+    index = controls.index
+    chosen = index.get_level_values("scenario").isin(scenarios)
+    dates = index.get_level_values("DATA")
+    months = np.clip(
+        ((dates.year - start.year) * 12 + dates.month - start.month).to_numpy(),
+        0, month_span,
+    )
+    centre = np.ones((month_span + 1, controls.shape[1]), dtype=float)
+    mean = (pd.DataFrame(controls.to_numpy(dtype=float)[chosen], index=months[chosen])
+            .groupby(level=0).mean())
+    centre[mean.index.to_numpy()] = mean.to_numpy()
+    return centre
+
+
+def _level_table(months: np.ndarray, values: np.ndarray, month_span: int) -> np.ndarray:
+    """Уровень скважины по месяцам — среднее обучающих сценариев.
+
+    Зависит только от пары «скважина × месяц»: управление сюда не попадает по
+    построению, иначе модель снова начнёт угадывать уровень. Месяц, которого у
+    скважины в обучении не было, получает её среднее по всему горизонту —
+    подставить ноль означало бы предсказать остановку.
+    """
+    table = (pd.DataFrame(values, index=np.clip(months, 0, month_span))
+             .groupby(level=0).mean())
+    level = np.repeat(values.mean(axis=0)[None, :], month_span + 1, axis=0)
+    level[table.index.to_numpy()] = table.to_numpy()
+    return level
+
+
+def _response(model: Any, features: np.ndarray, centre: np.ndarray) -> np.ndarray:
+    """Отклик модели: насколько прогноз отличается от прогноза в центре выборки.
+
+    Разность нужна ради точного нуля в центре: смещения скрытых слоёв сами в ноль
+    не обращаются, и остаток уровня продолжал бы жить в отклике.
+    """
+    return model.predict(features) - model.predict(centre)
+
+
+def _own_controls(control_wells: tuple[str, ...]) -> dict[str, tuple[int, ...]]:
+    """Столбцы признаков, которыми скважина управляет сама.
+
+    Роли (`prod:`/`inj:`) сводятся к одной скважине: собственное управление — это
+    и отбор, и закачка, если и то и другое размечено в датасете.
+    """
+    own: dict[str, list[int]] = {}
+    for position, key in enumerate(control_wells):
+        _, well = _control_key(key)
+        own.setdefault(well, []).append(TIME_FEATURES + position)
+    return {well: tuple(columns) for well, columns in own.items()}
+
+
+def _slope_response(x_train: np.ndarray, y_train: np.ndarray, x_test: np.ndarray,
+                    x_centre: np.ndarray, columns: tuple[int, ...]) -> np.ndarray:
+    """Отклик тупого бейзлайна: один наклон на собственный множитель скважины.
+
+    Ни времени, ни соседей — это планка, которую обученная модель обязана бить,
+    иначе её не существует (принцип 3 `CLAUDE.md`). Замер 21.08 на объединении
+    четырёх пакетов: 53.0 % дисперсии отклика по жидкости и 28.5 % по нефти.
+
+    Скважине без собственной колонки управления бейзлайн отвечает нулевым
+    откликом: сказать про неё ему нечем.
+    """
+    if not columns:
+        return np.zeros((len(x_test), y_train.shape[1]), dtype=float)
+    model = _regressor(Ridge(alpha=1.0))
+    model.fit(x_train[:, columns], y_train)
+    return _response(model, x_test[:, columns], x_centre[:, columns])
+
+
+def _score(actual: np.ndarray, predicted: np.ndarray) -> float | None:
+    """`R²` там, где он определён: у постоянной цели знаменатель нулевой."""
+    if float(np.var(actual)) == 0.0:
+        return None
+    return float(r2_score(actual, predicted))
 
 
 def _month_number(values: pd.Series, start: pd.Timestamp) -> pd.Series:
