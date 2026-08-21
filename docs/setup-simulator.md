@@ -242,3 +242,65 @@ tail -f ~/runs/doe-all-near/run.log
 пакета по 4 процесса — 24 минуты на сценарий в каждом, то есть 12 минут
 эффективно. Упор в процессор, а не в память; подъём лимита памяти WSL до 11 ГБ
 был необходимым условием (один прогон занимает 2,9 ГБ), но не ускорением.
+
+## Машина А на Windows 11 + WSL2: проверено 21.08, полный расчёт прошёл
+
+Здесь нет Docker Desktop и нет прямого доступа к Docker Hub, поэтому путь
+отличается от разделов выше. Итог: `flow 2026.04` в образе `aios`, полный расчёт
+за 18 мин 43 с, ЧДД совпал с эталонным (`docs/experiments.md`, запись 21.08).
+
+Дистрибутив — Ubuntu 22.04 (`wsl -d ozon -u root`), Docker уже стоял внутри него.
+
+**Четыре грабли, каждая из которых стоила прогона:**
+
+1. **PPA `opm/ppa` не собирается под 22.04.** `apt install libopm-simulators-bin`
+   в самом WSL ставит `flow 2021.10` из штатного репозитория Ubuntu — не ту
+   версию, на которой считался весь наш журнал. Она удалена намеренно: пока
+   `flow` есть в PATH, `scripts/run_flow.sh` посчитает им и не скажет ни слова.
+   Считаем только в образе (там 24.04, и PPA даёт 2026.04).
+2. **Docker Hub недоступен из этой сети** (таймаут на `auth.docker.io`).
+   Лечится зеркалом в `/etc/docker/daemon.json`:
+   `{"registry-mirrors": ["https://mirror.gcr.io"]}` и `service docker restart`.
+3. **Сборка образа — только с `--network=host`.** Иначе `apt-get update` внутри
+   сборки не достаёт до `archive.ubuntu.com`, и шаг падает с `exit code 100` и
+   сообщением «Unable to locate package», которое выглядит как ошибка в
+   Dockerfile, хотя это сеть:
+   `docker build --network=host -t aios -f docker/Dockerfile .`
+4. **Прогон — только с `--shm-size=2g`.** По умолчанию контейнеру дают 64 МБ
+   `/dev/shm`, OpenMPI на них не запускается, и `mpirun` умирает **молча**: код
+   255, лог обрывается сразу после балансировки нагрузки, ни одной строки об
+   ошибке. Симптом неотличим от нехватки памяти.
+
+**И главное — про саму виртуальную машину WSL.** По умолчанию она гасится, когда
+на Windows-стороне не остаётся ни одной сессии `wsl.exe`. Отсоединённый
+`docker run -d` её не удерживает: расчёт умирал через 2 минуты с кодом 255,
+`uptime` внутри показывал «up 0 min». Лечится `C:\Users\<user>\.wslconfig`:
+
+```ini
+[wsl2]
+memory=6GB
+processors=8
+swap=4GB
+vmIdleTimeout=-1
+```
+
+и `wsl --shutdown` для применения. Память здесь тоже не роскошь: при 3,7 ГБ по
+умолчанию расчёт на 2 процессах MPI не проходит.
+
+**Рабочая последовательность целиком:**
+
+```bash
+# сборка образа — один раз
+wsl -d ozon -u root -e bash -lc "cd /mnt/d/vano/AIOS && docker build --network=host -t aios -f docker/Dockerfile ."
+
+# кейс, расчёт, выгрузка — команда запускается foreground, чтобы держать WSL живой
+D=/mnt/d/vano/AIOS
+R="docker run --rm --network=host --shm-size=2g -v $D:$D -w $D aios"
+wsl -d ozon -u root -e bash -lc "$R python scripts/build_case.py"
+wsl -d ozon -u root -e bash -lc "$R scripts/run_flow.sh runs/base/RUN.DATA 4 --parsing-strictness=low"
+wsl -d ozon -u root -e bash -lc "$R python scripts/export_rows.py runs/base"
+```
+
+Кейс собирается **внутри контейнера**, а не на Windows: `RUN.DATA` ссылается на
+включаемые файлы дека абсолютными путями, и путь обязан быть тем же, по которому
+том виден расчёту (`/mnt/d/...`, а не `D:\...`).
