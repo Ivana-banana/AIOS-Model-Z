@@ -39,6 +39,7 @@ max_field_injection_m3_per_day = 0
 enforce_water_balance = false
 
 # Допуск к балансу: 1.0 — закачиваем ровно столько, сколько подняли.
+water_balance_rule = "compensation"
 water_tolerance = 1.0
 
 [policy]

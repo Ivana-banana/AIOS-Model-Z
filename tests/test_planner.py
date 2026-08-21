@@ -96,6 +96,49 @@ def test_the_corrected_schedule_satisfies_the_balance_check(norms):
     assert balance.problems(corrected, FLUIDS) == []
 
 
+def test_compensation_rule_measures_injection_against_withdrawn_liquid(norms):
+    """Компенсация считается от отобранной жидкости, а не от добытой воды.
+
+    Закачка 1 150 м³ при добытой воде 900 м³ буквальным прочтением отвергается,
+    хотя отобрано 1 000 м³ пластового объёма и компенсация равна 1,15 — обычная
+    величина для заводнения с поддержанием давления. Историческая компенсация
+    Модели Z на расчётном окне — 1,291 (`docs/manus/vrr-water-balance.md`,
+    Р-61), и правило `compensation` не должно резать то, что её не превышает.
+    """
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 1150.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 38.0)])]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
+    )
+
+    assert decisions == []
+    assert result == steps
+
+
+def test_compensation_above_the_ceiling_is_cut_to_the_ceiling(norms):
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 1500.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 50.0)])]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
+    )
+
+    assert [decision.resource for decision in decisions] == ["закачка"]
+    assert result[0].injectors[0].rate == pytest.approx(50.0 * 1300.0 / 1500.0)
+    assert "компенсац" in decisions[0].reason
+
+
+def test_an_unknown_balance_rule_is_refused_not_silently_ignored(norms):
+    with pytest.raises(ValueError, match="water_balance_rule"):
+        planner.enforce(
+            [step(injectors=[inj("9", 10.0)])], [], norms,
+            planner.Limits(water_balance_rule="voidage"), FLUIDS,
+        )
+
+
 def test_balance_enforcement_can_be_switched_off(norms):
     forecast = [produced("2007-01-01", "1", 100.0, 100.0), injected("2007-01-01", "9", 5000.0)]
     steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 160.0)])]

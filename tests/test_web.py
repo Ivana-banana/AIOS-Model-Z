@@ -33,6 +33,7 @@ water_density = 1172.0
 max_field_liquid_m3_per_day = 0
 max_field_injection_m3_per_day = 0
 enforce_water_balance = true
+water_balance_rule = "compensation"
 water_tolerance = 1.0
 
 [explain]

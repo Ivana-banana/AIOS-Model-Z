@@ -108,6 +108,9 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
             enforce_water_balance=bool(
                 _value(limits, "enforce_water_balance", "limits", source)
             ),
+            water_balance_rule=str(
+                _value(limits, "water_balance_rule", "limits", source)
+            ),
             water_tolerance=_positive(limits, "water_tolerance", "limits", source),
         ),
         policy=PolicyConfig(

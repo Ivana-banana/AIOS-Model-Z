@@ -52,10 +52,29 @@ class Limits:
     """Предел поверхностной системы ППД по закачке. None — число неизвестно."""
 
     enforce_water_balance: bool = True
-    """Ограничивать закачку добытой водой."""
+    """Ограничивать закачку балансом воды вообще."""
+
+    water_balance_rule: str = "produced_water"
+    """Чем ограничена закачка: `produced_water` или `compensation`.
+
+    `produced_water` — буквальное прочтение ответа организаторов «дополнительной
+    воды нет»: накопленная закачка не выше накопленной добытой воды. На истории
+    Модели Z оно даёт 2,32, то есть **отвергает саму историю месторождения**.
+
+    `compensation` — компенсация отбора закачкой: закачка возмещает отобранный
+    объём в пластовых условиях (нефть вместе с водой). На той же истории — 1,291,
+    обычная величина для заводнения с поддержанием давления. Отраслевой нормы
+    вида «закачка ≤ добытая вода» не существует: нормируются источник, качество и
+    максимальный годовой объём (`docs/manus/vrr-water-balance.md`).
+    """
 
     water_tolerance: float = 1.0
-    """Допуск к балансу: 1.0 — закачиваем ровно столько, сколько подняли."""
+    """Во сколько раз закачка может превышать базу правила.
+
+    Для `produced_water` 1.0 означает «закачиваем ровно столько, сколько подняли»;
+    для `compensation` это потолок компенсации — 1.3 держит нас не выше
+    исторической компенсации объекта (1,291).
+    """
 
 
 @dataclass(frozen=True)
@@ -93,9 +112,19 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     result = list(steps)
     decisions: list[Allocation] = []
 
+    if limits.water_balance_rule not in ("produced_water", "compensation"):
+        raise ValueError(
+            f"неизвестное water_balance_rule: {limits.water_balance_rule!r}; "
+            "допустимы 'produced_water' и 'compensation'"
+        )
+
     if limits.enforce_water_balance:
-        result, water = _fit_injection_to_available_water(result, forecast, fluids,
-                                                          limits.water_tolerance)
+        if limits.water_balance_rule == "compensation":
+            result, water = _fit_injection_to_compensation(result, forecast, fluids,
+                                                           limits.water_tolerance)
+        else:
+            result, water = _fit_injection_to_available_water(result, forecast, fluids,
+                                                              limits.water_tolerance)
         decisions.extend(water)
 
     if limits.max_field_liquid_m3_per_day is not None:
@@ -182,12 +211,7 @@ def _fit_injection_to_available_water(steps: list[ScheduleStep],
                                       forecast: list[dict[str, Any]],
                                       fluids: Fluids,
                                       tolerance: float) -> tuple[list[ScheduleStep], list[Allocation]]:
-    """Ужать закачку до объёма добытой воды.
-
-    Пропорционально по всем нагнетательным: чья закачка полезнее, тривиальный
-    суррогат сказать не может, и выдумывать приоритет здесь было бы хуже, чем
-    признать, что мы его не знаем.
-    """
+    """Ужать закачку до объёма добытой воды."""
     produced = 0.0
     planned = 0.0
     for row in forecast:
@@ -200,7 +224,52 @@ def _fit_injection_to_available_water(steps: list[ScheduleStep],
     if planned <= allowed or planned <= 0:
         return steps, []
 
-    factor = allowed / planned
+    return _scale_injection(
+        steps, allowed / planned,
+        f"закачка {planned:,.0f} м³ превышает добытую воду "
+        f"{produced:,.0f} м³; источника сверх неё нет",
+    )
+
+
+def _fit_injection_to_compensation(steps: list[ScheduleStep],
+                                   forecast: list[dict[str, Any]],
+                                   fluids: Fluids,
+                                   ceiling: float) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Ужать закачку до компенсации отобранного объёма в пластовых условиях.
+
+    База — нефть вместе с водой, а не одна вода: закачка при заводнении возмещает
+    отобранную пустотность, иначе поддерживать пластовое давление было бы нечем.
+    Объёмные коэффициенты Модели Z измерены по деку (`Bв = 1,0000`,
+    `Bн` = 0,9862…1,0078), то есть поверхностные объёмы здесь практически равны
+    пластовым; на другом кейсе это нужно будет пересчитать (Р-61).
+
+    Ужимаем пропорционально по всем нагнетательным — по той же причине, что и в
+    `_fit_injection_to_available_water`: чья закачка полезнее, тривиальный
+    суррогат сказать не может.
+    """
+    withdrawn = 0.0
+    planned = 0.0
+    for row in forecast:
+        oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
+        if liquid_t > 0 and 0 <= oil_t <= liquid_t:
+            withdrawn += oil_t * 1000.0 / fluids.oil_density
+            withdrawn += (liquid_t - oil_t) * 1000.0 / fluids.water_density
+        planned += max(row["WWIT_Diff"], 0.0)
+
+    allowed = withdrawn * ceiling
+    if planned <= allowed or planned <= 0:
+        return steps, []
+
+    return _scale_injection(
+        steps, allowed / planned,
+        f"закачка {planned:,.0f} м³ даёт компенсацию {planned / withdrawn:.2f} "
+        f"от отобранных {withdrawn:,.0f} м³ при потолке {ceiling:.2f}",
+    )
+
+
+def _scale_injection(steps: list[ScheduleStep], factor: float,
+                     reason: str) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Пропорционально ужать закачку всех открытых нагнетательных."""
     decisions: list[Allocation] = []
     seen: set[str] = set()
     result: list[ScheduleStep] = []
@@ -215,16 +284,8 @@ def _fit_injection_to_available_water(steps: list[ScheduleStep],
             if control.well not in seen:
                 seen.add(control.well)
                 decisions.append(
-                    Allocation(
-                        well=control.well,
-                        resource="закачка",
-                        before=control.rate,
-                        after=reduced,
-                        reason=(
-                            f"закачка {planned:,.0f} м³ превышает добытую воду "
-                            f"{produced:,.0f} м³; источника сверх неё нет"
-                        ),
-                    )
+                    Allocation(well=control.well, resource="закачка",
+                               before=control.rate, after=reduced, reason=reason)
                 )
             injectors.append(
                 InjectorControl(control.well, control.fluid, control.status, control.mode,
