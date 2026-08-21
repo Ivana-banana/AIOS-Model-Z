@@ -312,19 +312,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         right_annual = {year["year"]: year for year in right_npv.annual}
         years = sorted(set(left_annual) | set(right_annual))
 
-        left_wells = screen(left_rows, norms)
-        right_wells = {verdict.well: verdict for verdict in screen(right_rows, norms)}
-        deltas = sorted(
-            (
-                (
-                    verdict.well,
-                    verdict.total_margin_m,
-                    right_wells[verdict.well].total_margin_m if verdict.well in right_wells else 0.0,
-                )
-                for verdict in left_wells
-            ),
-            key=lambda item: -abs(item[2] - item[1]),
-        )[:20]
+        deltas = margin_deltas(left_rows, right_rows, norms)
 
         return TEMPLATES.TemplateResponse(
             request=request,
@@ -528,6 +516,31 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     return application
 
+
+
+def margin_deltas(left_rows: list[dict[str, Any]], right_rows: list[dict[str, Any]],
+                  norms: Norms, limit: int = 20) -> list[tuple[str, float | None, float | None]]:
+    """Скважины, на которых разошлись деньги двух сценариев.
+
+    Перебирается **объединение** фондов, а не фонд левого прогона. До 21.08
+    считалось иначе, и страница с заголовком «где именно разошлись деньги» врала
+    в обе стороны сразу: скважина, которой нет справа, показывалась как
+    «справа +0.00, дельта −1.08» — то есть будто потеряла все деньги, — а
+    скважина, которой нет слева, не показывалась вовсе.
+
+    На двух прогонах одного дека фонд совпадает и разницы не видно. Она видна
+    там, где сравнение и нужно: наш прогон против прогона на кейсе организаторов,
+    где фонд другой.
+
+    `None` вместо числа означает «в этом прогоне скважины нет». Ноль сюда не
+    годится: ноль — это работающая скважина, не заработавшая ничего.
+    """
+    left = {verdict.well: verdict.total_margin_m for verdict in screen(left_rows, norms)}
+    right = {verdict.well: verdict.total_margin_m for verdict in screen(right_rows, norms)}
+    return sorted(
+        ((well, left.get(well), right.get(well)) for well in set(left) | set(right)),
+        key=lambda item: -abs((item[2] or 0.0) - (item[1] or 0.0)),
+    )[:limit]
 
 def load_rows(run: Run, fluids: summary.Fluids,
               well_fluids: dict[str, summary.Fluids] | None = None) -> list[dict[str, Any]]:
