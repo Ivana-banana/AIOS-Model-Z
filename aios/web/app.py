@@ -228,6 +228,7 @@ def load_surrogate_status(path: Path) -> SurrogateStatus:
                 "neural_skill": _optional_float(values.get("neural_skill")),
                 "neural_skill_median": _optional_float(values.get("neural_skill_median")),
                 "neural_skill_iqr": _optional_float(values.get("neural_skill_iqr")),
+                "linear_skill_median": _optional_float(values.get("linear_skill_median")),
             }
             for target, values in raw["metrics"].items()
         )

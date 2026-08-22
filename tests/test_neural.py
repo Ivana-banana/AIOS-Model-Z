@@ -1197,3 +1197,23 @@ def test_without_a_holdout_the_report_says_so_rather_than_pretending():
     bundle = train(dataset(), seed=7, control_start=None)
 
     assert bundle.report.holdout_scenarios == ()
+
+
+def test_the_median_skill_gate_judges_the_model_that_actually_goes_into_the_cycle():
+    """Для линейной модели порог обязан смотреть на её медиану, а не на медиану сети.
+
+    Дефект был тихим ровно в ту сторону, которая опасна: линейная модель могла
+    пройти допуск по чужому показателю — по медиане MLP, которого в цикле нет.
+    """
+    metric = TargetMetric(
+        neural_mae=1.0, linear_mae=2.0, neural_r2=0.95, linear_r2=0.9,
+        neural_response_r2=0.6, linear_response_r2=0.5,
+        neural_skill_median=0.4, linear_skill_median=-0.1,
+    )
+    report = TrainingReport(
+        train_scenarios=("s1",), test_scenarios=("s2",), wells=1, rows=10,
+        metrics=dict.fromkeys(TARGET_COLUMNS, metric), kind="linear",
+    )
+
+    with pytest.raises(ValueError, match="хуже бездействия"):
+        assert_quality(report)

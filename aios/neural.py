@@ -132,6 +132,7 @@ class TargetMetric:
 
     neural_skill_median: float | None = None
     neural_skill_iqr: float | None = None
+    linear_skill_median: float | None = None
     """Медиана и межквартильный размах `Skill_MAE` **по отложенным сценариям**.
 
     Одно среднее число скрывает главное: разбор 4-5 требует показывать разброс,
@@ -772,6 +773,9 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
             neural_skill_iqr=_skill_spread(
                 residual[:, index], neural_predicted[:, index] - level_predicted[:, index],
                 scenario_of_row)[1],
+            linear_skill_median=_skill_spread(
+                residual[:, index], linear_predicted[:, index] - level_predicted[:, index],
+                scenario_of_row)[0],
         )
         for index, target in enumerate(TARGET_COLUMNS)
     }
@@ -947,7 +951,9 @@ def assert_quality(report: TrainingReport) -> None:
             "по градиенту отклика"
         )
 
-    useless = _failing(report, "neural_skill_median")
+    useless = _failing(
+        report, "linear_skill_median" if report.kind == "linear" else "neural_skill_median"
+    )
     if useless:
         raise ValueError(
             f"{name} на большинстве отложенных сценариев хуже бездействия "
