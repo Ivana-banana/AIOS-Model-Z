@@ -170,6 +170,14 @@ class TrainingReport:
     metric_start: str = ""
     """С какой даты считались метрики; пусто — считались по всей выборке."""
 
+    holdout_scenarios: tuple[str, ...] = ()
+    """Сценарии замороженного внешнего теста, исключённые из обучения целиком.
+
+    Пусто — внешнего теста не было, и тогда любое сравнение моделей между собой
+    сделано на той же выборке, по которой их и выбирали (`aios/holdout.py`).
+    Это не запрещено, но означает, что «стало лучше» здесь непроверяемо.
+    """
+
     wells_without_model: tuple[str, ...] = ()
     """Скважины фонда, которым модели не досталось.
 
@@ -593,7 +601,8 @@ class NeuralSurrogate:
 def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
           hidden_layers: tuple[int, ...] = (32, 16), max_iter: int = 300,
           kind: str = "mlp", control_start: date | None = None,
-          targets: str = "raw", features: str = "own") -> NeuralBundle:
+          targets: str = "raw", features: str = "own",
+          holdout: frozenset[str] | None = None) -> NeuralBundle:
     """Обучить модель на каждую скважину и измерить held-out ошибку.
 
     `kind` выбирает, какая из двух обученных моделей поедет в цикл: `mlp` или
@@ -625,8 +634,19 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     data["well"] = data["well"].astype(str)
     data["DATA"] = pd.to_datetime(data["DATA"], errors="raise")
 
+    # замороженный внешний тест убирается ДО разбиения, а не после: иначе он
+    # попадёт то в обучение, то в отбор, и перестанет быть внешним (`Р-80`)
+    available = data["scenario"].unique().tolist()
+    if holdout:
+        available = [name for name in available if name not in holdout]
+        if len(available) < 3:
+            raise ValueError(
+                f"после исключения замороженного теста осталось {len(available)} "
+                "сценариев — обучать не на чем"
+            )
+        data = data[~data["scenario"].isin(holdout)]
     train_scenarios, test_scenarios = split_scenarios(
-        data["scenario"].unique().tolist(), seed=seed, test_fraction=test_fraction
+        available, seed=seed, test_fraction=test_fraction
     )
     controls = _control_matrix(data)
     start_month = data["DATA"].min()
@@ -769,6 +789,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         metric_start="" if control_start is None else control_start.isoformat(),
         kind=kind,
         features=features,
+        holdout_scenarios=tuple(sorted(holdout or ())),
     )
     return NeuralBundle(
         tuple(controls.columns), models, start_month, month_span,

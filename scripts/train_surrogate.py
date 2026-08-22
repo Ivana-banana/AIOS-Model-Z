@@ -21,6 +21,7 @@ import pandas as pd  # noqa: E402
 import sklearn  # noqa: E402
 
 from aios import config as config_module  # noqa: E402
+from aios import holdout as holdout_module  # noqa: E402
 from aios.neural import (  # noqa: E402
     FEATURE_KINDS,
     TrainingReport,
@@ -51,15 +52,27 @@ def main(argv: list[str] | None = None) -> int:
         "--model", choices=("mlp", "linear"), default="mlp",
         help="какая из двух обученных моделей поедет в цикл; меряются обе в любом случае",
     )
+    parser.add_argument(
+        "--holdout", default=str(holdout_module.DEFAULT_PATH),
+        help="файл замороженного внешнего теста; его сценарии исключаются целиком",
+    )
     arguments = parser.parse_args(argv)
 
     settings = config_module.load(arguments.config)
     frame = load_datasets(arguments.dataset)
+    frozen = holdout_module.load(Path(arguments.holdout))
+    if frozen is None:
+        print(f"внешнего теста нет ({arguments.holdout}): сравнение моделей между "
+              "собой сделано на той же выборке, по которой их и выбирали")
+    else:
+        print(f"замороженный внешний тест: {len(frozen.scenarios)} сценариев, "
+              f"заморожен {frozen.frozen_at}")
     # метрики считаются только на управляемой части горизонта: история у всех
     # сценариев одна и по входу, и по отклику, поэтому по ней меряется память
     bundle = train(frame, seed=settings.run.seed, kind=arguments.model,
                    control_start=settings.case.control_start,
-                   targets=arguments.targets, features=arguments.features)
+                   targets=arguments.targets, features=arguments.features,
+                   holdout=frozen.scenarios if frozen else None)
     metadata = {
         "seed": settings.run.seed,
         "datasets": dataset_fingerprints(arguments.dataset),

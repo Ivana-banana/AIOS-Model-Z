@@ -1166,3 +1166,34 @@ def test_an_artifact_saved_before_the_trust_region_existed_still_loads():
     object.__delattr__(bundle, "trust_region")
 
     assert bundle.trust_region is None
+
+
+def test_frozen_scenarios_reach_neither_training_nor_the_selection_split():
+    """Внешний тест обязан быть исключён целиком, а не попасть в отложенную часть.
+
+    Иначе он перестаёт быть внешним: по отложенной части мы выбираем модель,
+    признаки и пороги, и каждый такой выбор понемногу подгоняет решение под неё.
+    """
+    frame = dataset()
+    every = sorted(frame["scenario"].unique())
+    frozen = frozenset(every[:2])
+
+    bundle = train(frame, seed=7, control_start=None, holdout=frozen)
+
+    assert bundle.report.holdout_scenarios == tuple(sorted(frozen))
+    assert not frozen & set(bundle.report.train_scenarios)
+    assert not frozen & set(bundle.report.test_scenarios)
+
+
+def test_freezing_everything_refuses_instead_of_training_on_nothing():
+    frame = dataset()
+    every = frozenset(frame["scenario"].unique())
+
+    with pytest.raises(ValueError, match="обучать не на чем"):
+        train(frame, seed=7, control_start=None, holdout=every)
+
+
+def test_without_a_holdout_the_report_says_so_rather_than_pretending():
+    bundle = train(dataset(), seed=7, control_start=None)
+
+    assert bundle.report.holdout_scenarios == ()
