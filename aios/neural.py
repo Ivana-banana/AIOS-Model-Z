@@ -133,6 +133,14 @@ class TargetMetric:
     neural_skill_median: float | None = None
     neural_skill_iqr: float | None = None
     linear_skill_median: float | None = None
+
+    neural_skill_scenarios: tuple[float, ...] = ()
+    """`Skill_MAE` по каждому отложенному сценарию — сырьё, а не сводка.
+
+    Хранится целиком, потому что по двум числам (медиана и размах) нельзя
+    пересчитать ни доверительный интервал, ни долю сценариев ниже нуля, а
+    спрашивать это будут именно на защите. Сценариев единицы, места не занимает.
+    """
     """Медиана и межквартильный размах `Skill_MAE` **по отложенным сценариям**.
 
     Одно среднее число скрывает главное: разбор 4-5 требует показывать разброс,
@@ -776,6 +784,9 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
             linear_skill_median=_skill_spread(
                 residual[:, index], linear_predicted[:, index] - level_predicted[:, index],
                 scenario_of_row)[0],
+            neural_skill_scenarios=_skill_by_scenario(
+                residual[:, index], neural_predicted[:, index] - level_predicted[:, index],
+                scenario_of_row),
         )
         for index, target in enumerate(TARGET_COLUMNS)
     }
@@ -845,6 +856,16 @@ def _nrmse(actual_response: np.ndarray, predicted_response: np.ndarray) -> float
     if scale <= 0:
         return None
     return float(np.sqrt(((predicted_response - actual_response) ** 2).mean()) / scale)
+
+
+def _skill_by_scenario(actual_response: np.ndarray, predicted_response: np.ndarray,
+                       scenario_of_row: np.ndarray) -> tuple[float, ...]:
+    """`Skill_MAE` по каждому сценарию, по возрастанию."""
+    return tuple(sorted(
+        value for name in np.unique(scenario_of_row)
+        if (value := _skill(actual_response[scenario_of_row == name],
+                            predicted_response[scenario_of_row == name])) is not None
+    ))
 
 
 def _skill_spread(actual_response: np.ndarray, predicted_response: np.ndarray,
@@ -1394,3 +1415,29 @@ def month_days(value: date) -> int:
 
 def _well_key(name: str) -> tuple[int, int, str]:
     return (0, int(name), "") if name.isdigit() else (1, 0, name)
+
+
+def skill_interval(values: tuple[float, ...] | list[float], *, seed: int = 20260822,
+                   draws: int = 2000, level: float = 0.95) -> tuple[float, float] | None:
+    """Бутстрэп-интервал медианы `Skill_MAE` **по сценариям**.
+
+    Зачем отдельно от самой медианы. Замер 22.08 по нефти дал медиану −0,0581 при
+    межквартильном размахе 0,3495 на двенадцати отложенных сценариях. По двум
+    этим числам нельзя сказать, устойчиво ли «хуже бездействия» или это одна
+    неудачная выборка, — а именно на этом держится решение не пускать модель в
+    цикл.
+
+    Ресэмплинг идёт **по сценариям**, а не по строкам: строки одного прогона
+    зависимы через общее расписание, и бутстрэп по ним дал бы интервал в разы
+    у́же настоящего. Разбор 4-6 говорит это прямо, и там же требование: seed
+    фиксируется заранее, а не подбирается после просмотра результата.
+
+    `None` — сценариев слишком мало, чтобы интервал что-то означал.
+    """
+    sample = np.asarray(values, dtype=float)
+    if sample.size < 3:
+        return None
+    rng = np.random.default_rng(seed)
+    medians = np.median(rng.choice(sample, size=(draws, sample.size), replace=True), axis=1)
+    tail = (1.0 - level) / 2
+    return float(np.quantile(medians, tail)), float(np.quantile(medians, 1 - tail))
