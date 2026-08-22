@@ -49,7 +49,7 @@ def _package(root: Path) -> tuple[Path, Path]:
 def test_a_complete_package_passes_all_nine_requirements(tmp_path):
     schedule, model = _package(tmp_path)
 
-    checks = audit(tmp_path, schedule, model)
+    checks = audit(tmp_path, schedule, model, model_validator=lambda _: None)
 
     assert len(checks) == 10  # девять пунктов ТЗ + лицензионный контроль
     assert all(item.ready for item in checks)
@@ -72,7 +72,27 @@ def test_seed_is_required_for_reproduction(tmp_path):
     schedule, model = _package(tmp_path)
     (tmp_path / "config.toml").write_text("[doe]\nscenarios = 12\n", encoding="utf-8")
 
-    checks = {item.number: item for item in audit(tmp_path, schedule, model)}
+    checks = {
+        item.number: item
+        for item in audit(tmp_path, schedule, model, model_validator=lambda _: None)
+    }
 
     assert not checks["4"].ready
     assert "seed" in checks["4"].detail
+
+
+def test_existing_model_must_pass_the_quality_gate(tmp_path):
+    schedule, model = _package(tmp_path)
+
+    checks = {
+        item.number: item
+        for item in audit(
+            tmp_path,
+            schedule,
+            model,
+            model_validator=lambda _: "MLP не прошёл порог",
+        )
+    }
+
+    assert not checks["9"].ready
+    assert checks["9"].detail == "MLP не прошёл порог"

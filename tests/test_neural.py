@@ -283,6 +283,19 @@ def test_multiple_doe_packages_keep_scenarios_distinct(tmp_path):
     assert set(combined["scenario"]) == {"dataset:doe-000", "dataset-levels:doe-000"}
 
 
+def test_multiple_doe_packages_have_a_canonical_order(tmp_path):
+    first = tmp_path / "b.csv"
+    second = tmp_path / "a.csv"
+    pd.DataFrame({"scenario": ["one"], "value": [1]}).to_csv(first, index=False)
+    pd.DataFrame({"scenario": ["two"], "value": [2]}).to_csv(second, index=False)
+
+    forward = load_datasets([str(first), str(second)])
+    reverse = load_datasets([str(second), str(first)])
+
+    pd.testing.assert_frame_equal(forward, reverse)
+    assert forward["scenario"].tolist() == ["a:two", "b:one"]
+
+
 def test_dataset_fingerprint_records_exact_bytes(tmp_path):
     path = tmp_path / "dataset.csv"
     path.write_bytes(b"scenario,value\na,1\n")

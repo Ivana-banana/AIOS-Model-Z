@@ -15,6 +15,7 @@ import argparse
 import re
 import sys
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,7 +31,13 @@ class Check:
     detail: str
 
 
-def audit(root: Path, schedule: Path, model: Path) -> list[Check]:
+def audit(
+    root: Path,
+    schedule: Path,
+    model: Path,
+    *,
+    model_validator: Callable[[Path], str | None] | None = None,
+) -> list[Check]:
     """Состояние обязательного пакета; пути могут быть вне корня проекта."""
     source = _files(root / "aios", "*.py")
     scripts = _files(root / "scripts", "*.py")
@@ -48,6 +55,9 @@ def audit(root: Path, schedule: Path, model: Path) -> list[Check]:
     config_error = _config_problem(config)
     schedule_path = _resolve(root, schedule)
     model_path = _resolve(root, model)
+    model_error = None
+    if model_path.is_file():
+        model_error = (model_validator or _model_problem)(model_path)
     ui = (root / "aios" / "web" / "app.py", root / "aios" / "explain.py")
     templates = _files(root / "aios" / "web" / "templates", "*.html")
     licenses = (
@@ -80,10 +90,12 @@ def audit(root: Path, schedule: Path, model: Path) -> list[Check]:
         Check("8", "веб-платформа и LLM", _all_files(ui) and len(templates) >= 5,
               _missing(ui) or f"FastAPI, explain.py, HTML-шаблонов: {len(templates)}"),
         Check("9", "суррогат и описание",
-              model_path.is_file() and (root / "aios" / "neural.py").is_file()
+              model_path.is_file() and model_error is None
+              and (root / "aios" / "neural.py").is_file()
               and (root / "docs" / "surrogate.md").is_file(),
               (
-                  f"{model_path} + код + описание" if model_path.is_file()
+                  model_error if model_error is not None
+                  else f"{model_path} + код + описание" if model_path.is_file()
                   else f"нет обученного артефакта {model_path}"
               )),
         Check("L", "лицензии и происхождение", _all_files(licenses),
@@ -142,6 +154,24 @@ def _declared_npv(path: Path) -> str | None:
         return None
     match = DECLARED_NPV.search(path.read_text(encoding="utf-8"))
     return match.group(1) if match else None
+
+
+def _model_problem(path: Path) -> str | None:
+    """Проверить, что файл является суррогатом, который можно пустить в цикл."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    try:
+        import joblib
+
+        from aios.neural import NeuralBundle, assert_quality
+
+        bundle = joblib.load(path)
+        if not isinstance(bundle, NeuralBundle):
+            return f"артефакт не NeuralBundle: {type(bundle).__name__}"
+        assert_quality(bundle.report)
+    except Exception as error:  # битый pickle тоже должен стать отказом допуска
+        return f"модель не прошла допуск: {error}"
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
