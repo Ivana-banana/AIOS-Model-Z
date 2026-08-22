@@ -36,6 +36,56 @@
 </section>
 
 <section>
+  <h2>Мера доверия к суррогату</h2>
+  {% if trust.state == 'missing' %}
+  <p class="muted">
+    Доверенная область не собрана: нет <code>artifacts/trust-gate.json</code>.
+    Поиск идёт по одному покоординатному правилу, совместно нетипичный режим им
+    не ловится — <code>scripts/trust_gate.py</code>.
+  </p>
+  {% elif trust.state == 'invalid' %}
+  <p class="muted">Артефакт доверия повреждён или имеет неизвестный формат.</p>
+  {% else %}
+  <div class="grid">
+    <div class="tile">
+      <div class="label">Обучающих сценариев</div>
+      <div class="value">{{ trust.scenarios }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Порог расстояния τ</div>
+      <div class="value">{{ '%.3g'|format(trust.threshold) if trust.threshold is not none else 'нет' }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Пар для калибровки</div>
+      <div class="value">{{ trust.samples }}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Запас против оптимизма</div>
+      <div class="value">
+        {%- if trust.margin is not none -%}{{ '%.4g'|format(trust.margin) }}
+        {%- else -%}<strong>не калиброван</strong>{%- endif -%}
+      </div>
+    </div>
+  </div>
+  {% if trust.state == 'uncalibrated' %}
+  <p style="margin-top:12px"><strong>Мера доверия не калибрована; кандидат обязателен к полному расчёту.</strong>
+    {{ trust.reason }}</p>
+  {% endif %}
+  {% if trust.audit %}
+  <p class="muted" style="margin-top:12px">
+    Аудит сдвинутых режимов: из {{ trust.audit.candidates }} кандидатов
+    покоординатную проверку прошли {{ trust.audit.passed_coordinatewise }},
+    сценарное расстояние — {{ trust.audit.passed_scenario_distance }};
+    отброшено вторым контуром {{ trust.audit.caught_by_the_second_gate_only }}.
+  </p>
+  {% endif %}
+  {% if trust.scope %}
+  <p class="muted">Область действия гарантии: {{ trust.scope }}.</p>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section>
   <h2>Нейросетевой суррогат</h2>
   {% if surrogate.state == 'ready' %}
   <div class="grid">

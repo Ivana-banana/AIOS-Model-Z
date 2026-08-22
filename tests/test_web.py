@@ -764,3 +764,52 @@ def test_metrics_missing_from_an_older_artifact_read_as_not_measured(project):
 
     assert "не измерено" in text
     assert "хуже бездействия" not in text
+
+
+def test_a_missing_trust_artifact_says_the_second_gate_is_absent(project):
+    text = TestClient(create_app(project)).get("/").text
+
+    assert "Доверенная область не собрана" in text
+
+
+def test_an_uncalibrated_trust_gate_is_never_shown_as_neutral(project):
+    """Требование разбора 4-7 дословно: не зелёный статус, а прямая фраза."""
+    artifacts = project / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "trust-gate.json").write_text(json.dumps({
+        "calibrated": False,
+        "training_scenario_ids": [f"s{i}" for i in range(48)],
+        "threshold_tau": 20.587,
+        "conformal_samples": 0,
+        "optimism_margin": None,
+        "margin_reason": "нет ни одной пары «прогноз и полный расчёт»",
+        "guarantee_scope": "маргинальное покрытие при сценарной обменяемости",
+        "shift_audit": {"candidates": 200, "passed_coordinatewise": 200,
+                        "passed_scenario_distance": 89,
+                        "caught_by_the_second_gate_only": 111},
+    }), encoding="utf-8")
+
+    text = TestClient(create_app(project)).get("/").text
+
+    assert "не калибрована; кандидат обязателен к полному расчёту" in text
+    assert "48" in text and "20.6" in text
+    assert "111" in text, "аудит сдвинутых режимов — то, чем защита доказывает себя"
+
+
+def test_a_calibrated_trust_gate_shows_the_margin_and_still_names_the_scope(project):
+    artifacts = project / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "trust-gate.json").write_text(json.dumps({
+        "calibrated": True,
+        "training_scenario_ids": ["s1", "s2"],
+        "threshold_tau": 3.5,
+        "conformal_samples": 12,
+        "optimism_margin": 421.7,
+        "guarantee_scope": "не гарантия для адаптивно выбранного кандидата",
+    }), encoding="utf-8")
+
+    text = TestClient(create_app(project)).get("/").text
+
+    assert "421.7" in text
+    assert "не калибрована" not in text
+    assert "не гарантия для адаптивно выбранного кандидата" in text

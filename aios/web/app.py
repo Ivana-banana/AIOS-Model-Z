@@ -140,6 +140,60 @@ class CycleRun:
     """Фонд из дека организаторов. `None` — дек недоступен, кейс не собрать."""
 
 
+@dataclass(frozen=True)
+class TrustStatus:
+    """Что интерфейс говорит про меру доверия к суррогату.
+
+    Разбор 4-7 требует этого отдельным пунктом: если хоть один обязательный блок
+    артефакта доверия отсутствует — нет калибровочных сценариев, нет значения
+    полного расчёта, — интерфейс обязан показать **«мера доверия не калибрована;
+    кандидат обязателен к полному расчёту»**, а не нейтральный зелёный статус.
+    Молчание здесь читается как «всё в порядке», а это неправда.
+    """
+
+    state: str
+    """`missing`, `invalid`, `uncalibrated` или `calibrated`."""
+
+    scenarios: int = 0
+    threshold: float | None = None
+    samples: int = 0
+    margin: float | None = None
+    reason: str = ""
+    scope: str = ""
+    audit: dict[str, Any] | None = None
+
+    @property
+    def verdict(self) -> str:
+        if self.state == "calibrated":
+            return "калибрована"
+        if self.state == "uncalibrated":
+            return "не калибрована; кандидат обязателен к полному расчёту"
+        if self.state == "invalid":
+            return "артефакт доверия повреждён"
+        return "не собрана"
+
+
+def load_trust_status(path: Path) -> TrustStatus:
+    """Прочитать `artifacts/trust-gate.json`. Отсутствие файла — не ошибка, а состояние."""
+    if not path.is_file():
+        return TrustStatus("missing")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        calibrated = bool(raw.get("calibrated"))
+        return TrustStatus(
+            state="calibrated" if calibrated else "uncalibrated",
+            scenarios=len(raw.get("training_scenario_ids", [])),
+            threshold=_optional_float(raw.get("threshold_tau")),
+            samples=int(raw.get("conformal_samples") or 0),
+            margin=_optional_float(raw.get("optimism_margin")),
+            reason=str(raw.get("margin_reason") or ""),
+            scope=str(raw.get("guarantee_scope") or ""),
+            audit=raw.get("shift_audit"),
+        )
+    except (ValueError, TypeError):
+        return TrustStatus("invalid")
+
+
 def _passes_response(metric: dict[str, Any]) -> bool:
     """Проходит ли выход порог по **отклику**, а не по цели.
 
@@ -254,6 +308,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "surrogate": load_surrogate_status(
                     project_root / "artifacts" / "surrogate-metrics.json"
                 ),
+                "trust": load_trust_status(project_root / "artifacts" / "trust-gate.json"),
             },
         )
 
