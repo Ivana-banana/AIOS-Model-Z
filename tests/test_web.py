@@ -403,6 +403,20 @@ def test_index_offers_comparison_when_there_are_two_runs(two_runs):
     assert 'action="/compare"' in client.get("/").text
 
 
+def test_cycle_can_start_from_any_ready_scenario(two_runs):
+    """МАС запускается от выбранного прогона, а не только от каталога `base`."""
+    client = TestClient(create_app(two_runs))
+
+    run_page = client.get("/run/tuned")
+    cycle_page = client.get("/run/tuned/cycle")
+
+    assert run_page.status_code == 200
+    assert 'action="/run/tuned/cycle"' in run_page.text
+    assert cycle_page.status_code == 200
+    assert "Цикл управления · прогон «tuned»" in cycle_page.text
+    assert "/run/tuned/cycle?model=decline" in cycle_page.text
+
+
 def test_index_hides_comparison_when_there_is_nothing_to_compare(client):
     assert 'action="/compare"' not in client.get("/").text
 
