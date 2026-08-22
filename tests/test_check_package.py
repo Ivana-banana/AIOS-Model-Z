@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from check_package import audit  # noqa: E402
+from check_package import _schedule_problem, audit  # noqa: E402
 
 
 def _package(root: Path) -> tuple[Path, Path]:
@@ -49,7 +49,13 @@ def _package(root: Path) -> tuple[Path, Path]:
 def test_a_complete_package_passes_all_nine_requirements(tmp_path):
     schedule, model = _package(tmp_path)
 
-    checks = audit(tmp_path, schedule, model, model_validator=lambda _: None)
+    checks = audit(
+        tmp_path,
+        schedule,
+        model,
+        model_validator=lambda _: None,
+        schedule_validator=lambda _: None,
+    )
 
     assert len(checks) == 10  # девять пунктов ТЗ + лицензионный контроль
     assert all(item.ready for item in checks)
@@ -74,7 +80,13 @@ def test_seed_is_required_for_reproduction(tmp_path):
 
     checks = {
         item.number: item
-        for item in audit(tmp_path, schedule, model, model_validator=lambda _: None)
+        for item in audit(
+            tmp_path,
+            schedule,
+            model,
+            model_validator=lambda _: None,
+            schedule_validator=lambda _: None,
+        )
     }
 
     assert not checks["4"].ready
@@ -91,8 +103,41 @@ def test_existing_model_must_pass_the_quality_gate(tmp_path):
             schedule,
             model,
             model_validator=lambda _: "MLP не прошёл порог",
+            schedule_validator=lambda _: None,
         )
     }
 
     assert not checks["9"].ready
     assert checks["9"].detail == "MLP не прошёл порог"
+
+
+def test_existing_schedule_must_pass_the_schedule_gate(tmp_path):
+    schedule, model = _package(tmp_path)
+
+    checks = {
+        item.number: item
+        for item in audit(
+            tmp_path,
+            schedule,
+            model,
+            model_validator=lambda _: None,
+            schedule_validator=lambda _: "в файле нет режимов",
+        )
+    }
+
+    assert not checks["6"].ready
+    assert checks["6"].detail == "в файле нет режимов"
+
+
+def test_schedule_gate_parses_and_validates_controls(tmp_path):
+    valid = tmp_path / "valid.inc"
+    valid.write_text(
+        "DATES\n 1 JAN 2007 /\n/\n"
+        "WCONPROD\n 'W1' OPEN LRAT 1* 1* 1* 20 1* 100 1* 1* /\n/\n",
+        encoding="utf-8",
+    )
+    empty = tmp_path / "empty.inc"
+    empty.write_text("-- нет режимов\n", encoding="utf-8")
+
+    assert _schedule_problem(valid) is None
+    assert _schedule_problem(empty) == "расписание не содержит ни одного шага DATES"

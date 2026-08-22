@@ -37,6 +37,7 @@ def audit(
     model: Path,
     *,
     model_validator: Callable[[Path], str | None] | None = None,
+    schedule_validator: Callable[[Path], str | None] | None = None,
 ) -> list[Check]:
     """Состояние обязательного пакета; пути могут быть вне корня проекта."""
     source = _files(root / "aios", "*.py")
@@ -55,6 +56,9 @@ def audit(
     config_error = _config_problem(config)
     schedule_path = _resolve(root, schedule)
     model_path = _resolve(root, model)
+    schedule_error = None
+    if schedule_path.is_file():
+        schedule_error = (schedule_validator or _schedule_problem)(schedule_path)
     model_error = None
     if model_path.is_file():
         model_error = (model_validator or _model_problem)(model_path)
@@ -79,9 +83,10 @@ def audit(
         Check("5", "материалы сборки Docker", _all_files(docker),
               _missing(docker) or "Dockerfile + lock с хэшами"),
         Check("6", "результат и заявленный ЧДД",
-              schedule_path.is_file() and schedule_path.stat().st_size > 0 and declared is not None,
+              schedule_path.is_file() and schedule_error is None and declared is not None,
               (
-                  f"{schedule_path} + {declared}" if schedule_path.is_file() and declared
+                  schedule_error if schedule_error is not None
+                  else f"{schedule_path} + {declared}" if schedule_path.is_file() and declared
                   else f"нет {schedule_path}" if not schedule_path.is_file()
                   else "в docs/submission.md не найдено заявленное ЧДД"
               )),
@@ -171,6 +176,28 @@ def _model_problem(path: Path) -> str | None:
         assert_quality(bundle.report)
     except Exception as error:  # битый pickle тоже должен стать отказом допуска
         return f"модель не прошла допуск: {error}"
+    return None
+
+
+def _schedule_problem(path: Path) -> str | None:
+    """Разобрать сдаваемое расписание и проверить физические ограничения."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    try:
+        from aios.deck import parse_schedule
+        from aios.schedule import assert_valid
+
+        parsed = parse_schedule(path)
+        if not parsed.steps:
+            return "расписание не содержит ни одного шага DATES"
+        if not any(step.producers or step.injectors for step in parsed.steps):
+            return "расписание не содержит режимов скважин"
+        if parsed.unsupported_controls or parsed.preamble_controls:
+            names = sorted({*parsed.unsupported_controls, *parsed.preamble_controls})
+            return "неподдержанные или недатированные режимы: " + ", ".join(names)
+        assert_valid(parsed.steps)
+    except Exception as error:
+        return f"расписание не прошло проверку: {error}"
     return None
 
 
