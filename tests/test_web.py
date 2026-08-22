@@ -674,3 +674,142 @@ def test_comparison_covers_both_funds_not_only_the_left_one():
     )
     assert by_well["только справа"][0] is None
     assert by_well["общая"][0] is not None and by_well["общая"][1] is not None
+
+
+def _report_with(metrics: dict) -> dict:
+    return {
+        "train_scenarios": ["doe:1", "doe:2", "doe:3"],
+        "test_scenarios": ["doe:4"],
+        "wells": 103,
+        "rows": 914640,
+        "metrics": metrics,
+        "training": {"seed": 1, "sklearn_version": "1.9.0", "pandas_version": "3.0.1",
+                     "datasets": []},
+    }
+
+
+def _render(project, report: dict) -> str:
+    artifacts = project / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "surrogate.joblib").write_bytes(b"model placeholder")
+    (artifacts / "surrogate-metrics.json").write_text(json.dumps(report), encoding="utf-8")
+    return TestClient(create_app(project)).get("/").text
+
+
+def test_the_interface_separates_the_level_from_the_response(project):
+    """Одно `R²` показывало отличную модель там, где управление не предсказано.
+
+    Замер 22.08 по нефти: `R²` цели 0,9504, из них уровень даёт 0,9142. Интерфейс
+    обязан показывать обе величины рядом, иначе он вводит в заблуждение ровно в
+    том месте, где принимается решение.
+    """
+    text = _render(project, _report_with({
+        "WLPT_Diff": {
+            "neural_mae": 1.5, "linear_mae": 2.5,
+            "neural_r2": 0.966, "level_r2": 0.9104,
+            "neural_response_r2": 0.6203, "neural_skill_median": 0.3647,
+        },
+        "WOMT_Diff": {
+            "neural_mae": 0.8, "linear_mae": 1.1,
+            "neural_r2": 0.9504, "level_r2": 0.9142,
+            "neural_response_r2": 0.4215, "slope_response_r2": 0.2793,
+            "neural_skill": 0.0444, "neural_skill_median": -0.0581,
+            "neural_skill_iqr": 0.3495,
+        },
+    }))
+
+    assert "0.9504" in text and "0.9142" in text and "0.4215" in text
+    assert "R² уровня" in text and "R² отклика" in text
+
+
+def test_a_model_worse_than_doing_nothing_is_shown_as_unfit(project):
+    """Отрицательная медиана `Skill` обязана читаться словами, а не числом в углу."""
+    text = _render(project, _report_with({
+        "WLPT_Diff": {
+            "neural_mae": 1.5, "linear_mae": 2.5,
+            "neural_r2": 0.966, "neural_response_r2": 0.62,
+            "neural_skill_median": 0.3647,
+        },
+        "WOMT_Diff": {
+            "neural_mae": 0.8, "linear_mae": 1.1,
+            "neural_r2": 0.9504, "neural_response_r2": 0.4215,
+            "neural_skill_median": -0.0581,
+        },
+    }))
+
+    assert "хуже бездействия" in text
+    assert "порог качества" in text.lower() and "не пройден" in text
+
+
+def test_a_model_that_predicts_the_response_is_shown_as_fit(project):
+    text = _render(project, _report_with({
+        target: {
+            "neural_mae": 0.8, "linear_mae": 1.1,
+            "neural_r2": 0.96, "neural_response_r2": 0.62,
+            "neural_skill_median": 0.3647,
+        }
+        for target in ("WLPT_Diff", "WOMT_Diff")
+    }))
+
+    assert "хуже бездействия" not in text
+    assert "не пройден" not in text
+
+
+def test_metrics_missing_from_an_older_artifact_read_as_not_measured(project):
+    """`нет` и `не измерено` — не то же самое, что «плохо»."""
+    text = _render(project, _report_with({
+        target: {"neural_mae": 0.8, "linear_mae": 1.1}
+        for target in ("WLPT_Diff", "WOMT_Diff")
+    }))
+
+    assert "не измерено" in text
+    assert "хуже бездействия" not in text
+
+
+def test_a_missing_trust_artifact_says_the_second_gate_is_absent(project):
+    text = TestClient(create_app(project)).get("/").text
+
+    assert "Доверенная область не собрана" in text
+
+
+def test_an_uncalibrated_trust_gate_is_never_shown_as_neutral(project):
+    """Требование разбора 4-7 дословно: не зелёный статус, а прямая фраза."""
+    artifacts = project / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "trust-gate.json").write_text(json.dumps({
+        "calibrated": False,
+        "training_scenario_ids": [f"s{i}" for i in range(48)],
+        "threshold_tau": 20.587,
+        "conformal_samples": 0,
+        "optimism_margin": None,
+        "margin_reason": "нет ни одной пары «прогноз и полный расчёт»",
+        "guarantee_scope": "маргинальное покрытие при сценарной обменяемости",
+        "shift_audit": {"candidates": 200, "passed_coordinatewise": 200,
+                        "passed_scenario_distance": 89,
+                        "caught_by_the_second_gate_only": 111},
+    }), encoding="utf-8")
+
+    text = TestClient(create_app(project)).get("/").text
+
+    assert "не калибрована; кандидат обязателен к полному расчёту" in text
+    assert "48" in text and "20.6" in text
+    assert "111" in text, "аудит сдвинутых режимов — то, чем защита доказывает себя"
+
+
+def test_a_calibrated_trust_gate_shows_the_margin_and_still_names_the_scope(project):
+    artifacts = project / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "trust-gate.json").write_text(json.dumps({
+        "calibrated": True,
+        "training_scenario_ids": ["s1", "s2"],
+        "threshold_tau": 3.5,
+        "conformal_samples": 12,
+        "optimism_margin": 421.7,
+        "guarantee_scope": "не гарантия для адаптивно выбранного кандидата",
+    }), encoding="utf-8")
+
+    text = TestClient(create_app(project)).get("/").text
+
+    assert "421.7" in text
+    assert "не калибрована" not in text
+    assert "не гарантия для адаптивно выбранного кандидата" in text

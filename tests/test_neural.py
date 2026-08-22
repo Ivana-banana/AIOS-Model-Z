@@ -1129,3 +1129,40 @@ def _report_with(**values) -> TrainingReport:
         train_scenarios=("s1",), test_scenarios=("s2",), wells=1, rows=10,
         metrics=dict.fromkeys(TARGET_COLUMNS, metric),
     )
+
+
+def test_the_trust_region_is_built_from_training_scenarios_only():
+    """Отложенные сценарии в порог не попадают: иначе он мерит то, чего модель не видела."""
+    bundle = train(dataset(), seed=7, control_start=None)
+
+    region = bundle.trust_region
+    assert region is not None
+    assert set(region.scenarios) == set(bundle.report.train_scenarios)
+    assert not set(region.scenarios) & set(bundle.report.test_scenarios)
+
+
+def test_the_trust_region_survives_the_artifact_round_trip(tmp_path):
+    """Область обязана лежать в том же файле, что и модель, а не рядом."""
+    bundle = train(dataset(), seed=7, control_start=None)
+    path = tmp_path / "bundle.joblib"
+    joblib.dump(bundle, path)
+
+    loaded = joblib.load(path)
+
+    assert loaded.trust_region is not None
+    assert loaded.trust_region.threshold == pytest.approx(bundle.trust_region.threshold)
+    assert loaded.trust_region.scenarios == bundle.trust_region.scenarios
+
+
+def test_an_artifact_saved_before_the_trust_region_existed_still_loads():
+    """Артефакт до 22.08 обязан читаться как «области нет», а не падать.
+
+    Проверено и на настоящем артефакте (`artifacts/srg-own.joblib`, обучен до
+    правки): `trust_region` возвращает `None`. Тест воспроизводит тот же случай
+    синтетически — у распакованного объекта поля в `__dict__` просто нет, и
+    чтение обязано попасть в умолчание класса.
+    """
+    bundle = train(dataset(), seed=7, control_start=None)
+    object.__delattr__(bundle, "trust_region")
+
+    assert bundle.trust_region is None

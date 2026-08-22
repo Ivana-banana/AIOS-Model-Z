@@ -226,6 +226,20 @@ class NeuralBundle:
     уровень сама, и разделять в нём нечего.
     """
 
+    trust_region: trust.TrustRegion | None = None
+    """Доверенная область второго контура шлюза (`Р-72`), собранная на обучении.
+
+    Лежит в артефакте, а не собирается заново при каждом запуске цикла, по двум
+    причинам. Во-первых, она обязана быть снята **только** с обучающих сценариев:
+    пересобрать её позже по всему датасету значит подмешать в порог тестовые
+    прогоны. Во-вторых, артефакт с моделью и артефакт с мерой доверия обязаны
+    быть одной вещью — иначе ничто не мешает применить область одной модели к
+    прогнозу другой.
+
+    `None` — артефакт, обученный до 22.08: второго контура у него нет, и поиск
+    работает как раньше, по одному покоординатному правилу.
+    """
+
     control_center: np.ndarray | None = None
     """Центр обучающих управлений по месяцам: `(month_span + 1) × len(control_wells)`.
 
@@ -758,8 +772,38 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     )
     return NeuralBundle(
         tuple(controls.columns), models, start_month, month_span,
-        _envelope(controls), report, levels=levels, control_center=centre
+        _envelope(controls), report, levels=levels, control_center=centre,
+        trust_region=_trust_region(controls, train_scenarios),
     )
+
+
+def _trust_region(controls: pd.DataFrame,
+                  train_scenarios: frozenset[str] | set[str]) -> trust.TrustRegion | None:
+    """Доверенная область по **обучающим** сценариям (`Р-72`).
+
+    Тестовые сценарии сюда не попадают намеренно: порог `τ` выводится из
+    разреженности самой выборки, и подмешать в неё отложенные прогоны значит
+    измерить область по данным, которых у модели не было.
+
+    `None` возвращается, когда область не определена: обучающих сценариев не
+    больше `k`, либо ни одно управление между ними не менялось. Это не отказ
+    обучения — второй контур просто не собирается, и поиск работает по одному
+    покоординатному правилу, как до 22.08.
+    """
+    chosen = controls.index.get_level_values("scenario").isin(set(train_scenarios))
+    frame = controls[chosen]
+    profiles = {
+        str(name): trust.profile({
+            stamp.date(): dict(zip(frame.columns, (float(v) for v in row), strict=True))
+            for stamp, row in zip(block.index.get_level_values("DATA"),
+                                  block.to_numpy(), strict=True)
+        })
+        for name, block in frame.groupby(level="scenario")
+    }
+    try:
+        return trust.TrustRegion.fit(profiles)
+    except ValueError:
+        return None
 
 
 def _skill(actual_response: np.ndarray, predicted_response: np.ndarray) -> float | None:

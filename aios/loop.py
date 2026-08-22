@@ -151,6 +151,11 @@ def run_cycle(surrogate: Surrogate,
             choices = optimise.choose_joint_rates(
                 surrogate, base_steps, start_date=start_date,
                 limits=limits, norms=norms, fluids=fluids,
+                # второй контур шлюза доверия (`Р-72`) — область лежит в самом
+                # артефакте суррогата, а не собирается здесь заново: иначе ничто
+                # не мешает применить область одной модели к прогнозу другой.
+                # `None` у артефактов до 22.08 — поиск работает как раньше
+                region=getattr(getattr(surrogate, "bundle", None), "trust_region", None),
             )
         else:
             choices = optimise.choose_rates(surrogate, base_steps, norms, start_date=start_date)
