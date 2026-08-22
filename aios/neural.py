@@ -635,7 +635,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     data["DATA"] = pd.to_datetime(data["DATA"], errors="raise")
 
     # замороженный внешний тест убирается ДО разбиения, а не после: иначе он
-    # попадёт то в обучение, то в отбор, и перестанет быть внешним (`Р-80`)
+    # попадёт то в обучение, то в отбор, и перестанет быть внешним (`Р-82`)
     available = data["scenario"].unique().tolist()
     if holdout:
         available = [name for name in available if name not in holdout]
