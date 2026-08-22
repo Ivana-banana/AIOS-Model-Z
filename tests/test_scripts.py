@@ -490,6 +490,15 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert code == 0, printed
     assert "суррогат:" in printed
 
+    monkeypatch.setattr(run_cycle.summary, "sanity_problems", lambda _rows: ["отрицательный объём"])
+    code = run_cycle.main([
+        "--from", str(source.parent), "--confirm", str(tmp_path / "out"),
+        "--no-tune-rates", "--config", str(config),
+    ])
+
+    assert code == 1
+    assert "подтверждать ЧДД" in capsys.readouterr().err
+
 
 def test_pack_npv_skips_a_case_without_our_summary_section(tmp_path, monkeypatch, capsys):
     """Негодная выгрузка — пропуск с названной причиной, а не падение всей таблицы.
