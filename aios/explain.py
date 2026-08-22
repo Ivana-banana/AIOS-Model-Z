@@ -103,6 +103,16 @@ class Evidence:
     caveats: tuple[str, ...] = ()
     """Что этим не доказано. Идёт в объяснение обязательно."""
 
+    period: str = ""
+    """Период, к которому относятся величины: «2007-01…2025-09».
+
+    Заведено 22.08 вместе с метрикой NTI (`aios/explain_quality.py`): числовое
+    утверждение — это кортеж «объект, показатель, значение, единица, период», и
+    до появления этого поля период проверить было не по чему. Пустая строка
+    означает «период не объявлен», а не «любой»: непроверяемое поле честнее
+    оставить пустым, чем подставить правдоподобное.
+    """
+
     def fingerprint(self) -> str:
         """Отпечаток фактов — ключ кэша и признак «объяснение устарело»."""
         payload = json.dumps(
@@ -113,6 +123,7 @@ class Evidence:
                 "numbers": {k: round(v, 6) for k, v in sorted(self.numbers.items())},
                 "confirmed": self.confirmed,
                 "caveats": list(self.caveats),
+                "period": self.period,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -122,6 +133,8 @@ class Evidence:
     def prompt(self) -> str:
         """Блок фактов для модели. Числа даются готовыми строками — их и цитируем."""
         lines = [f"РЕШЕНИЕ: {self.subject}", ""]
+        if self.period:
+            lines += [f"ПЕРИОД (величины относятся к нему): {self.period}", ""]
         if self.observations:
             lines.append("ЧТО УВИДЕЛА СИСТЕМА:")
             lines += [f"- {item}" for item in self.observations]
@@ -217,7 +230,11 @@ def unverified_numbers(text: str, evidence: Evidence) -> tuple[str, ...]:
     # целые части тоже законны: «выросла на 402 тыс. т» при факте 402.0
     allowed |= {float(int(value)) for value in evidence.numbers.values()}
 
-    stripped = _DATE_RE.sub(" ", text)
+    # Порядок обязателен: сначала полные даты, потом голые годы. Наоборот —
+    # из «2007-01» уходит год, а остаток «-01» превращается в «неизвестное
+    # число −1», и шаблонное объяснение перестаёт проходить собственную же
+    # проверку. Поймано замером негативного набора 22.08.
+    stripped = _years_inside_period(_DATE_RE.sub(" ", text), evidence)
     unknown: list[str] = []
     for token in _NUMBER_RE.findall(stripped):
         value = _parse(token)
@@ -229,6 +246,35 @@ def unverified_numbers(text: str, evidence: Evidence) -> tuple[str, ...]:
     return tuple(dict.fromkeys(unknown))
 
 
+#: Голый год: «в 2019 году». Без границ периода это просто число и остаётся им.
+_YEAR_RE = re.compile("(?<![0-9])(?:19|20)[0-9]{2}(?![0-9])")
+
+
+def _years_inside_period(text: str, evidence: Evidence) -> str:
+    """Убрать из текста годы, попадающие в объявленный период фактов.
+
+    Замер 22.08 (`aios/explain_quality.py`, негативный набор): фраза «прирост
+    получен к 2019 году» отвергалась целиком — `2019` не число из расчёта, и
+    проверка честно этого не знала. Отказ по такой причине — **ложный**: год
+    внутри `Evidence.period` не выдуманная величина, а ссылка на период, который
+    мы модели сами и сообщили.
+
+    Год **вне** периода не вычёркивается: «прирост за 1998 год» при фактах за
+    2007…2025 — настоящая ошибка, и отвергать её надо по-прежнему. Периода нет —
+    не вычёркивается ничего: fail-closed остаётся умолчанием.
+    """
+    if not evidence.period:
+        return text
+    bounds = [int(match.group()) for match in _YEAR_RE.finditer(evidence.period)]
+    if not bounds:
+        return text
+    first, last = min(bounds), max(bounds)
+    return _YEAR_RE.sub(
+        lambda match: " " if first <= int(match.group()) <= last else match.group(),
+        text,
+    )
+
+
 def template_text(evidence: Evidence) -> str:
     """Шаблонное объяснение — то, что было до слоя и осталось запасным вариантом.
 
@@ -236,6 +282,8 @@ def template_text(evidence: Evidence) -> str:
     модели обязан быть лучше него, а не заменять его собой.
     """
     lines = [evidence.subject]
+    if evidence.period:
+        lines += ["", f"Период: {evidence.period}"]
     if evidence.observations:
         lines += ["", "Что увидели:"]
         lines += [f"  - {item}" for item in evidence.observations]
@@ -305,12 +353,20 @@ def evidence_from_cycle(result: Any, surrogate_name: str = "") -> Evidence:
         )
         numbers["нарушений ограничений"] = float(len(result.problems))
 
+    # период берётся из шагов самого расписания: «за 2007–2025» в тексте должно
+    # быть проверяемым утверждением, а не общим местом (NTI, aios/explain_quality.py)
+    steps = getattr(result, "steps", ())
+    period = ""
+    if steps:
+        period = f"{steps[0].date:%Y-%m}…{steps[-1].date:%Y-%m}"
+
     return Evidence(
         subject="цикл управления фондом: подбор режимов и остановка убыточных скважин",
         observations=tuple(observations),
         numbers=numbers,
         confirmed=bool(result.confirmed),
         caveats=tuple(caveats),
+        period=period,
     )
 
 
@@ -397,7 +453,12 @@ def explain(evidence: Evidence,
             failure=_failure_text(error),
         )
 
-    rejected = unverified_numbers(text, evidence)
+    # Два барьера, но одно число — одна строка отказа: выдуманное число ловят оба,
+    # и печатать его дважды значит преувеличивать количество ошибок.
+    literal = unverified_numbers(text, evidence)
+    rejected = literal + tuple(f"{token} ({verdict})"
+                               for token, verdict in _broken_tuples(text, evidence)
+                               if token not in literal)
     if rejected:
         return Explanation(
             text=template_text(evidence),
@@ -419,6 +480,31 @@ def explain(evidence: Evidence,
         )
 
     return Explanation(text=text, source="llm", fingerprint=fingerprint, model=settings.model)
+
+
+def _broken_tuples(text: str, evidence: Evidence) -> tuple[tuple[str, str], ...]:
+    """Числа, у которых сломан кортеж «показатель — значение — единица — период».
+
+    Второй барьер поверх `unverified_numbers`, и он ловит другое. Первый отвечает
+    на вопрос «есть ли такое число в расчёте», этот — «о том ли оно». Замер 22.08
+    на негативном наборе из восьми подмен: прежняя сверка ловила четыре
+    (выдуманное число, знак, потерянный разделитель, свой пересчёт), эта — все
+    восемь, добавляя подмену показателя, подмену единицы, округление и чужой
+    период. Ложных отказов на верных текстах — ноль из пяти
+    (`docs/explainability.md`).
+
+    Инвариант, ради которого барьер стоит именно здесь, а не в интерфейсе: ответ,
+    не прошедший проверку, **не может быть показан принятым** — ни на странице
+    цикла, ни в отчёте, ни в кэше. Проверка стоит до записи в кэш.
+
+    Импорт локальный: `aios.explain_quality` читает `Evidence` отсюда, и на
+    уровне модуля это был бы цикл. Метрика живёт рядом с остальными метриками, а
+    не дублируется здесь второй реализацией.
+    """
+    from aios.explain_quality import integrity
+
+    return tuple((number.token, number.verdict)
+                 for number in integrity(text, evidence).failures)
 
 
 def _failure_text(error: Exception) -> str:
