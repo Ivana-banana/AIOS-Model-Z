@@ -283,6 +283,15 @@ def _fit_injection_to_external_water(
         if len(stamp) == 7:
             stamps.add(stamp)
 
+    if not stamps:
+        # Тихо подставить 365 нельзя: на девятнадцатилетнем горизонте это занизило
+        # бы допустимую закачку в двадцать раз и срезало бы её без всякой причины.
+        # Лимит источника — суточный, и без календаря он не переводится в объём.
+        raise ValueError(
+            "правилу external_water нужна колонка DATA в прогнозе: лимит источника "
+            "задан в м³/сут, и без календаря его не с чем сравнивать"
+        )
+
     days = balance.days_of(stamps)
     allowed = produced + limit_m3_per_day * days
     if planned <= allowed or planned <= 0:

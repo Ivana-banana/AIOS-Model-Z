@@ -433,3 +433,24 @@ def test_ranking_ignores_rows_the_methodology_drops(norms):
         f"первой урезана «{liquid[0].well}» — решение принято по строке, "
         "исключённой методикой"
     )
+
+
+def test_external_water_refuses_a_forecast_without_dates_instead_of_guessing(norms):
+    """Лимит источника суточный: без календаря объём не посчитать.
+
+    Тихая подстановка 365 суток на девятнадцатилетнем горизонте занизила бы
+    допустимую закачку в двадцать раз и срезала бы её без причины — то есть
+    изменила бы заявляемый ЧДД молча.
+    """
+    forecast = [
+        {k: v for k, v in produced("2007-01-01", "1", 100.0, 900.0).items() if k != "DATA"},
+        {k: v for k, v in injected("2007-01-01", "9", 1200.0).items() if k != "DATA"},
+    ]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 40.0)])]
+
+    with pytest.raises(ValueError, match="нужна колонка DATA"):
+        planner.enforce(
+            steps, forecast, norms,
+            planner.Limits(water_balance_rule="external_water",
+                           max_external_water_m3_per_day=1.0), FLUIDS,
+        )
