@@ -1152,3 +1152,17 @@ def test_the_trust_region_survives_the_artifact_round_trip(tmp_path):
     assert loaded.trust_region is not None
     assert loaded.trust_region.threshold == pytest.approx(bundle.trust_region.threshold)
     assert loaded.trust_region.scenarios == bundle.trust_region.scenarios
+
+
+def test_an_artifact_saved_before_the_trust_region_existed_still_loads():
+    """Артефакт до 22.08 обязан читаться как «области нет», а не падать.
+
+    Проверено и на настоящем артефакте (`artifacts/srg-own.joblib`, обучен до
+    правки): `trust_region` возвращает `None`. Тест воспроизводит тот же случай
+    синтетически — у распакованного объекта поля в `__dict__` просто нет, и
+    чтение обязано попасть в умолчание класса.
+    """
+    bundle = train(dataset(), seed=7, control_start=None)
+    object.__delattr__(bundle, "trust_region")
+
+    assert bundle.trust_region is None
