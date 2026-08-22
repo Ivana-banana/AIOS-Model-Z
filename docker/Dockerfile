@@ -46,8 +46,17 @@ RUN python3 -m venv "$VIRTUAL_ENV"
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Зависимости ставятся до копирования кода: слой переиспользуется между сборками.
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+#
+# Ставится lock, а не requirements.txt: прямые пакеты запинены все, но resolver
+# тянет ещё 31 транзитивный — включая NumPy, pandas и SciPy, которые приходят
+# через resdata и scikit-learn. Дрейф не гипотетический: внешняя проверка 21.08
+# разрешила SciPy 1.18.0, тот же файл 22.08 даёт 1.18.1.
+#
+# --require-hashes проверяет каждое колесо и заодно запрещает незапиненные
+# строки: если lock перестанет покрывать граф, сборка упадёт, а не поставит
+# что-нибудь свежее молча. Пересобрать lock — scripts/make_lock.py.
+COPY requirements.lock /tmp/requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock
 
 COPY aios /opt/aios/aios
 COPY scripts /opt/aios/scripts
