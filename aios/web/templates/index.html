@@ -80,20 +80,38 @@
       <thead>
         <tr>
           <th>Выход</th><th>MAE MLP</th><th>MAE linear</th>
-          <th>RMSE MLP</th><th>RMSE linear</th><th>R² MLP</th><th>R² linear</th><th>Результат</th>
+          <th title="R² по самой цели: в нём уровень скважины, а не управление">R² цели</th>
+          <th title="Тривиальный предсказатель «среднее по скважине и месяцу»">R² уровня</th>
+          <th title="R² на отклике — по нему ходит оптимизатор">R² отклика</th>
+          <th title="Тупой бейзлайн: свой наклон на собственный множитель">R² бейзлайна</th>
+          <th title="Skill_MAE против «ничего не менять», медиана по сценариям">Skill медиана</th>
+          <th title="Межквартильный размах Skill_MAE по сценариям">Skill разброс</th>
+          <th>Годен для управления</th>
         </tr>
       </thead>
       <tbody>
-      {% for target, neural, linear, neural_rmse, linear_rmse, neural_r2, linear_r2 in surrogate.metrics %}
+      {% for m in surrogate.metrics %}
         <tr>
-          <td><code>{{ target }}</code></td>
-          <td>{{ '%.4g'|format(neural) }}</td>
-          <td>{{ '%.4g'|format(linear) }}</td>
-          <td>{{ '%.4g'|format(neural_rmse) if neural_rmse is not none else 'нет' }}</td>
-          <td>{{ '%.4g'|format(linear_rmse) if linear_rmse is not none else 'нет' }}</td>
-          <td>{{ '%.4g'|format(neural_r2) if neural_r2 is not none else 'нет' }}</td>
-          <td>{{ '%.4g'|format(linear_r2) if linear_r2 is not none else 'нет' }}</td>
-          <td>{{ 'лучше' if neural < linear else 'хуже' }}</td>
+          <td><code>{{ m.target }}</code></td>
+          <td>{{ '%.4g'|format(m.neural_mae) }}</td>
+          <td>{{ '%.4g'|format(m.linear_mae) }}</td>
+          <td>{{ '%.4g'|format(m.neural_r2) if m.neural_r2 is not none else 'нет' }}</td>
+          <td class="muted">{{ '%.4g'|format(m.level_r2) if m.level_r2 is not none else 'нет' }}</td>
+          <td>{{ '%.4g'|format(m.neural_response_r2) if m.neural_response_r2 is not none else 'нет' }}</td>
+          <td class="muted">{{ '%.4g'|format(m.slope_response_r2) if m.slope_response_r2 is not none else 'нет' }}</td>
+          <td>{{ '%+.3f'|format(m.neural_skill_median) if m.neural_skill_median is not none else 'нет' }}</td>
+          <td class="muted">{{ '%.3f'|format(m.neural_skill_iqr) if m.neural_skill_iqr is not none else 'нет' }}</td>
+          <td>
+            {%- if m.neural_skill_median is not none and m.neural_skill_median <= 0 -%}
+              <strong>нет: хуже бездействия на большинстве сценариев</strong>
+            {%- elif m.neural_response_r2 is not none and m.neural_response_r2 <= 0 -%}
+              <strong>нет: отклик не предсказан</strong>
+            {%- elif m.neural_skill_median is none -%}
+              не измерено
+            {%- else -%}
+              да
+            {%- endif -%}
+          </td>
         </tr>
       {% endfor %}
       </tbody>

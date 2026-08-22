@@ -88,9 +88,13 @@ class SurrogateStatus:
     test_scenarios: int = 0
     wells: int = 0
     rows: int = 0
-    metrics: tuple[
-        tuple[str, float, float, float | None, float | None, float | None, float | None], ...
-    ] = ()
+    metrics: tuple[dict[str, Any], ...] = ()
+    """По строке на выход. Ключи именованные, а не позиции в кортеже.
+
+    Кортеж пришлось развернуть 22.08: метрик стало одиннадцать, и распаковка
+    `for target, neural, linear, ... in` в шаблоне перестала читаться — а это тот
+    самый код, где перепутанные местами два столбца никто не заметит.
+    """
     quality_passed: bool = False
     seed: int | None = None
     sklearn_version: str | None = None
@@ -136,33 +140,55 @@ class CycleRun:
     """Фонд из дека организаторов. `None` — дек недоступен, кейс не собрать."""
 
 
+def _passes_response(metric: dict[str, Any]) -> bool:
+    """Проходит ли выход порог по **отклику**, а не по цели.
+
+    Интерфейс до 22.08 показывал «лучше/хуже» по одному MAE и тем самым говорил,
+    что модель годна, когда порог допуска её не пропускает. Здесь та же логика,
+    что в `aios.neural.assert_quality`: положительный `R²` отклика **и**
+    положительная медиана `Skill_MAE` по сценариям. `None` — «не измерено», и за
+    это отвергать нечего: артефакты до 22.08 этих полей не несут.
+    """
+    response = metric.get("neural_response_r2")
+    median = metric.get("neural_skill_median")
+    return (response is None or response > 0) and (median is None or median > 0)
+
+
 def load_surrogate_status(path: Path) -> SurrogateStatus:
     if not path.is_file():
         return SurrogateStatus("missing")
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         metrics = tuple(
-            (
-                target,
-                float(values["neural_mae"]),
-                float(values["linear_mae"]),
-                _optional_float(values.get("neural_rmse")),
-                _optional_float(values.get("linear_rmse")),
-                _optional_float(values.get("neural_r2")),
-                _optional_float(values.get("linear_r2")),
-            )
+            {
+                "target": target,
+                "neural_mae": float(values["neural_mae"]),
+                "linear_mae": float(values["linear_mae"]),
+                "neural_r2": _optional_float(values.get("neural_r2")),
+                # уровень и отклик порознь: в `neural_r2` 91 % занимает
+                # тривиальный уровень скважины, и таблица из одного `R²`
+                # показывала отличную модель там, где управление не предсказано
+                "level_r2": _optional_float(values.get("level_r2")),
+                "neural_response_r2": _optional_float(values.get("neural_response_r2")),
+                "slope_response_r2": _optional_float(values.get("slope_response_r2")),
+                "neural_skill": _optional_float(values.get("neural_skill")),
+                "neural_skill_median": _optional_float(values.get("neural_skill_median")),
+                "neural_skill_iqr": _optional_float(values.get("neural_skill_iqr")),
+            }
             for target, values in raw["metrics"].items()
         )
         if not metrics or not all(
             math.isfinite(value)
             for metric in metrics
-            for value in metric[1:]
-            if value is not None
+            for key, value in metric.items()
+            if key != "target" and value is not None
         ):
             raise ValueError("метрики должны быть конечными числами")
-        by_target = {metric[0]: metric[1:3] for metric in metrics}
+        by_target = {metric["target"]: metric for metric in metrics}
         quality_passed = all(
-            by_target[target][0] < by_target[target][1] for target in QUALITY_TARGETS
+            by_target[target]["neural_mae"] < by_target[target]["linear_mae"]
+            and _passes_response(by_target[target])
+            for target in QUALITY_TARGETS
         )
         training = raw.get("training", {})
         datasets = tuple(
