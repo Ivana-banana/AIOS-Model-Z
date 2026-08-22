@@ -311,3 +311,62 @@ def test_the_deck_we_actually_compute_passes_every_static_check():
     """
     assert deckcheck.check(MODEL_Z) == []
     assert len(deckcheck.notes(MODEL_Z)) == 4
+
+
+# ── три ложных срабатывания, найденных на открытых деках (docs/portability.md) ──
+
+def test_an_include_without_quotes_is_a_legal_form(tmp_path):
+    """SPE9 из opm-data пишет путь голым токеном; OPM считает эти деки регрессией.
+
+    Требование кавычек безусловно давало отказ ECL-002 и — хуже — останавливало
+    все последующие проверки.
+    """
+    (tmp_path / "TOPSVALUES.DATA").write_text("-- nothing\n", encoding="ascii")
+    path = deck(tmp_path, "GRID\nINCLUDE\nTOPSVALUES.DATA /\n")
+
+    assert "ECL-002" not in codes(deckcheck.check(path))
+
+
+def test_a_quoted_include_with_spaces_still_works(tmp_path):
+    """Кавычки нужны именно для таких путей, и они обязаны продолжать работать."""
+    (tmp_path / "a b").mkdir()
+    (tmp_path / "a b" / "grid.inc").write_text("-- nothing\n", encoding="ascii")
+    path = deck(tmp_path, "GRID\nINCLUDE\n  'a b/grid.inc' /\n")
+
+    assert "ECL-002" not in codes(deckcheck.check(path))
+
+
+def test_a_well_name_padded_with_spaces_is_the_same_well(tmp_path):
+    """Eclipse дополняет имена до восьми символов: 'INJE1 ' и 'INJE1' — одна скважина.
+
+    Сравнение как есть давало 10 ложных отказов ECL-009 на SPE9group.
+    """
+    path = deck(
+        tmp_path,
+        "SCHEDULE\nWELSPECS\n  'INJE1 ' 'G1' 10 10 1* WATER /\n/\n"
+        "WCONINJE\n  'INJE1' WATER OPEN RATE 100.0 /\n/\n",
+    )
+
+    assert "ECL-009" not in codes(deckcheck.check(path))
+    assert "ECL-014" not in codes(deckcheck.check(path)), "и не коллизия регистра"
+
+
+def test_pvtnum_assigned_through_equals_counts_as_defined(tmp_path):
+    """Norne задаёт регион строкой внутри EQUALS, а не своим ключевым словом.
+
+    Регион при этом полностью выводим, и отказ был отказом на рабочем деке.
+    """
+    path = deck(
+        tmp_path,
+        "TABDIMS\n  2 2 50 50 /\n\nREGIONS\nEQUALS\n"
+        "  'PVTNUM' 1 1 46 1 112 1 22 /\n/\n",
+    )
+
+    assert "ECL-006" not in codes(deckcheck.check(path))
+
+
+def test_several_pvt_regions_with_no_assignment_anywhere_are_still_refused(tmp_path):
+    """Смягчение не должно превратиться в отсутствие проверки."""
+    path = deck(tmp_path, "TABDIMS\n  2 2 50 50 /\n")
+
+    assert "ECL-006" in codes(deckcheck.check(path))

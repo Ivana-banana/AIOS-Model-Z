@@ -82,7 +82,11 @@ _MONTHS = {
     "JLY": 7,
 }
 
-_INCLUDE_PATH = re.compile(r"""['"]([^'"]+)['"]""")
+# Кавычки в `INCLUDE` необязательны: они нужны, когда в пути есть пробелы или
+# спецсимволы. SPE9 из `opm-data` пишет путь голым токеном, и это законная форма —
+# OPM считает эти деки своей регрессией. Требовать кавычки безусловно значит
+# отвергать половину открытых деков (`docs/portability.md`, ложное срабатывание 1).
+_INCLUDE_PATH = re.compile(r"""['"]([^'"]+)['"]|([^\s'"/]+)""")
 # до 15 символов, а не до 8: COMPDATMD длиннее формального предела, и
 # ловить его надо именно потому, что Flow смотрит только первые восемь
 _INCLUDE_LINE = re.compile(r"^\s*INCLUDE\s*$", re.IGNORECASE)
@@ -91,7 +95,8 @@ _KEYWORD_LINE = re.compile(r"^\s*([A-Z][A-Z0-9_-]{1,15})\s*$", re.MULTILINE)
 #: Ключевые слова, у которых мы смотрим **записи**, а не только присутствие.
 #: Только файлы с ними разбираются целиком — см. комментарий в `check`.
 _RECORD_KEYWORDS = frozenset({
-    "TABDIMS", "DATES", "WELSPECS", *WELL_REFERENCING,
+    "TABDIMS", "DATES", "WELSPECS", "EQUALS", "COPY", "ADD", "MULTIPLY", "OPERATE",
+    *WELL_REFERENCING,
 })
 
 
@@ -253,10 +258,14 @@ def _include_tree(root: Path) -> tuple[list[Path], list[Refusal]]:
 
 
 def _include_target(lines: list[str], after: int) -> str | None:
+    """Имя файла после `INCLUDE` — в кавычках или голым токеном."""
     for line in lines[after:after + 5]:
-        match = _INCLUDE_PATH.search(line)
+        payload = _without_comment(line).strip()
+        if not payload:
+            continue
+        match = _INCLUDE_PATH.search(payload)
         if match:
-            return match.group(1)
+            return match.group(1) or match.group(2)
     return None
 
 
@@ -380,13 +389,37 @@ def _pvt_regions(keywords, names: set[str], root: Path) -> list[Refusal]:
             ntpvt = record[1] if len(record) > 1 else None
             if ntpvt and ntpvt.isdigit():
                 declared = max(declared, int(ntpvt))
-    if declared > 1 and "PVTNUM" not in names:
+    if declared > 1 and not _defines_pvtnum(keywords, names):
         return [Refusal(
             "ECL-006", str(root),
             f"TABDIMS объявляет {declared} PVT-региона, а массива PVTNUM в деке нет: "
             "отнести скважину к плотности не по чему, а плотность входит в ЧДД множителем",
         )]
     return []
+
+
+#: Ключевые слова, которые задают массив регионов не сами, а через имя в записи.
+#: Norne объявляет PVT-регион строкой `'PVTNUM' 1 1 46 …` внутри `EQUALS`.
+REGION_ASSIGNING = frozenset({"EQUALS", "COPY", "ADD", "MULTIPLY", "OPERATE"})
+
+
+def _defines_pvtnum(keywords, names: set[str]) -> bool:
+    """Задан ли массив `PVTNUM` — своим ключевым словом или внутри `EQUALS`.
+
+    Искать только имя на отдельной строке было ошибкой: Norne пишет
+    `EQUALS` / `'PVTNUM' 1 1 46 1 112 1 22 /`, регион при этом полностью выводим,
+    а мы отвечали «массива нет» и отказывали на рабочем деке
+    (`docs/portability.md`, ложное срабатывание 3).
+    """
+    if "PVTNUM" in names:
+        return True
+    return any(
+        value and value.strip().upper() == "PVTNUM"
+        for keyword in keywords
+        if keyword.name.upper() in REGION_ASSIGNING
+        for record in keyword.records
+        for value in record[:1]
+    )
 
 
 def _timeline(keywords, names: set[str], root: Path) -> list[Refusal]:
@@ -443,17 +476,18 @@ def _well_definitions(keywords, root: Path) -> list[Refusal]:
         name = keyword.name.upper()
         if name == "WELSPECS":
             for record in keyword.records:
-                if record and record[0]:
-                    declared.add(record[0])
-                    if len(record[0]) > MAX_PORTABLE_WELL_NAME:
+                name_of = _well_name(record[0]) if record else None
+                if name_of:
+                    declared.add(name_of)
+                    if len(name_of) > MAX_PORTABLE_WELL_NAME:
                         found.append(Refusal(
                             "ECL-009", str(root),
-                            f"имя скважины {record[0]!r} длиннее переносимых "
+                            f"имя скважины {name_of!r} длиннее переносимых "
                             f"{MAX_PORTABLE_WELL_NAME} символов",
                         ))
         elif name in WELL_REFERENCING:
             for record in keyword.records:
-                well = record[0] if record else None
+                well = _well_name(record[0]) if record else None
                 if well is None or _is_pattern(well):
                     continue
                 if well not in declared:
@@ -522,7 +556,7 @@ def _patterns(keywords, root: Path) -> list[Refusal]:
         if keyword.name.upper() not in WELL_REFERENCING | {"WELSPECS"}:
             continue
         for record in keyword.records:
-            well = record[0] if record else None
+            well = _well_name(record[0]) if record else None
             if not well:
                 continue
             if _is_pattern(well):
@@ -552,6 +586,17 @@ def _mode_of(keyword: str, record: tuple[str | None, ...]) -> str | None:
 
 def _is_pattern(name: str) -> bool:
     return "*" in name or "?" in name
+
+
+def _well_name(value: str | None) -> str | None:
+    """Имя скважины без хвостовых пробелов.
+
+    Eclipse дополняет имена до восьми символов, поэтому `WELSPECS` объявляет
+    `'INJE1 '`, а `COMPDAT` ссылается на `'INJE1'` — для симулятора это одна
+    скважина. Сравнение как есть давало 10 ложных отказов на SPE9group
+    (`docs/portability.md`, ложное срабатывание 2).
+    """
+    return None if value is None else value.strip()
 
 
 def _keyword_names(text: str) -> set[str]:
