@@ -22,6 +22,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DECLARED_NPV = re.compile(r"\| \*\*ЧДД\*\* \| \*\*([^*]+ млн руб\.)\*\* \|")
+#: Сдаваемый файл, как он назван в самой заявке. Число и файл обязаны быть из
+#: одного прогона — пара «файл от одного расчёта, число от другого» и есть тот
+#: механизм, которым расхождение с пересчётом организаторов возникает молча.
+DECLARED_SCHEDULE = re.compile(r"`(runs/[\w.-]+/wells_schedule\.inc)`")
 
 
 @dataclass(frozen=True)
@@ -62,7 +66,8 @@ def audit(
     if schedule_path.is_file():
         schedule_error = (schedule_validator or _schedule_problem)(schedule_path)
         scaling_error, scaling = _scaling_problem(schedule_path)
-        schedule_error = schedule_error or scaling_error
+        schedule_error = schedule_error or scaling_error or _wrong_run(submission,
+                                                                      schedule_path)
     model_error = None
     if model_path.is_file():
         model_error = (model_validator or _model_problem)(model_path)
@@ -182,6 +187,33 @@ def _model_problem(path: Path) -> str | None:
     except Exception as error:  # битый pickle тоже должен стать отказом допуска
         return f"модель не прошла допуск: {error}"
     return None
+
+
+def _wrong_run(submission: Path, schedule: Path) -> str | None:
+    """Проверяем ли мы тот файл, который заявлен?
+
+    Проверка печатает заявленное ЧДД рядом с любым расписанием, которое ей
+    подсунули: 24.08 она отвечала «ГОТОВО … + 13 147,5 млн руб.» на историческом
+    базовом расписании — то есть благословляла пару «файл одного прогона, число
+    другого». Именно так расхождение с пересчётом организаторов и возникает
+    молча, и `docs/submission.md` про это говорит первым абзацем.
+
+    Сравнение идёт с именем файла из самой заявки, а не с литералом здесь:
+    сменится сценарий — проверка переедет вместе с ним. Если заявка файла не
+    называет, сравнивать не с чем и проверка молчит.
+    """
+    if not submission.is_file():
+        return None
+    match = DECLARED_SCHEDULE.search(submission.read_text(encoding="utf-8"))
+    if match is None:
+        return None
+    declared = match.group(1)
+    if schedule.as_posix().endswith(declared):
+        return None
+    return (
+        f"проверяется {schedule.as_posix()}, а заявлен {declared}: число и файл "
+        "обязаны быть из одного прогона"
+    )
 
 
 def _scaling_problem(path: Path) -> tuple[str | None, str]:

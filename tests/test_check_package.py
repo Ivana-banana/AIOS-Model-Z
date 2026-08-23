@@ -141,3 +141,35 @@ def test_schedule_gate_parses_and_validates_controls(tmp_path):
 
     assert _schedule_problem(valid) is None
     assert _schedule_problem(empty) == "расписание не содержит ни одного шага DATES"
+
+
+def test_the_audit_refuses_a_schedule_from_another_run(tmp_path):
+    """Число и файл обязаны быть из одного прогона — проверка это и проверяет.
+
+    24.08 прогон пакета на машине Б показал: `--schedule` принимал любой файл, и
+    проверка отвечала «ГОТОВО … + 13 147,5 млн руб.» на **историческом** базовом
+    расписании. То есть благословляла пару «файл одного прогона, число другого»
+    — ровно тот механизм, которым расхождение с пересчётом организаторов
+    возникает молча.
+    """
+    root = tmp_path
+    _package(root)
+    (root / "docs" / "submission.md").write_text(
+        "| **ЧДД** | **13 147,5 млн руб.** |\n"
+        "| сдаваемый файл | `runs/matched-100/wells_schedule.inc` |\n",
+        encoding="utf-8",
+    )
+    other = root / "runs" / "base" / "wells_schedule.inc"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text("-- расписание другого прогона\n", encoding="utf-8")
+
+    checks = {check.number: check for check in audit(
+        root, other, root / "artifacts" / "surrogate.joblib",
+        schedule_validator=lambda path: None,
+        model_validator=lambda path: None,
+    )}
+
+    assert not checks["6"].ready
+    assert "из одного прогона" in checks["6"].detail
+    assert "runs/matched-100" in checks["6"].detail
+
