@@ -238,3 +238,165 @@ def test_planner_reports_a_fractional_limit_as_it_is():
     _fitted, decisions = planner.enforce(steps, forecast, Norms.from_file(), limits)
 
     assert decisions and "предела 0,5" in decisions[0].reason.replace(".", ",")
+
+
+# --- Б29: чужие режимы управления -------------------------------------------
+#
+# `optimise.scale` умножает поле расхода независимо от режима. Под `LRAT` и
+# `RATE` это уставка, и множитель осмыслен; под `BHP`, `THP`, `GRUP`, `ORAT`,
+# `WRAT`, `RESV` то же поле — верхний предел. На Модели Z все 13 382 записи
+# добывающих под `LRAT` и все 8 212 записей нагнетательных под `RATE` (замер
+# 23.08), поэтому путь не исполнялся ни разу.
+
+WELLS_HEAD = """WELSPECS
+ 'P1' 'G' 1 1 1* 'OIL' /
+ 'I1' 'G' 2 2 1* 'WATER' /
+/
+
+DATES
+ 01 JAN 2007 /
+/
+
+"""
+
+
+def _deck_project(tmp_path: Path, schedule_text: str) -> Path:
+    """Крошечный дек с заданной SCHEDULE-секцией и конфиг под него."""
+    from test_dataset import DECK_DATA, TINY_CONFIG
+
+    deck = tmp_path / "deck"
+    deck.mkdir()
+    (deck / "FIELD.DATA").write_text(DECK_DATA, encoding="utf-8")
+    for name in ("p.inc", "r.inc"):
+        (deck / name).write_text("-- пусто\n", encoding="utf-8")
+    (deck / "h.inc").write_text(schedule_text, encoding="utf-8")
+    config = tmp_path / "config.toml"
+    config.write_text(
+        TINY_CONFIG.format(norms=Path(economics.NORMS_FILE).resolve().as_posix()),
+        encoding="utf-8",
+    )
+    return config
+
+
+@pytest.mark.parametrize("mode, record", [
+    ("ORAT", " 'P1' 'OPEN' 'ORAT' 20.0 1* 1* 1* 1* 50 1* 1* /"),
+    ("WRAT", " 'P1' 'OPEN' 'WRAT' 1* 25.0 1* 1* 1* 50 1* 1* /"),
+    ("RESV", " 'P1' 'OPEN' 'RESV' 1* 1* 1* 1* 40.0 50 1* 1* /"),
+])
+def test_a_producer_without_a_rate_field_is_not_shut_by_scaling(mode: str, record: str):
+    """Работающая скважина без колонки LRAT не должна закрываться множителем.
+
+    До 23.08 `_scaled` считал `(None or 0) × 1.5 = 0` и превращал запись в
+    `SHUT`: на чужом деке сценарий «форсаж ×1.5» **останавливал** скважины под
+    `ORAT`, `WRAT` и `RESV`, а печатная нота при этом говорила «поле дебита это
+    предел, а не уставка» — ровно наоборот произошедшему.
+    """
+    from aios.deck import parse_schedule_text
+    from aios.optimise import scale
+
+    steps = parse_schedule_text(WELLS_HEAD + "WCONPROD\n" + record + "\n/\n").steps
+    scaled = scale(steps, 1.5)
+
+    control = scaled[0].producers[0]
+    assert control.status == "OPEN", f"{mode}: скважина закрыта множителем"
+    assert control.mode == mode
+    assert control.liquid_rate is None, "поля дебита не было — не должно и появиться"
+
+
+def test_an_injector_without_a_rate_field_is_not_shut_by_scaling():
+    """То же для нагнетательной под `RESV`: приёмистость стоит в своей колонке."""
+    from aios.deck import parse_schedule_text
+    from aios.optimise import scale_injection
+
+    text = WELLS_HEAD + "WCONINJE\n 'I1' 'WATER' 'OPEN' 'RESV' 1* 220.0 300 1* /\n/\n"
+    scaled = scale_injection(parse_schedule_text(text).steps, 1.6)
+
+    control = scaled[0].injectors[0]
+    assert control.status == "OPEN"
+    assert control.rate is None
+
+
+def test_the_scaling_report_classifies_every_mode():
+    """Каждый режим попадает ровно в одну корзину, и доля считается по всем.
+
+    Раньше нота смотрела только на добывающих: нагнетательная под `RESV` молча
+    останавливалась, а строка сообщала «множитель применён буквально ко всем
+    записям, все под LRAT».
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.optimise import scale, scale_injection, scaling_report
+
+    before = [ScheduleStep(date(2007, 1, 1), (
+        ProducerControl("уставка", "OPEN", "LRAT", 100.0, 50.0),
+        ProducerControl("предел", "OPEN", "LRAT", 400.0, 50.0),
+        ProducerControl("давление", "OPEN", "BHP", 100.0, 90.0),
+        ProducerControl("устье", "OPEN", "THP", 100.0, 90.0),
+        ProducerControl("группа", "OPEN", "GRUP", 100.0, 50.0),
+        ProducerControl("нефть", "OPEN", "ORAT", None, 50.0),
+        ProducerControl("стоит", "SHUT", "LRAT", None, 50.0),
+    ), (
+        InjectorControl("расход", "WATER", "OPEN", "RATE", 100.0, 300.0),
+        InjectorControl("давление", "WATER", "OPEN", "BHP", 100.0, 300.0),
+        InjectorControl("объём", "WATER", "OPEN", "RESV", None, 300.0),
+    ))]
+    after = scale_injection(scale(before, 1.5), 1.6)
+    report = scaling_report(before, after, production=1.5, injection=1.6)
+
+    assert report.records == 9, "остановленная запись не масштабируется и не считается"
+    assert report.literal == 2, "буквально применён только к LRAT и RATE с уставкой"
+    assert report.capped == 1
+    assert report.off_mode == {"BHP": 2, "GRUP": 1, "THP": 1}
+    assert report.without_rate == {"ORAT": 1, "RESV": 1}
+    assert report.share == pytest.approx(2 / 9)
+
+
+def test_the_preflight_refuses_a_label_that_does_not_describe_the_file(tmp_path: Path):
+    """Доля буквально применённых записей — величина для машины, а не для лога."""
+    import json
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from check_package import _scaling_problem
+
+    schedule = tmp_path / "wells_schedule.inc"
+    schedule.write_text("-- пусто\n", encoding="utf-8")
+
+    missing, detail = _scaling_problem(schedule)
+    assert missing is None and "не измерена" in detail
+
+    (tmp_path / "scaling.json").write_text(
+        json.dumps({"records": 10, "literal": 4, "share": 0.4}), encoding="utf-8"
+    )
+    problem, _detail = _scaling_problem(schedule)
+    assert problem is not None and "40.0%" in problem.replace(",", ".")
+
+    (tmp_path / "scaling.json").write_text(
+        json.dumps({"records": 10, "literal": 10, "share": 1.0}), encoding="utf-8"
+    )
+    problem, detail = _scaling_problem(schedule)
+    assert problem is None and "всем 10 записям" in detail
+
+
+def test_a_deck_with_wconhist_is_refused_by_name(tmp_path: Path, capsys):
+    """Дек с историческими режимами мы не считаем — и говорим это строкой.
+
+    `WCONHIST` занимает место нашего `WCONPROD`: разобранные шаги остаются без
+    режимов, а в собранный файл попали бы оба ключевых слова сразу. Отказ
+    законен, трассировка на середине сборки — нет.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import build_scaled_case
+
+    text = (WELLS_HEAD + "WCONHIST\n 'P1' 'OPEN' 'LRAT' 20.0 12.0 1* 1* 1* 1* /\n/\n"
+            + "WCONINJH\n 'I1' 'WATER' 'OPEN' 200.0 1* 300 /\n/\n")
+    config = _deck_project(tmp_path, text)
+
+    code = build_scaled_case.main([str(tmp_path / "run"), "--production", "1.5",
+                                   "--config", str(config)])
+
+    assert code == 1
+    printed = capsys.readouterr()
+    assert "кейс не собран" in printed.err
+    assert "WCONHIST" in printed.err

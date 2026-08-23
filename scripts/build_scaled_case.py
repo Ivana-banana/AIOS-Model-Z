@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -69,9 +70,16 @@ def main(argv: list[str] | None = None) -> int:
     # который считает симулятор (`Р-04`)
     assert_valid(scaled)
 
-    case = build_case(arguments.run_dir, model_dir, steps=scaled,
-                      control_start=config.case.control_start,
-                      wells=tuple(schedule.wells), case_name=config.case.case_name)
+    try:
+        case = build_case(arguments.run_dir, model_dir, steps=scaled,
+                          control_start=config.case.control_start,
+                          wells=tuple(schedule.wells), case_name=config.case.case_name)
+    except ValueError as error:
+        # Дек, ведущий режимы через WCONHIST/WCONINJH, мы не считаем — и это
+        # законный исход. Но узнавать о нём надо строкой с ценой, а не
+        # трассировкой на середине сборки (Б29).
+        print(f"кейс не собран: {error}", file=sys.stderr)
+        return 1
 
     print(f"дек:          {model_dir}")
     print(f"шагов истории до {config.case.control_start}: "
@@ -80,7 +88,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"множители:    отбор ×{arguments.production}, закачка ×{arguments.injection}")
     print(f"кейс:         {case.data_file}")
 
-    for line in _honest_multiplier_notes(steps, scaled, arguments.production):
+    report = optimise.scaling_report(steps, scaled, production=arguments.production,
+                                     injection=arguments.injection)
+    report_path = Path(arguments.run_dir) / "scaling.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps({"production": arguments.production, "injection": arguments.injection,
+                    **report.as_dict()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"множитель применён буквально к {report.literal} записям из "
+          f"{report.records} ({100.0 * report.share:.1f} %)")
+    print(f"отчёт:        {report_path}")
+    for line in _honest_multiplier_notes(report):
         print(line)
     print()
     print("дальше:")
@@ -89,58 +109,51 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _honest_multiplier_notes(before, after, production: float) -> list[str]:
+def _honest_multiplier_notes(report: optimise.ScalingReport) -> list[str]:
     """Где заявленный множитель не был применён буквально.
 
-    Масштабирование молча делает две вещи, и обе меняют смысл ярлыка «×1.5».
+    Масштабирование делает с записью одну из четырёх вещей, и три из них меняют
+    смысл ярлыка «×1.5».
 
-    **Предел 500 м³/сут.** Методика запрещает больший дебит жидкости, поэтому
-    `optimise.scale` обрезает результат. Запись, упёршаяся в предел, получает не
-    заявленный множитель, а тот, что поместился. На Модели Z это не срабатывает
-    ни разу (максимальный исторический дебит 110 м³/сут, замер 21.08), но
-    заявляемое число считается на **чужом** деке валидационного кейса.
+    **Предел дебита жидкости.** Методика запрещает больший дебит, поэтому
+    `optimise.scale` обрезает результат. На Модели Z это не срабатывает ни разу
+    (максимальный исторический дебит 110 м³/сут, замер 21.08), но заявляемое
+    число считается на **чужом** деке валидационного кейса.
 
-    **Не дебитовый режим.** У скважины под контролем забойного давления (`BHP`)
-    поле дебита — это верхний предел, а не уставка: умножив его, мы ослабляем
-    ограничение, но режима не форсируем. На Модели Z все 22 008 записей —
-    `LRAT`, на чужом деке так может не быть.
+    **Не уставочный режим.** У скважины под `BHP`, `THP`, `GRUP`, `ORAT`, `WRAT`
+    или `RESV` поле расхода — верхний предел, а не уставка: умножив его, мы
+    ослабляем ограничение, но режима не форсируем.
+
+    **Записи без поля расхода** (`ORAT`/`WRAT`/`RESV` с пустой колонкой LRAT,
+    `RESV` у нагнетательной) остаются как есть: умножать нечего.
 
     Печатается, а не исправляется: сдаваемый файл обязан остаться ровно тем, на
-    котором посчитано заявляемое число.
+    котором посчитано заявляемое число. Проверяемой величиной служит
+    `share` — она же уходит в `scaling.json` и в предполётную проверку.
     """
     notes: list[str] = []
-
-    capped = sum(
-        1
-        for step_before, step_after in zip(before, after, strict=True)
-        for control_before, control_after in zip(step_before.producers,
-                                                 step_after.producers, strict=True)
-        if control_before.status == "OPEN" and control_before.liquid_rate
-        and control_after.liquid_rate is not None
-        and control_before.liquid_rate * production > control_after.liquid_rate + 1e-9
-    )
-    if capped:
+    if report.capped:
         notes.append(
-            f"внимание:     {capped} записей упёрлись в предел 500 м³/сут — "
-            f"у них множитель меньше заявленного ×{production}"
+            f"внимание:     {report.capped} записей упёрлись в предел дебита жидкости — "
+            "у них множитель меньше заявленного"
         )
-
-    off_rate: dict[str, int] = {}
-    for step in before:
-        for control in step.producers:
-            if control.status == "OPEN" and control.mode != "LRAT":
-                off_rate[control.mode] = off_rate.get(control.mode, 0) + 1
-    if off_rate:
-        listed = ", ".join(f"{mode} ×{count}" for mode, count in sorted(off_rate.items()))
+    if report.off_mode:
+        listed = ", ".join(f"{mode} ×{count}" for mode, count in sorted(report.off_mode.items()))
         notes.append(
-            f"внимание:     {sum(off_rate.values())} записей не под управлением дебитом "
-            f"({listed}) — для них поле дебита это предел, а не уставка, "
+            f"внимание:     {sum(report.off_mode.values())} записей не под уставочным "
+            f"режимом ({listed}) — для них поле расхода это предел, а не уставка, "
             "и множитель режима не форсирует"
         )
-
+    if report.without_rate:
+        listed = ", ".join(f"{mode} ×{count}"
+                           for mode, count in sorted(report.without_rate.items()))
+        notes.append(
+            f"внимание:     {sum(report.without_rate.values())} записей вовсе без поля "
+            f"расхода ({listed}) — множитель к ним неприменим, записи оставлены как есть"
+        )
     if not notes:
-        notes.append("множитель применён буквально ко всем записям: "
-                     "ни одна не упёрлась в предел 500 м³/сут, все под LRAT")
+        notes.append("ни одна запись не потеряла заявленный множитель: "
+                     "предел не сработал, все режимы уставочные")
     return notes
 
 

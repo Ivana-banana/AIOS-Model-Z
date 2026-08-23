@@ -790,20 +790,32 @@ def test_build_scaled_case_reports_where_the_multiplier_was_not_applied_literall
     """
     from datetime import date
 
-    from aios.deck import ProducerControl, ScheduleStep
-    from aios.optimise import scale
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.optimise import scale, scale_injection, scaling_report
     from scripts.build_scaled_case import _honest_multiplier_notes
 
     before = [ScheduleStep(date(2007, 1, 1), (
         ProducerControl("предел", "OPEN", "LRAT", 400.0, 50.0),
         ProducerControl("давление", "OPEN", "BHP", 100.0, 90.0),
         ProducerControl("обычная", "OPEN", "LRAT", 100.0, 50.0),
-    ), ())]
-    notes = _honest_multiplier_notes(before, scale(before, 1.5), 1.5)
+        ProducerControl("без дебита", "OPEN", "ORAT", None, 50.0),
+    ), (
+        InjectorControl("закачка", "WATER", "OPEN", "RATE", 100.0, 250.0),
+        InjectorControl("объёмная", "WATER", "OPEN", "RESV", None, 250.0),
+    ))]
+    after = scale_injection(scale(before, 1.5), 1.6)
+    report = scaling_report(before, after, production=1.5, injection=1.6)
+    notes = _honest_multiplier_notes(report)
 
-    assert any("упёрлись в предел 500" in note for note in notes), notes
-    assert any("не под управлением дебитом" in note and "BHP" in note
+    assert any("упёрлись в предел" in note for note in notes), notes
+    assert any("не под уставочным режимом" in note and "BHP" in note
                for note in notes), notes
+    # нагнетательные считаются наравне с добывающими: раньше нота смотрела
+    # только на добывающих и говорила «все под LRAT», когда нагнетательная под
+    # RESV молча останавливалась (Б29)
+    assert any("без поля расхода" in note and "RESV" in note and "ORAT" in note
+               for note in notes), notes
+    assert report.records == 6 and report.literal == 2, report
 
 
 def test_build_scaled_case_says_so_when_the_multiplier_was_applied_literally():
@@ -815,12 +827,14 @@ def test_build_scaled_case_says_so_when_the_multiplier_was_applied_literally():
     from datetime import date
 
     from aios.deck import ProducerControl, ScheduleStep
-    from aios.optimise import scale
+    from aios.optimise import scale, scaling_report
     from scripts.build_scaled_case import _honest_multiplier_notes
 
     before = [ScheduleStep(date(2007, 1, 1),
                            (ProducerControl("1", "OPEN", "LRAT", 110.0, 50.0),), ())]
-    notes = _honest_multiplier_notes(before, scale(before, 1.5), 1.5)
+    report = scaling_report(before, scale(before, 1.5), production=1.5, injection=1.0)
+    notes = _honest_multiplier_notes(report)
 
-    assert notes == ["множитель применён буквально ко всем записям: "
-                     "ни одна не упёрлась в предел 500 м³/сут, все под LRAT"], notes
+    assert notes == ["ни одна запись не потеряла заявленный множитель: "
+                     "предел не сработал, все режимы уставочные"], notes
+    assert report.share == 1.0

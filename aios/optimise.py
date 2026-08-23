@@ -439,6 +439,107 @@ def _covered_multipliers(
     return covered, tuple(value for value in multipliers if value not in covered)
 
 
+#: Режимы, в которых поле расхода — уставка, а не предел. Только к ним множитель
+#: применим буквально: под `LRAT` симулятор держит заданный дебит жидкости, под
+#: `RATE` — заданную приёмистость. В остальных режимах (`BHP`, `THP`, `GRUP`,
+#: `ORAT`, `WRAT`, `RESV`) то же поле означает верхнюю границу, и умножение
+#: ослабляет ограничение, ничего не форсируя.
+SETPOINT_MODES = {"producer": "LRAT", "injector": "RATE"}
+
+
+@dataclass(frozen=True)
+class ScalingReport:
+    """Что на самом деле стало с записями режимов при масштабировании.
+
+    Ярлык «×1.5» описывает намерение, а не файл. На Модели Z разницы нет: все
+    записи под `LRAT`/`RATE` и ни одна не упирается в предел (замер 23.08 —
+    13 382 добывающих и 8 212 нагнетательных записей, все с уставкой). На чужом
+    деке валидационного кейса (ТЗ п. 4.3) она появляется сразу, поэтому доля
+    буквально применённых записей — величина, которую проверяет машина, а не
+    строка, которую человек прочитает в логе (Б29).
+    """
+
+    records: int
+    """Записей, к которым множитель применялся (открытые, множитель ≠ 1)."""
+
+    literal: int
+    """Из них получивших ровно заявленный множитель."""
+
+    capped: int
+    """Упёрлись в предел дебита жидкости — множитель вышел меньше заявленного."""
+
+    off_mode: dict[str, int]
+    """Режим не уставочный: поле расхода — предел. Ключ — режим."""
+
+    without_rate: dict[str, int]
+    """Поля расхода в записи нет вовсе: умножать нечего, запись оставлена как есть."""
+
+    @property
+    def share(self) -> float:
+        """Доля записей, к которым множитель применён буквально. 1.0 — все."""
+        return self.literal / self.records if self.records else 1.0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "records": self.records,
+            "literal": self.literal,
+            "capped": self.capped,
+            "off_mode": dict(sorted(self.off_mode.items())),
+            "without_rate": dict(sorted(self.without_rate.items())),
+            "share": self.share,
+        }
+
+
+def scaling_report(before: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   after: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   *, production: float, injection: float) -> ScalingReport:
+    """Сравнить расписание до и после масштабирования запись за записью.
+
+    Считаются только открытые записи и только те, к которым множитель вообще
+    применялся: при множителе 1.0 сравнивать нечего.
+    """
+    records = literal = capped = 0
+    off_mode: dict[str, int] = {}
+    without_rate: dict[str, int] = {}
+
+    def note(counter: dict[str, int], key: str) -> None:
+        counter[key] = counter.get(key, 0) + 1
+
+    for step_before, step_after in zip(before, after, strict=True):
+        pairs: list[tuple[str, float, object, object]] = [
+            ("producer", production, control_before, control_after)
+            for control_before, control_after in zip(step_before.producers,
+                                                     step_after.producers, strict=True)
+        ]
+        pairs += [
+            ("injector", injection, control_before, control_after)
+            for control_before, control_after in zip(step_before.injectors,
+                                                     step_after.injectors, strict=True)
+        ]
+
+        for kind, multiplier, control_before, control_after in pairs:
+            if control_before.status != "OPEN" or multiplier == 1.0:
+                continue
+            records += 1
+            rate_before = (control_before.liquid_rate if kind == "producer"
+                           else control_before.rate)
+            rate_after = (control_after.liquid_rate if kind == "producer"
+                          else control_after.rate)
+            if rate_before is None:
+                note(without_rate, f"{control_before.mode}")
+                continue
+            if control_before.mode != SETPOINT_MODES[kind]:
+                note(off_mode, f"{control_before.mode}")
+                continue
+            if rate_after is not None and rate_before * multiplier > rate_after + 1e-9:
+                capped += 1
+                continue
+            literal += 1
+
+    return ScalingReport(records=records, literal=literal, capped=capped,
+                         off_mode=off_mode, without_rate=without_rate)
+
+
 def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
           multiplier: float,
           wells: set[str] | None = None) -> list[ScheduleStep]:
@@ -728,7 +829,16 @@ def _scaled(control: ProducerControl, multiplier: float) -> ProducerControl:
         return control
     if multiplier == 0.0:
         return ProducerControl(control.well, "SHUT", control.mode, None, control.bhp)
-    rate = (control.liquid_rate or 0.0) * multiplier
+    if control.liquid_rate is None:
+        # Записи без поля дебита масштабировать нечем: под `ORAT`, `WRAT` и
+        # `RESV` уставка стоит в своей колонке, а колонка LRAT пуста. Раньше
+        # такая запись превращалась в `0 × множитель = 0`, то есть работающая
+        # скважина молча **останавливалась**, а печатная нота при этом говорила
+        # «поле дебита это предел, а не уставка» — ровно наоборот тому, что
+        # произошло (замер 23.08, Б29). Оставляем запись как есть: множитель к
+        # ней неприменим, и это честнее, чем закрыть скважину.
+        return control
+    rate = control.liquid_rate * multiplier
     if rate <= 0:
         return ProducerControl(control.well, "SHUT", control.mode, None, control.bhp)
     return ProducerControl(
@@ -747,7 +857,12 @@ def _scaled_injector(control: InjectorControl, multiplier: float) -> InjectorCon
         return InjectorControl(
             control.well, control.fluid, "SHUT", control.mode, None, control.bhp
         )
-    rate = (control.rate or 0.0) * multiplier
+    if control.rate is None:
+        # то же, что у добывающих: под `RESV` приёмистость задана в своей
+        # колонке, а колонка расхода пуста — умножать нечего, останавливать
+        # нельзя
+        return control
+    rate = control.rate * multiplier
     if rate <= 0:
         return InjectorControl(
             control.well, control.fluid, "SHUT", control.mode, None, control.bhp
