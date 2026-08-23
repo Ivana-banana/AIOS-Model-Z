@@ -50,10 +50,24 @@ def main(argv: list[str] | None = None) -> int:
                         help="только остановка убыточных, без подбора режимов")
     parser.add_argument("--surrogate-model", default=None,
                         help="путь к surrogate.joblib; без параметра используется бейзлайн")
+    parser.add_argument("--multipliers", default=None,
+                        help="набор множителей поиска через запятую, например "
+                             "0.75,1.0,1.25; по умолчанию — набор из aios.optimise")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     arguments = parser.parse_args(argv)
 
     config = config_module.load(arguments.config)
+    multipliers = None
+    if arguments.multipliers:
+        try:
+            multipliers = tuple(float(part) for part in arguments.multipliers.split(","))
+        except ValueError:
+            print(f"набор множителей не разобран: {arguments.multipliers!r}", file=sys.stderr)
+            return 1
+        if 1.0 not in multipliers:
+            print("в наборе множителей обязан быть 1.0 — режим «как есть» это база",
+                  file=sys.stderr)
+            return 1
     # плотности по PVT-регионам скважин; пометка печатается всегда — молча
     # посчитать чужой пласт по нашей плотности нельзя (ТЗ п. 4.3)
     deck_fluids = pvt.fluids_by_well(config.case.model_dir)
@@ -112,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         tune_rates=not arguments.no_tune_rates,
         joint_rate_search=selected.joint_rate_search,
         limits=config.limits,
+        multipliers=multipliers,
         norms_file=config.economics.norms_file,
         # см. пояснение выше: цикл считает прогноз одной плотностью, а
         # подеквенные идут в выгрузку, из которой берётся заявляемое число

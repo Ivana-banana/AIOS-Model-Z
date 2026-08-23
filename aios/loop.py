@@ -125,6 +125,7 @@ def run_cycle(surrogate: Surrogate,
               joint_rate_search: bool = False,
               limits: planner.Limits | None = None,
               fluids: Fluids | None = None,
+              multipliers: tuple[float, ...] | None = None,
               norms_file: Path = economics.NORMS_FILE) -> CycleResult:
     """Пройти цикл один раз: спрогнозировать, продиагностировать, решить, оценить.
 
@@ -153,6 +154,10 @@ def run_cycle(surrogate: Surrogate,
             choices = optimise.choose_joint_rates(
                 surrogate, base_steps, start_date=start_date,
                 limits=limits, norms=norms, fluids=fluids,
+                # набор множителей задаётся снаружи: узкий набор держит поиск
+                # ближе к обучающим сценариям, широкий уводит из области
+                # доверия — и то и другое надо уметь померить (Б31)
+                **({} if multipliers is None else {"multipliers": multipliers}),
                 # второй контур шлюза доверия (`Р-72`) — область лежит в самом
                 # артефакте суррогата, а не собирается здесь заново: иначе ничто
                 # не мешает применить область одной модели к прогнозу другой.
@@ -161,7 +166,10 @@ def run_cycle(surrogate: Surrogate,
                 norms_file=norms_file,
             )
         else:
-            choices = optimise.choose_rates(surrogate, base_steps, norms, start_date=start_date)
+            choices = optimise.choose_rates(
+                surrogate, base_steps, norms, start_date=start_date,
+                **({} if multipliers is None else {"multipliers": multipliers}),
+            )
         tuned = optimise.apply_choices(base_steps, choices)
 
     actions = plan_shutdowns(
