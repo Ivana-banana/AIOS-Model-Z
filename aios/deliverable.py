@@ -40,7 +40,9 @@ Flow, а не с промысла: мы диагностируем то, во ч
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -204,3 +206,62 @@ def _working_branch(history: pd.DataFrame, kind: str,
 def _well_order(item: tuple[str, float]) -> tuple[int, str]:
     name = item[0]
     return (int(name), "") if name.isdigit() else (10**9, name)
+
+
+def injection_targets(steps: Sequence[Any]) -> pd.DataFrame:
+    """Уставки `WCONINJE` по шагам расписания: колонки `well`, `DATA`, `target`.
+
+    Отдельной функцией, потому что уставка действует **с** даты шага и до
+    следующей: сопоставлять её с выгрузкой по точному совпадению дат можно
+    только там, где шаги и выгрузка помесячные. На чужом деке это неверно.
+    """
+    records = [
+        {"well": str(control.well), "DATA": pd.Timestamp(step.date), "target": control.rate}
+        for step in steps
+        for control in step.injectors
+        if control.rate is not None
+    ]
+    frame = pd.DataFrame.from_records(records, columns=["well", "DATA", "target"])
+    # единица времени приводится явно: `merge_asof` отказывается сливать
+    # `datetime64[s]` с `datetime64[us]`, а даты шагов приходят из `date`
+    frame["DATA"] = frame["DATA"].astype("datetime64[ns]")
+    return frame
+
+
+def injection_ratios(rows: pd.DataFrame, steps: Sequence[Any], since: str) -> dict[str, float]:
+    """Какую долю запрошенного объёма нагнетательная скважина фактически взяла.
+
+    Считается по прогону, который шёл **с этим же расписанием**: отношение суммы
+    фактического расхода к сумме уставок за то же окно. Единица означает, что
+    скважина берёт всё, что просят; 0,2 — что четыре пятых просьбы остались в
+    файле, потому что расход ей задаёт предел давления, а не уставка.
+
+    Это не оценка приёмистости: `J` здесь не участвует, и по этой величине нельзя
+    сказать, сколько скважина возьмёт при **другом** пластовом давлении. Она
+    отвечает ровно на один вопрос — сколько из уже посчитанной просьбы дошло до
+    пласта.
+    """
+    targets = injection_targets(steps)
+    if targets.empty:
+        return {}
+    frame = rows.loc[:, ["DATA", "well", "WWIR"]].copy()
+    frame["well"] = frame["well"].astype(str)
+    frame["DATA"] = pd.to_datetime(frame["DATA"]).astype("datetime64[ns]")
+    frame = frame[frame["DATA"] >= pd.Timestamp(since)]
+    if frame.empty:
+        return {}
+    merged = pd.merge_asof(
+        frame.sort_values("DATA"),
+        targets.sort_values("DATA"),
+        on="DATA",
+        by="well",
+    )
+    merged = merged[merged["target"] > 0]
+    if merged.empty:
+        return {}
+    total = merged.groupby("well")[["WWIR", "target"]].sum()
+    return {
+        str(well): float(row.WWIR / row.target)
+        for well, row in total.iterrows()
+        if row.target > 0
+    }

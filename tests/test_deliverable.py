@@ -134,3 +134,97 @@ def test_limits_come_from_the_deck_and_not_from_a_constant_in_the_code():
         "42": ("injector", 250.0),
         "49": ("injector", 300.0),
     }
+
+
+def _steps(rates: dict[str, list[float]], start: str = SINCE):
+    """Расписание из уставок закачки: скважина → уставка по месяцам."""
+    from aios.deck import InjectorControl, ScheduleStep
+
+    dates = pd.date_range(start, periods=len(next(iter(rates.values()))), freq="MS")
+    return [
+        ScheduleStep(
+            date=moment.date(),
+            producers=(),
+            injectors=tuple(
+                InjectorControl(well=well, fluid="WATER", status="OPEN", mode="RATE",
+                                rate=series[index], bhp=INJECTION_LIMIT)
+                for well, series in rates.items()
+            ),
+        )
+        for index, moment in enumerate(dates)
+    ]
+
+
+def test_the_ratio_says_how_much_of_the_request_reached_the_reservoir():
+    from aios.deliverable import injection_ratios
+
+    steps = _steps({"1": [100.0] * 12, "2": [50.0] * 12})
+    rows = pd.concat([
+        _history(np.full(12, 40.0), np.full(12, INJECTION_LIMIT), "injector", well="1"),
+        _history(np.full(12, 50.0), np.full(12, 200.0), "injector", well="2"),
+    ])
+
+    ratios = injection_ratios(rows, steps, since=SINCE)
+
+    # скважина 1 живёт на пределе: до пласта дошли 40 из запрошенных 100
+    assert ratios["1"] == pytest.approx(0.4)
+    # скважина 2 берёт всё, что просят
+    assert ratios["2"] == pytest.approx(1.0)
+
+
+def test_the_ratio_carries_the_target_forward_between_steps():
+    """Уставка действует с даты шага до следующего, а не только в свой месяц."""
+    from aios.deliverable import injection_ratios
+
+    steps = _steps({"1": [100.0]})[:1]  # один шаг на весь горизонт
+    rows = _history(np.full(6, 25.0), np.full(6, INJECTION_LIMIT), "injector", well="1")
+
+    assert injection_ratios(rows, steps, since=SINCE)["1"] == pytest.approx(0.25)
+
+
+def test_months_before_the_window_do_not_enter_the_ratio():
+    from aios.deliverable import injection_ratios
+
+    steps = _steps({"1": [100.0] * 12}, start="2006-01-01")
+    rows = _history(np.full(12, 10.0), np.full(12, INJECTION_LIMIT), "injector", well="1")
+    rows["DATA"] = pd.date_range("2006-01-01", periods=12, freq="MS")
+    rows.loc[rows.index[6:], "WWIR"] = 80.0  # вторая половина — уже в окне
+
+    ratios = injection_ratios(rows, steps, since="2006-07-01")
+
+    assert ratios["1"] == pytest.approx(0.8)
+
+
+def test_a_well_without_a_measurement_keeps_the_common_multiplier():
+    """Про скважину без замера не известно, что она не возьмёт, — просьбу не режем."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "build_matched_case",
+        __import__("pathlib").Path(__file__).resolve().parent.parent
+        / "scripts" / "build_matched_case.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    chosen = module.multipliers({"1": 0.25, "2": 1.0}, ["1", "2", "3"], 1.6, 1.0)
+
+    assert chosen["1"] == pytest.approx(0.4)   # дошла четверть — просим четверть
+    assert chosen["2"] == pytest.approx(1.6)   # берёт всё — просим столько же
+    assert chosen["3"] == pytest.approx(1.6)   # замера нет — общий множитель
+
+
+def test_the_slack_never_asks_more_than_the_common_multiplier():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "build_matched_case",
+        __import__("pathlib").Path(__file__).resolve().parent.parent
+        / "scripts" / "build_matched_case.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    chosen = module.multipliers({"1": 0.9}, ["1"], 1.6, slack=5.0)
+
+    assert chosen["1"] == pytest.approx(1.6)
