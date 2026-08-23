@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import tomllib
@@ -57,8 +58,11 @@ def audit(
     schedule_path = _resolve(root, schedule)
     model_path = _resolve(root, model)
     schedule_error = None
+    scaling = None
     if schedule_path.is_file():
         schedule_error = (schedule_validator or _schedule_problem)(schedule_path)
+        scaling_error, scaling = _scaling_problem(schedule_path)
+        schedule_error = schedule_error or scaling_error
     model_error = None
     if model_path.is_file():
         model_error = (model_validator or _model_problem)(model_path)
@@ -86,7 +90,8 @@ def audit(
               schedule_path.is_file() and schedule_error is None and declared is not None,
               (
                   schedule_error if schedule_error is not None
-                  else f"{schedule_path} + {declared}" if schedule_path.is_file() and declared
+                  else f"{schedule_path} + {declared}; {scaling}"
+                  if schedule_path.is_file() and declared
                   else f"нет {schedule_path}" if not schedule_path.is_file()
                   else "в docs/submission.md не найдено заявленное ЧДД"
               )),
@@ -177,6 +182,42 @@ def _model_problem(path: Path) -> str | None:
     except Exception as error:  # битый pickle тоже должен стать отказом допуска
         return f"модель не прошла допуск: {error}"
     return None
+
+
+def _scaling_problem(path: Path) -> tuple[str | None, str]:
+    """Заявленный множитель обязан описывать сдаваемый файл, а не намерение.
+
+    `optimise.scale` умножает поле расхода независимо от режима. Под `LRAT` и
+    `RATE` это уставка, и «×1.5» правда; под `BHP`, `THP`, `GRUP`, `ORAT`,
+    `WRAT`, `RESV` то же поле — верхний предел, и умножение ослабляет
+    ограничение, ничего не форсируя. На Модели Z все записи уставочные, на чужом
+    деке валидационного кейса (ТЗ п. 4.3) — не обязаны быть.
+
+    Поэтому доля буквально применённых записей считается при сборке кейса
+    (`scripts/build_scaled_case.py` → `scaling.json`) и проверяется здесь
+    машиной. Отчёт есть и доля меньше единицы — отказ: «×1.5» в отчёте при
+    40 % применённых записей недопустимо. Отчёта нет — не отказ (кейс мог быть
+    собран до 23.08), но и не молчание: это сказано в строке проверки.
+    """
+    report = path.parent / "scaling.json"
+    if not report.is_file():
+        return None, "доля буквально применённых записей не измерена (нет scaling.json)"
+    try:
+        data = json.loads(report.read_text(encoding="utf-8"))
+        share = float(data["share"])
+        records, literal = int(data["records"]), int(data["literal"])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return f"{report.name} не читается: {error}", "отчёт масштабирования повреждён"
+
+    if records == 0:
+        return None, "масштабирование не применялось (множители единичные)"
+    if share < 1.0 - 1e-9:
+        return (
+            f"заявленный множитель применён буквально к {literal} записям из "
+            f"{records} ({share:.1%}): ярлык не описывает сдаваемый файл",
+            "",
+        )
+    return None, f"множитель применён буквально ко всем {records} записям"
 
 
 def _schedule_problem(path: Path) -> str | None:
