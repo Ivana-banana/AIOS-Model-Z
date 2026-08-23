@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -131,6 +132,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--schedule", type=Path, default=None,
                         help="расписание того же прогона (wells_schedule.inc)")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
+    parser.add_argument(
+        "--live", action="store_true",
+        help="мерить на ответах языковой модели, а не на шаблонах; тратит по "
+             "одному вызову на пакет фактов и требует ключа в окружении",
+    )
+    parser.add_argument("--limit", type=int, default=0,
+                        help="сколько пакетов брать при --live; 0 — все")
     arguments = parser.parse_args(argv)
 
     config = config_module.load(arguments.config)
@@ -145,10 +153,26 @@ def main(argv: list[str] | None = None) -> int:
         print("Метрики корпуса не считаются — выдумывать пакеты фактов нельзя.")
         print("Негативный набор ниже данных не требует и считается всегда.\n")
 
+    if arguments.live and arguments.limit > 0:
+        packets = packets[: arguments.limit]
+
+    texts, fallbacks = _explanations(packets, config, live=arguments.live)
+    if arguments.live:
+        # печатается ДО корпуса намеренно: если до модели не дошёл ни один пакет,
+        # ниже случится ранний выход, и причина — самое важное в таком прогоне —
+        # осталась бы ненапечатанной. Ровно так и вышло в первом живом замере.
+        print(f"=== Живой вызов ({config.explain.provider}, {config.explain.model}) ===")
+        print(f"ответов модели принято: {len(texts)}, не дошло: {len(fallbacks)}")
+        for name, why in fallbacks:
+            print(f"  • {name}: {why}")
+        print("Не дошедшие пакеты в метрики НЕ входят: мерить шаблон вперемешку "
+              "с ответами модели значит мерить смесь.")
+        print()
     report = quality.Report(tuple(
-        quality.measure(explain_module.template_text(evidence), evidence,
-                        source="шаблон", stratum=stratum_of(evidence))
-        for _, evidence in packets
+        quality.measure(text, evidence,
+                        source="модель" if arguments.live else "шаблон",
+                        stratum=stratum_of(evidence))
+        for (_, evidence), text in zip(packets, texts, strict=True)
     ))
 
     print("=== Корпус ===")
@@ -196,10 +220,41 @@ def main(argv: list[str] | None = None) -> int:
     false_rejects = sum(1 for measurement in report.measurements
                         if not measurement.integrity.passed)
     print(f"\nЛожные отказы на корпусе: {false_rejects} из {len(report.measurements)}")
-    print("\nОбъяснения корпуса — шаблонные: живого вызова модели ещё не было "
-          "(BLOCKED.md, п. 6).")
-    print("Метрики на шаблоне — нижняя граница конвейера, а не оценка языковой модели.")
+    if arguments.live:
+        print("\nОбъяснения корпуса — ответы языковой модели, а не шаблоны.")
+    else:
+        print("\nОбъяснения корпуса — шаблонные.")
+        print("Метрики на шаблоне — нижняя граница конвейера, а не оценка языковой модели.")
+        print("Живой замер: тот же скрипт с --live (нужен ключ в окружении).")
     return 0
+
+
+def _explanations(packets, config, *, live: bool):
+    """Тексты объяснений и список пакетов, по которым модель не ответила.
+
+    Шаблон и ответ модели не смешиваются в одном замере намеренно: метрика,
+    посчитанная на смеси, не относится ни к конвейеру, ни к модели. Пакет, по
+    которому вызов не состоялся или ответ отвергнут проверкой, из корпуса
+    **выпадает** и называется отдельно — это честнее, чем подставить на его
+    место шаблон и получить более красивое число.
+    """
+    if not live:
+        return [explain_module.template_text(evidence) for _, evidence in packets], []
+
+    settings = replace(config.explain, enabled=True)
+    texts: list[str] = []
+    fallbacks: list[tuple[str, str]] = []
+    kept: list = []
+    for name, evidence in packets:
+        answer = explain_module.explain(evidence, settings)
+        if answer.source in ("llm", "cache"):
+            texts.append(answer.text)
+            kept.append((name, evidence))
+        else:
+            detail = answer.failure or ", ".join(answer.rejected_numbers)
+            fallbacks.append((name, f"{answer.source}: {detail}"))
+    packets[:] = kept
+    return texts, fallbacks
 
 
 if __name__ == "__main__":
