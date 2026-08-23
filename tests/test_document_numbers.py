@@ -27,3 +27,31 @@ def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
 
     assert "Прирост заявляемого сценария | +1 415,6 млн руб. (+11,9 %)" in defence
     assert "Прирост самого доходного сценария | +1 789,5 млн руб. (+15,1 %)" in defence
+
+
+def test_the_jury_answers_carry_the_same_declared_triple():
+    """Ответы жюри — самый вероятный источник расхождения с заявкой.
+
+    Документ пишется под устное выступление, живёт отдельно от `submission.md` и
+    правится чаще: именно так 22.08 доклад открывался приростом сценария, который
+    мы не заявляем (`docs/numbers-audit.md`, расхождение 1). Поэтому тройка
+    «ЧДД — база — прирост» закреплена и здесь.
+    """
+    answers = _read("docs/defence-qa.md")
+
+    assert "13 271,8" in answers
+    assert "11 856,2" in answers
+    assert "+1 415,6 млн руб. (+11,9 %)" in answers
+
+
+def test_the_jury_answers_keep_the_section_of_open_questions():
+    """Раздел «вопросов без ответа» — обязательная часть, а не украшение.
+
+    Он ценен ровно тем, что его неудобно писать: пропадёт он молча — и документ
+    превратится в набор уверенных формулировок, которые жюри разваливает вторым
+    вопросом.
+    """
+    answers = _read("docs/defence-qa.md")
+
+    assert "## 6. Вопросы, на которые у нас ответа нет" in answers
+    assert answers.count("| Вопрос | Почему нет ответа | Что бы его дало |") == 1
