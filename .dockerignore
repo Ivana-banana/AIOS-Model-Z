@@ -15,6 +15,9 @@ __pycache__/
 runs/
 vendor/Model_Z/
 vendor/Model_Z_OPM/
+# Открытые деки для проверки переносимости: гигабайты чужих данных, в образе
+# не нужны вовсе (docs/portability.md).
+vendor/portability/
 *.webm
 *.zip
 *.pptx
