@@ -156,7 +156,7 @@ def _steps(rates: dict[str, list[float]], start: str = SINCE):
 
 
 def test_the_ratio_says_how_much_of_the_request_reached_the_reservoir():
-    from aios.deliverable import injection_ratios
+    from aios.deliverable import delivered_ratios
 
     steps = _steps({"1": [100.0] * 12, "2": [50.0] * 12})
     rows = pd.concat([
@@ -164,7 +164,7 @@ def test_the_ratio_says_how_much_of_the_request_reached_the_reservoir():
         _history(np.full(12, 50.0), np.full(12, 200.0), "injector", well="2"),
     ])
 
-    ratios = injection_ratios(rows, steps, since=SINCE)
+    ratios = delivered_ratios(rows, steps, since=SINCE)
 
     # скважина 1 живёт на пределе: до пласта дошли 40 из запрошенных 100
     assert ratios["1"] == pytest.approx(0.4)
@@ -174,23 +174,23 @@ def test_the_ratio_says_how_much_of_the_request_reached_the_reservoir():
 
 def test_the_ratio_carries_the_target_forward_between_steps():
     """Уставка действует с даты шага до следующего, а не только в свой месяц."""
-    from aios.deliverable import injection_ratios
+    from aios.deliverable import delivered_ratios
 
     steps = _steps({"1": [100.0]})[:1]  # один шаг на весь горизонт
     rows = _history(np.full(6, 25.0), np.full(6, INJECTION_LIMIT), "injector", well="1")
 
-    assert injection_ratios(rows, steps, since=SINCE)["1"] == pytest.approx(0.25)
+    assert delivered_ratios(rows, steps, since=SINCE)["1"] == pytest.approx(0.25)
 
 
 def test_months_before_the_window_do_not_enter_the_ratio():
-    from aios.deliverable import injection_ratios
+    from aios.deliverable import delivered_ratios
 
     steps = _steps({"1": [100.0] * 12}, start="2006-01-01")
     rows = _history(np.full(12, 10.0), np.full(12, INJECTION_LIMIT), "injector", well="1")
     rows["DATA"] = pd.date_range("2006-01-01", periods=12, freq="MS")
     rows.loc[rows.index[6:], "WWIR"] = 80.0  # вторая половина — уже в окне
 
-    ratios = injection_ratios(rows, steps, since="2006-07-01")
+    ratios = delivered_ratios(rows, steps, since="2006-07-01")
 
     assert ratios["1"] == pytest.approx(0.8)
 

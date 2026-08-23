@@ -12,7 +12,7 @@
 Отсюда правило этого кейса: **просить столько, сколько прогон показал
 достижимым**. Множитель скважины — не общий ×1.6, а `×1.6 · доля дошедшего · запас`,
 и он никогда не выше общего. Доля берётся из выгрузки прогона, который шёл ровно
-с тем расписанием, к которому она относится (`aios.deliverable.injection_ratios`).
+с тем расписанием, к которому она относится (`aios.deliverable.delivered_ratios`).
 
 Что это меняет и что нет:
 
@@ -80,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="общий множитель, с которым считался прогон --rows")
     parser.add_argument("--slack", type=float, default=1.05,
                         help="во сколько раз просить больше достигнутого")
+    parser.add_argument("--match-producers", action="store_true",
+                        help="то же правило для добывающих: их предел WCONPROD снизу, "
+                             "и на пределе уставка дебита тоже не работает")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     arguments = parser.parse_args(argv)
 
@@ -104,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
 
     rows = pd.read_csv(arguments.rows)
     reference = optimise.scale_injection(steps, arguments.injection)
-    ratios = deliverable.injection_ratios(
+    ratios = deliverable.delivered_ratios(
         rows, reference, since=config.case.control_start.isoformat())
     if not ratios:
         print(f"в выгрузке {arguments.rows} нет закачки с "
@@ -114,7 +117,20 @@ def main(argv: list[str] | None = None) -> int:
     injectors = sorted({control.well for step in steps for control in step.injectors})
     chosen = multipliers(ratios, injectors, arguments.injection, arguments.slack)
 
-    scaled = optimise.scale(steps, arguments.production)
+    if arguments.match_producers:
+        producers = sorted({control.well for step in steps for control in step.producers})
+        produced = deliverable.delivered_ratios(
+            rows, optimise.scale(steps, arguments.production),
+            since=config.case.control_start.isoformat(), kind="producer")
+        chosen_producers = multipliers(produced, producers, arguments.production,
+                                       arguments.slack)
+        scaled = steps
+        for well, multiplier in chosen_producers.items():
+            scaled = optimise.scale(scaled, multiplier, {well})
+    else:
+        produced, chosen_producers = {}, {}
+        scaled = optimise.scale(steps, arguments.production)
+
     for well, multiplier in chosen.items():
         scaled = optimise.scale_injection(scaled, multiplier, {well})
     assert_valid(scaled)
@@ -134,6 +150,11 @@ def main(argv: list[str] | None = None) -> int:
           f"с поправкой на достигнутое, запас ×{arguments.slack}")
     print(f"нагнетательных: {len(injectors)}; замер есть у {len(ratios)}; "
           f"просьба снижена у {len(reduced)}")
+    if arguments.match_producers:
+        cut = sum(1 for well, value in chosen_producers.items()
+                  if value < arguments.production - 1e-9)
+        print(f"добывающих:     {len(chosen_producers)}; замер есть у {len(produced)}; "
+              f"просьба снижена у {cut}")
     print(f"просьба по закачке: {asked_here:.0f} против {asked_uniform:.0f} м³/сут·мес "
           f"равномерного ×{arguments.injection} "
           f"({asked_here / asked_uniform * 100:.1f} %)")

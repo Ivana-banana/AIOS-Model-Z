@@ -68,3 +68,29 @@ def test_a_well_without_a_limit_in_the_deck_is_left_out_rather_than_assumed():
 
     assert result["wells"] == 1
     assert result["volume"] == pytest.approx(1000.0)
+
+
+def test_the_producer_limit_is_the_lower_one():
+    """У добывающей предел снизу: 50 атм — это «на пределе», 120 — свободный режим."""
+    rows = pd.DataFrame(
+        [("2007-01-01", "1", 50.0, 0.0, 0.0, 30.0, 900.0),
+         ("2007-02-01", "1", 120.0, 0.0, 0.0, 30.0, 900.0)],
+        columns=["DATA", "well", "BHP", "WWIR", "WWIT_Diff", "WLPR", "WLPT_Diff"])
+
+    result = pressure_share.share(rows, {"1": 50.0}, "2007-01-01",
+                                  tolerance=1.0, kind="producer")
+
+    assert result["volume_share"] == pytest.approx(50.0)
+
+
+def test_the_same_row_is_not_at_the_limit_from_both_sides():
+    """Верхний предел нагнетательной и нижний добывающей не путаются местами."""
+    rows = pd.DataFrame(
+        [("2007-01-01", "1", 120.0, 40.0, 1200.0, 30.0, 900.0)],
+        columns=["DATA", "well", "BHP", "WWIR", "WWIT_Diff", "WLPR", "WLPT_Diff"])
+
+    as_injector = pressure_share.share(rows, {"1": 300.0}, "2007-01-01", 1.0, "injector")
+    as_producer = pressure_share.share(rows, {"1": 50.0}, "2007-01-01", 1.0, "producer")
+
+    assert as_injector["volume_share"] == pytest.approx(0.0)
+    assert as_producer["volume_share"] == pytest.approx(0.0)
