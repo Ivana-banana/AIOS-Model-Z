@@ -75,7 +75,18 @@ lookback_months = 6
 # и объяснения тогда идут по шаблону, а не роняют прогон.
 enabled = false
 
-model = "claude-opus-5"
+# Поставщик модели: anthropic или yandex. Слой написан под контракт Anthropic,
+# адаптер Яндекса живёт отдельно (aios/yandex.py) и зависимостей не добавляет.
+provider = "yandex"
+
+# Каталог Yandex Cloud. Не секрет — секрет только ключ, и он читается ИСКЛЮЧИТЕЛЬНО
+# из переменной окружения YANDEX_API_KEY. В конфиге ключу места нет: конфиг едет
+# в git, а ключ ехать туда не должен.
+folder_id = "b1gv1qukvdoctt94dgnu"
+
+# Имя модели. Для anthropic — claude-opus-5; для yandex — yandexgpt/latest либо
+# готовый URI вида gpt://<каталог>/<модель>.
+model = "yandexgpt/latest"
 max_tokens = 1024
 
 # Объяснение готового решения — не та задача, где нужна глубина рассуждения.

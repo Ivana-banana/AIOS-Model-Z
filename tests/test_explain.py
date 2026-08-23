@@ -347,3 +347,64 @@ def test_a_caveat_does_not_call_every_warning_a_range_violation():
     assert "физические проверки" in about_warnings[0], (
         "пример настоящим текстом не показан — читателю не на что опереться"
     )
+
+
+def test_a_well_number_quoted_from_the_subject_is_not_an_invented_figure():
+    """Первый живой вызов 23.08 отвергся ровно на этом.
+
+    Модель написала «Обводнённость скважины 42 составила 96.4 %» — ответ
+    безупречный, но `42` не величина из расчёта, и проверка сочла его выдуманным.
+    Число, которое мы сами написали словами в фактах, модель не выдумала, а
+    прочитала.
+    """
+    evidence = Evidence(
+        subject="остановка скважины 42 с 01.03.2019",
+        numbers={"обводнённость, %": 96.4},
+    )
+
+    assert unverified_numbers("Обводнённость скважины 42 составила 96.4 %", evidence) == ()
+
+
+def test_a_figure_quoted_from_an_observation_is_allowed_too():
+    evidence = Evidence(
+        subject="штуцирование",
+        observations=("обводнённость выше 95 % шесть месяцев подряд",),
+        numbers={"обводнённость, %": 96.4},
+    )
+
+    assert unverified_numbers("обводнённость держалась выше 95 %", evidence) == ()
+
+
+def test_an_invented_figure_is_still_caught_after_the_relaxation():
+    """Смягчение не должно превратиться в отсутствие проверки."""
+    evidence = Evidence(
+        subject="остановка скважины 42",
+        observations=("обводнённость выше 95 %",),
+        numbers={"обводнённость, %": 96.4},
+    )
+
+    assert unverified_numbers("экономия составила 17,3 млн руб.", evidence) == ("17,3",)
+
+
+def test_a_digit_inside_a_unit_is_not_a_claimed_quantity():
+    """Второй живой вызов 23.08 отвергся на тройке из «м3/сут».
+
+    `Evidence.prompt()` печатает имя показателя вместе с единицей, модель
+    повторяет её как есть — и цифра из единицы попадала в проверку как
+    выдуманное число.
+    """
+    evidence = Evidence(
+        subject="штуцирование скважины 7",
+        numbers={"дебит жидкости, м3/сут": 48.0},
+    )
+
+    assert unverified_numbers("дебит жидкости — 48 м3/сут", evidence) == ()
+
+
+def test_an_invented_number_survives_the_unit_relaxation():
+    evidence = Evidence(
+        subject="штуцирование скважины 7",
+        numbers={"дебит жидкости, м3/сут": 48.0},
+    )
+
+    assert unverified_numbers("дебит вырастет до 61 м3/сут", evidence) == ("61",)

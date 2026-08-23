@@ -453,13 +453,42 @@ def integrity(text: str, evidence: Evidence) -> Integrity:
     вовсе; период — только если он объявлен (`Evidence.period`).
     """
     pool = [fact for fact in facts_of(evidence) if fact.value is not None]
+    quoted = _quotable_numbers(evidence)
     results: list[NumericClaim] = list(_period_claims(text, evidence))
     for claim in claims(text):
-        results.extend(_numeric_claims(claim, pool))
+        results.extend(_numeric_claims(claim, pool, quoted))
     return Integrity(tuple(results))
 
 
-def _numeric_claims(claim: str, pool: list[Fact]) -> list[NumericClaim]:
+def _quotable_numbers(evidence: Evidence) -> set[float]:
+    """Числа, которые модель могла процитировать из самого текста фактов.
+
+    Это не величины расчёта, а часть формулировок, которые мы ей и дали: номер
+    скважины из `subject` («штуцирование скважины 7»), порог из наблюдения
+    («обводнённость выше 95 %») и цифра внутри единицы («м3/сут»). Кортеж
+    «показатель — значение — единица» у них не собирается по построению, и
+    требовать его значит отвергать верный ответ.
+
+    Оба живых вызова 23.08 отверглись ровно так: первый на номере скважины,
+    второй на тройке из «м3/сут». Ответы были безупречны, слой откатывался к
+    шаблону, а `source` при этом честно писал `template-rejected` — то есть
+    дефект был виден, но выглядел как срабатывание защиты.
+
+    Симметрично `explain._quoted_facts`: два барьера обязаны считать допустимым
+    одно и то же, иначе первый пропускает, второй отвергает, и причина отказа
+    зависит от того, какой сработал раньше.
+    """
+    from aios.explain import _NUMBER_RE, _parse, _quoted_facts
+
+    return {
+        value
+        for token in _NUMBER_RE.findall(_quoted_facts(evidence))
+        if (value := _parse(token)) is not None
+    }
+
+
+def _numeric_claims(claim: str, pool: list[Fact],
+                    quoted: set[float] | None = None) -> list[NumericClaim]:
     """Числа одного утверждения. Окно — само утверждение, а не соседний текст.
 
     Сначала окном была рамка в ±70 символов, и она читала соседние строки:
@@ -482,6 +511,9 @@ def _numeric_claims(claim: str, pool: list[Fact]) -> list[NumericClaim]:
             # `_period_claims`, и объявлять его «неизвестным числом» значило бы
             # считать одну ошибку дважды и по неверной причине.
             if _YEAR.fullmatch(token):
+                continue
+            # число, дословно взятое из текста фактов, не является заявлением
+            if quoted and any(abs(value - one) <= 1e-9 for one in quoted):
                 continue
             results.append(NumericClaim(token, value, "неизвестное число"))
             continue

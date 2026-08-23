@@ -87,6 +87,13 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
         ),
         explain=ExplainSettings(
             enabled=bool(_value(explain, "enabled", "explain", source)),
+            # Единственные два ключа с умолчанием, и это осознанное исключение из
+            # правила «пропущенный ключ — ошибка». Оба не влияют на ЧДД вовсе, а
+            # их отсутствие означает ровно то, что было до 23.08: поставщик
+            # Anthropic и никакого каталога. Требовать их значило бы сломать
+            # чужой конфиг ради настройки, которая на число не действует.
+            provider=str(explain.get("provider", "anthropic")),
+            folder_id=str(explain.get("folder_id", "")),
             model=str(_value(explain, "model", "explain", source)),
             max_tokens=_at_least_one(explain, "max_tokens", "explain", source),
             effort=str(_value(explain, "effort", "explain", source)),

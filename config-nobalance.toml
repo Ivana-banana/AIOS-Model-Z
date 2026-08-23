@@ -66,6 +66,8 @@ lookback_months = 6
 # и объяснения тогда идут по шаблону, а не роняют прогон.
 enabled = false
 
+provider = "yandex"
+folder_id = "b1gv1qukvdoctt94dgnu"
 model = "claude-opus-5"
 max_tokens = 1024
 

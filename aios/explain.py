@@ -186,6 +186,18 @@ class Settings:
     """Настройки слоя. Живут в `config.toml`, а не в коде."""
 
     enabled: bool = False
+    provider: str = "anthropic"
+    """Поставщик модели: `anthropic` или `yandex`.
+
+    Слой написан под контракт Anthropic (`client.messages.create`), но ключ у
+    проекта может быть от другого поставщика — у нас так и вышло. Поставщик
+    выбирается конфигом, а не кодом, чтобы смена не требовала правок в модуле
+    объяснений: адаптер живёт отдельно (`aios/yandex.py`).
+    """
+
+    folder_id: str = ""
+    """Каталог Yandex Cloud. Не секрет — секрет только ключ, и он из окружения."""
+
     model: str = DEFAULT_MODEL
     max_tokens: int = 1024
     effort: str = "low"
@@ -229,6 +241,16 @@ def unverified_numbers(text: str, evidence: Evidence) -> tuple[str, ...]:
     allowed = {round(value, 1) for value in evidence.numbers.values()}
     # целые части тоже законны: «выросла на 402 тыс. т» при факте 402.0
     allowed |= {float(int(value)) for value in evidence.numbers.values()}
+    # Числа, которые мы сами написали словами в фактах, — не заявления модели, а
+    # цитата. Номер скважины из `subject` («остановка скважины 42») или «выше
+    # 95 %» из наблюдения проверке не подлежат: модель их не выдумала, она их
+    # прочитала. Первый живой вызов 23.08 отвергся ровно на номере скважины —
+    # ответ был безупречен, а слой откатился к шаблону.
+    allowed |= {
+        value
+        for token in _NUMBER_RE.findall(_quoted_facts(evidence))
+        if (value := _parse(token)) is not None
+    }
 
     # Порядок обязателен: сначала полные даты, потом голые годы. Наоборот —
     # из «2007-01» уходит год, а остаток «-01» превращается в «неизвестное
@@ -244,6 +266,26 @@ def unverified_numbers(text: str, evidence: Evidence) -> tuple[str, ...]:
             continue
         unknown.append(token.strip())
     return tuple(dict.fromkeys(unknown))
+
+
+def _quoted_facts(evidence: Evidence) -> str:
+    """Весь текст, который модель видела и может процитировать дословно.
+
+    Сюда входят и **имена** показателей, а не только `subject`, `observations` и
+    `caveats`. Сначала имена были исключены — рассуждение звучало убедительно
+    («имя показателя не число»), и оно оказалось неверным: `Evidence.prompt()`
+    печатает строку `- дебит жидкости, м3/сут: 48`, модель повторяет единицу как
+    есть, а `м3` содержит цифру. Второй живой вызов 23.08 отвергся ровно на этой
+    тройке из «м3/сут».
+
+    Значения показателей сюда не нужны — они разобраны отдельно и с допуском.
+    """
+    return " ".join((
+        evidence.subject,
+        *evidence.observations,
+        *evidence.caveats,
+        *evidence.numbers,
+    ))
 
 
 #: Голый год: «в 2019 году». Без границ периода это просто число и остаётся им.
@@ -416,7 +458,7 @@ def explain(evidence: Evidence,
         return Explanation(text=template_text(evidence), source="template", fingerprint=fingerprint)
 
     if client is None:
-        client, unreachable = _default_client()
+        client, unreachable = _client_for(settings)
         if client is None:
             # Слой включён явно, но до модели не дошли. Это не то же самое, что
             # `enabled = false`, и выглядеть одинаково не должно: живой прогон
@@ -553,3 +595,21 @@ def _default_client() -> tuple[MessagesClient | None, str]:
         return anthropic.Anthropic(), ""
     except Exception as error:  # noqa: BLE001 — нет ключа или профиля
         return None, f"клиент Anthropic не создан: {_failure_text(error)}"
+
+
+def _client_for(settings: Settings) -> tuple[MessagesClient | None, str]:
+    """Клиент выбранного поставщика — или причина словами.
+
+    Неизвестный поставщик это отказ, а не тихий откат на Anthropic: опечатка в
+    конфиге не должна молча уводить запрос к другому вендору и другому счёту.
+    """
+    provider = (settings.provider or "anthropic").strip().lower()
+    if provider == "anthropic":
+        return _default_client()
+    if provider == "yandex":
+        from aios import yandex
+        return yandex.from_environment(settings.folder_id)
+    return None, (
+        f"неизвестный поставщик модели {settings.provider!r}; "
+        "допустимы 'anthropic' и 'yandex'"
+    )
