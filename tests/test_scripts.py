@@ -531,6 +531,10 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     )
     source = tmp_path / "runs" / "RUN"
     source.mkdir(parents=True)
+    # с 24.08 цикл проверяет наличие результата расчёта до чтения (иначе resdata
+    # бросает OSError вместо отказа, Б31). Здесь выгрузка подменена, поэтому
+    # файлу достаточно существовать: предмет теста — склейка вызовов
+    source.with_suffix(".UNSMRY").write_bytes(b"")
     rows = [
         make_row(f"{year}-{month:02d}-01", "1", wlpr=30.0, womr=20.0,
                  liquid=900.0, oil=600.0)
@@ -838,3 +842,32 @@ def test_build_scaled_case_says_so_when_the_multiplier_was_applied_literally():
     assert notes == ["ни одна запись не потеряла заявленный множитель: "
                      "предел не сработал, все режимы уставочные"], notes
     assert report.share == 1.0
+
+
+def test_run_cycle_names_the_missing_simulator_output(tmp_path, monkeypatch, capsys):
+    """Без выгрузки ГГДМ цикл обязан отказать строкой, а не трассировкой resdata.
+
+    Замер 24.08 (Б31): команда из выданной задачи —
+    `run_cycle.py --from runs/base --out … --surrogate-model …` — на машине без
+    расчёта падала `OSError: Failed to create summary instance`. Это законный
+    исход (расчёта нет), но узнавать о нём надо строкой с ценой: тот же класс
+    дефекта, что чинили в Б27 и Б30.
+    """
+    from test_dataset import _tiny_project
+
+    from scripts import run_cycle
+
+    config = _tiny_project(tmp_path)
+    monkeypatch.setattr(run_cycle.pvt, "fluids_by_well",
+                        lambda *a, **k: type("F", (), {"note": "тест", "by_well": {}})())
+    source = tmp_path / "runs" / "empty"
+    source.mkdir(parents=True)
+
+    code = run_cycle.main(["--from", str(source), "--out", str(tmp_path / "out"),
+                            "--config", str(config)])
+
+    assert code == 1
+    printed = capsys.readouterr().err
+    assert "нет результата расчёта" in printed
+    assert "run_flow.sh" in printed, "отказ обязан называть, чем выгрузка получается"
+

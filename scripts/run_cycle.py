@@ -61,6 +61,18 @@ def main(argv: list[str] | None = None) -> int:
     source = Path(arguments.source) if arguments.source else config.case.run_dir
     case_name = config.case.case_name
 
+    # Проверка до чтения, а не после: без .UNSMRY resdata бросает OSError
+    # «Failed to create summary instance», и команда из инструкции падает
+    # трассировкой вместо отказа (замер 24.08, Б31 — та же болезнь, что чинили в
+    # Б27 и Б30). Отсутствие расчёта — законный исход на машине без симулятора,
+    # но узнавать о нём надо строкой.
+    if not (source / case_name).with_suffix(".UNSMRY").is_file():
+        print(f"нет результата расчёта: {source / case_name}.UNSMRY. Цикл учится на "
+              "выгрузке ГГДМ — сначала посчитайте базовый прогон:\n"
+              f"  bash scripts/run_flow.sh {source / case_name}.DATA 4 --parsing-strictness=low\n"
+              f"  python scripts/export_rows.py {source.as_posix()}", file=sys.stderr)
+        return 1
+
     history = summary.monthly_rows(source / case_name, fluids=config.fluids, well_fluids=deck_fluids.by_well)
     if not history:
         print(f"нет выгрузки в {source}: сначала посчитайте базовый прогон", file=sys.stderr)
