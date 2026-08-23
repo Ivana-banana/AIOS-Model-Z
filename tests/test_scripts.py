@@ -871,3 +871,52 @@ def test_run_cycle_names_the_missing_simulator_output(tmp_path, monkeypatch, cap
     assert "нет результата расчёта" in printed
     assert "run_flow.sh" in printed, "отказ обязан называть, чем выгрузка получается"
 
+
+def test_run_cycle_passes_the_multiplier_set_and_refuses_one_without_unity(tmp_path,
+                                                                          monkeypatch,
+                                                                          capsys):
+    """Набор множителей поиска задаётся снаружи — иначе его нечем варьировать.
+
+    Б31 велит поварьировать «разные стартовые множители», но у команды такого
+    ключа не было вовсе: набор жил константой в `aios.optimise`. Узкий набор
+    держит поиск ближе к обучающим сценариям, широкий уводит из области доверия,
+    и оба замера нужны — на этой машине они и делаются.
+
+    Единица в наборе обязательна: без неё у поиска нет режима «как есть», то
+    есть не с чем сравнивать кандидатов.
+    """
+    from conftest import make_row
+    from test_dataset import _tiny_project
+
+    from scripts import run_cycle
+
+    config = _tiny_project(tmp_path)
+    monkeypatch.setattr(run_cycle.pvt, "fluids_by_well",
+                        lambda *a, **k: type("F", (), {"note": "тест", "by_well": {}})())
+    source = tmp_path / "runs" / "RUN"
+    source.mkdir(parents=True)
+    source.with_suffix(".UNSMRY").write_bytes(b"")
+
+    code = run_cycle.main(["--from", str(source.parent), "--out", str(tmp_path / "out"),
+                            "--multipliers", "0.9,1.1", "--config", str(config)])
+
+    assert code == 1
+    assert "обязан быть 1.0" in capsys.readouterr().err
+
+    seen = {}
+
+    def remember(*args, **kwargs):
+        seen.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(run_cycle.summary, "monthly_rows",
+                        lambda *a, **k: [make_row("2007-01-01", "1", wlpr=30.0,
+                                                  womr=20.0, liquid=900.0, oil=600.0)])
+    monkeypatch.setattr(run_cycle.loop, "run_cycle", remember)
+
+    with pytest.raises(SystemExit):
+        run_cycle.main(["--from", str(source.parent), "--out", str(tmp_path / "out"),
+                        "--multipliers", "0.75,1.0,1.25", "--config", str(config)])
+
+    assert seen["multipliers"] == (0.75, 1.0, 1.25)
+
