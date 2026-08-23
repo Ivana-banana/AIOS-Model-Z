@@ -10,22 +10,23 @@ def _read(name: str) -> str:
 
 
 def test_declared_npv_is_the_same_in_all_current_documents():
-    for name in ("docs/submission.md", "docs/report.md", "docs/defence-final.md"):
-        assert "13 271,8" in _read(name), f"{name} потерял заявляемый ЧДД"
+    for name in ("docs/submission.md", "docs/report.md", "docs/defence-final.md",
+                 "docs/presentation.md", "docs/defence-qa.md"):
+        assert "13 147,5" in _read(name), f"{name} потерял заявляемый ЧДД"
 
 
 def test_submission_pairs_declared_npv_with_same_run_baseline_and_uplift():
     submission = _read("docs/submission.md")
 
-    assert "13 271,8 млн руб." in submission
-    assert "11 856,2 млн руб." in submission
-    assert "+1 415,6 млн руб. (+11,9 %)" in submission
+    assert "13 147,5 млн руб." in submission
+    assert "11 851,8 млн руб." in submission
+    assert "+1 295,7 млн руб. (+10,9 %)" in submission
 
 
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
-    assert "Прирост заявляемого сценария | +1 415,6 млн руб. (+11,9 %)" in defence
+    assert "Прирост заявляемого сценария | +1 295,7 млн руб. (+10,9 %)" in defence
     assert "Прирост самого доходного сценария | +1 789,5 млн руб. (+15,1 %)" in defence
 
 
@@ -39,9 +40,9 @@ def test_the_jury_answers_carry_the_same_declared_triple():
     """
     answers = _read("docs/defence-qa.md")
 
-    assert "13 271,8" in answers
-    assert "11 856,2" in answers
-    assert "+1 415,6 млн руб. (+11,9 %)" in answers
+    assert "13 147,5" in answers
+    assert "11 851,8" in answers
+    assert "+1 295,7 млн руб. (+10,9 %)" in answers
 
 
 def test_the_jury_answers_keep_the_section_of_open_questions():
@@ -67,6 +68,33 @@ def test_the_presentation_keeps_the_slide_we_agreed_not_to_cut():
     presentation = _read("docs/presentation.md")
 
     assert "## Слайд 7. Что мы не заявляем" in presentation
-    assert "13 271,8" in presentation, "презентация потеряла заявляемый ЧДД"
-    assert "54–78" in presentation or "54…78" in presentation, "нет оговорки про воду"
+    assert "13 147,5" in presentation, "презентация потеряла заявляемый ЧДД"
+    assert "27 процентов" in presentation, "нет оговорки про сторонний водоисточник"
     assert "−0,058" in presentation or "минус 0,058" in presentation, "нет порога суррогата"
+
+
+def test_the_declared_pair_names_the_run_it_came_from():
+    """Файл и число заявляются из одного прогона — иначе это дисквалификация.
+
+    Пара «файл от одного расчёта, число от другого» и есть механизм, которым
+    расхождение с пересчётом организаторов возникает молча. Поэтому каталог
+    прогона закреплён здесь же, рядом с числом.
+    """
+    submission = _read("docs/submission.md")
+
+    assert "runs/matched-100/wells_schedule.inc" in submission
+    assert "13 147,5 млн руб." in submission
+
+
+def test_the_previous_candidate_survives_only_as_history():
+    """13 271,8 остаётся в документах, но нигде не как заявка.
+
+    Число прежнего кандидата ×1.5/×1.6 не выкидывается: им объясняется, за что
+    отдано 124,3 млн руб. (Р-93), и оно же печатается промежуточной командой
+    воспроизведения. Но строка «Заявляем 13 271,8» обязана исчезнуть отовсюду.
+    """
+    for name in ("docs/submission.md", "docs/report.md", "docs/defence-final.md",
+                 "docs/presentation.md", "docs/defence-qa.md"):
+        text = _read(name)
+        assert "Заявляем **13 271,8" not in text, f"{name} заявляет прежнего кандидата"
+        assert "заявляем** | **13 271,8" not in text, f"{name} заявляет прежнего кандидата"
