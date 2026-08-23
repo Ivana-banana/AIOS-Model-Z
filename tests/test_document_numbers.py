@@ -12,21 +12,21 @@ def _read(name: str) -> str:
 def test_declared_npv_is_the_same_in_all_current_documents():
     for name in ("docs/submission.md", "docs/report.md", "docs/defence-final.md",
                  "docs/presentation.md", "docs/defence-qa.md"):
-        assert "13 147,5" in _read(name), f"{name} потерял заявляемый ЧДД"
+        assert "13 152,9" in _read(name), f"{name} потерял заявляемый ЧДД"
 
 
 def test_submission_pairs_declared_npv_with_same_run_baseline_and_uplift():
     submission = _read("docs/submission.md")
 
-    assert "13 147,5 млн руб." in submission
+    assert "13 152,9 млн руб." in submission
     assert "11 851,8 млн руб." in submission
-    assert "+1 295,7 млн руб. (+10,9 %)" in submission
+    assert "+1 301,1 млн руб. (+11,0 %)" in submission
 
 
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
-    assert "Прирост заявляемого сценария | +1 295,7 млн руб. (+10,9 %)" in defence
+    assert "Прирост заявляемого сценария | +1 301,1 млн руб. (+11,0 %)" in defence
     assert "Прирост самого доходного сценария | +1 789,5 млн руб. (+15,1 %)" in defence
 
 
@@ -40,9 +40,9 @@ def test_the_jury_answers_carry_the_same_declared_triple():
     """
     answers = _read("docs/defence-qa.md")
 
-    assert "13 147,5" in answers
+    assert "13 152,9" in answers
     assert "11 851,8" in answers
-    assert "+1 295,7 млн руб. (+10,9 %)" in answers
+    assert "+1 301,1 млн руб. (+11,0 %)" in answers
 
 
 def test_the_jury_answers_keep_the_section_of_open_questions():
@@ -68,7 +68,7 @@ def test_the_presentation_keeps_the_slide_we_agreed_not_to_cut():
     presentation = _read("docs/presentation.md")
 
     assert "## Слайд 7. Что мы не заявляем" in presentation
-    assert "13 147,5" in presentation, "презентация потеряла заявляемый ЧДД"
+    assert "13 152,9" in presentation, "презентация потеряла заявляемый ЧДД"
     assert "27 процентов" in presentation, "нет оговорки про сторонний водоисточник"
     assert "необходимое, а не достаточное" in presentation, (
         "со слайда пропала оговорка: порог суррогата пройден, но заявка не на нём")
@@ -84,7 +84,7 @@ def test_the_declared_pair_names_the_run_it_came_from():
     submission = _read("docs/submission.md")
 
     assert "runs/matched-100/wells_schedule.inc" in submission
-    assert "13 147,5 млн руб." in submission
+    assert "13 152,9 млн руб." in submission
 
 
 def test_the_previous_candidate_survives_only_as_history():
