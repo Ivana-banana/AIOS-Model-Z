@@ -172,12 +172,13 @@ def quality_verdict(report: TrainingReport) -> str:
 
 def load_datasets(paths: list[str]) -> pd.DataFrame:
     """Объединить пакеты DoE, сохранив уникальную идентичность их сценариев."""
-    labels = [Path(path).stem for path in paths]
+    ordered = sorted(paths, key=lambda value: Path(value).as_posix().casefold())
+    labels = [Path(path).stem for path in ordered]
     if len(labels) != len(set(labels)):
         raise ValueError("имена файлов датасетов должны различаться")
 
     frames = []
-    for path, label in zip(paths, labels, strict=True):
+    for path, label in zip(ordered, labels, strict=True):
         frame = pd.read_csv(path)
         if "scenario" not in frame:
             raise ValueError(f"в {path} нет колонки scenario")
@@ -191,7 +192,7 @@ def load_datasets(paths: list[str]) -> pd.DataFrame:
 def dataset_fingerprints(paths: list[str]) -> list[dict[str, str | int]]:
     """Хэши исходных CSV для связи модели и отчёта с точной версией данных."""
     fingerprints = []
-    for value in paths:
+    for value in sorted(paths, key=lambda item: Path(item).as_posix().casefold()):
         path = Path(value)
         digest = hashlib.sha256()
         with path.open("rb") as handle:

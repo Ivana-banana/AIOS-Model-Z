@@ -283,6 +283,19 @@ def test_multiple_doe_packages_keep_scenarios_distinct(tmp_path):
     assert set(combined["scenario"]) == {"dataset:doe-000", "dataset-levels:doe-000"}
 
 
+def test_multiple_doe_packages_have_a_canonical_order(tmp_path):
+    first = tmp_path / "b.csv"
+    second = tmp_path / "a.csv"
+    pd.DataFrame({"scenario": ["one"], "value": [1]}).to_csv(first, index=False)
+    pd.DataFrame({"scenario": ["two"], "value": [2]}).to_csv(second, index=False)
+
+    forward = load_datasets([str(first), str(second)])
+    reverse = load_datasets([str(second), str(first)])
+
+    pd.testing.assert_frame_equal(forward, reverse)
+    assert forward["scenario"].tolist() == ["a:two", "b:one"]
+
+
 def test_dataset_fingerprint_records_exact_bytes(tmp_path):
     path = tmp_path / "dataset.csv"
     path.write_bytes(b"scenario,value\na,1\n")
@@ -1217,3 +1230,37 @@ def test_the_median_skill_gate_judges_the_model_that_actually_goes_into_the_cycl
 
     with pytest.raises(ValueError, match="хуже бездействия"):
         assert_quality(report)
+
+
+def test_the_bootstrap_interval_is_taken_over_scenarios_not_rows():
+    """Интервал обязан быть широким, когда сценариев мало, — в этом весь смысл."""
+    from aios.neural import skill_interval
+
+    values = (-0.4, -0.2, -0.1, 0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4)
+    low, high = skill_interval(values)
+
+    assert low < 0 < high, "на таких данных знак медианы не определён, и это надо видеть"
+    assert skill_interval(values) == (low, high), "seed фиксирован — результат повторяем"
+
+
+def test_a_clearly_negative_sample_gives_an_interval_below_zero():
+    from aios.neural import skill_interval
+
+    low, high = skill_interval(tuple(-0.5 + 0.01 * index for index in range(12)))
+
+    assert high < 0
+
+
+def test_too_few_scenarios_give_no_interval_rather_than_a_narrow_one():
+    from aios.neural import skill_interval
+
+    assert skill_interval((0.1, 0.2)) is None
+
+
+def test_per_scenario_skills_are_kept_so_the_interval_can_be_recomputed():
+    """Сводка не восстанавливается обратно в сырьё — поэтому хранится сырьё."""
+    bundle = train(dataset(), seed=7, control_start=None)
+
+    values = bundle.report.metrics["WLPT_Diff"].neural_skill_scenarios
+    assert values, "по сценариям должно быть хоть что-то"
+    assert list(values) == sorted(values)
