@@ -9,10 +9,13 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 
 from aios import trust
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def flat(values: dict[str, float], months: int = 4) -> dict[date, dict[str, float]]:
@@ -221,3 +224,74 @@ def test_a_missing_block_makes_the_artifact_uncalibrated():
     assert trust.contract(region, None)["calibrated"] is False
     assert trust.contract(None, trust.OptimismMargin.fit(
         [(100.0 + gap, 100.0) for gap in range(1, 21)], alpha=0.1))["calibrated"] is False
+
+
+def test_the_gate_judges_a_candidate_by_the_region_inside_the_artifact(tmp_path, capsys):
+    """Шлюз обязан работать там, где датасетов нет, — на машине без прогонов.
+
+    Область доверия обучается вместе с суррогатом и едет внутри артефакта
+    (Р-72). До 24.08 `scripts/trust_gate.py` умел только строить её заново по
+    `--dataset`, то есть на машине Б, где датасетов нет по построению, был
+    неисполним вовсе — а задача Б31 требует вердикт по каждому кандидату.
+
+    Здесь же закреплено и то, что скрипт вообще импортируется: он не добавлял
+    корень проекта в `sys.path` и падал `ModuleNotFoundError: No module named
+    'aios'` — при том что Б27 проверила «PYTHONPATH не нужен ни одной команде».
+    """
+    import sys
+
+    import joblib
+    import pandas as pd
+    from test_dataset import _tiny_project
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    from aios.neural import NeuralBundle, TargetMetric, TrainingReport
+    from aios.surrogate import NumericRange, TrainingEnvelope
+
+    metrics = {target: TargetMetric(3.0, 1.0) for target in ("WLPT_Diff", "WOMT_Diff",
+                                                            "WWIT_Diff", "THP", "BHP")}
+    region = trust.TrustRegion.fit(
+        {"s1": {"prod:1": 1.0, "prod:1:swing": 0.0},
+         "s2": {"prod:1": 0.8, "prod:1:swing": 0.1},
+         "s3": {"prod:1": 1.2, "prod:1:swing": 0.2}},
+        k=1,
+    )
+    bundle = NeuralBundle(
+        ("prod:1",), {}, pd.Timestamp("2007-01-01"), 12,
+        TrainingEnvelope({"prod:1": NumericRange(0.5, 1.5)},
+                         NumericRange(0.5, 1.5), NumericRange(0.0, 0.0)),
+        TrainingReport(("a",), ("b",), 1, 2, metrics),
+        trust_region=region,
+    )
+    model = tmp_path / "surrogate.joblib"
+    joblib.dump(bundle, model)
+    config = _tiny_project(tmp_path)
+    schedule = tmp_path / "wells_schedule.inc"
+    schedule.write_text(
+        "DATES\n 01 JAN 2007 /\n/\n\nWCONPROD\n '1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /\n/\n",
+        encoding="utf-8",
+    )
+
+    code = trust_gate.main(["--model", str(model), "--schedule", str(schedule),
+                            "--config", str(config)])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert "расстояние:" in printed
+    assert "порог" in printed
+    # запас у артефакта не калиброван — и это обязано быть названо причиной
+    assert "полный расчёт" in printed
+
+
+def test_the_gate_refuses_half_of_the_candidate_mode(tmp_path, capsys):
+    """Один ключ из двух — отказ строкой, а не молчаливая сборка области."""
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    assert trust_gate.main(["--model", str(tmp_path / "нет.joblib")]) == 1
+    assert "оба ключа" in capsys.readouterr().err
+

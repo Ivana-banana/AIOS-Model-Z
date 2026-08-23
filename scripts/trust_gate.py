@@ -21,11 +21,19 @@ import argparse
 import csv
 import json
 import random
+import sys
 from pathlib import Path
 
 import pandas as pd
 
-from aios import trust
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from aios import config as config_module  # noqa: E402
+from aios import trust  # noqa: E402  (импорт после правки sys.path)
+from aios.deck import parse_schedule  # noqa: E402
+from aios.deckfiles import layout  # noqa: E402
 
 
 def load_profiles(paths: list[Path]) -> dict[str, dict[str, float]]:
@@ -107,9 +115,76 @@ def load_pairs(path: Path | None) -> list[tuple[float, float]]:
         return [(float(row[0]), float(row[1])) for row in csv.reader(handle) if row]
 
 
-def main() -> None:
+def judge(model: Path, schedule: Path, config_path: Path) -> int:
+    """Вердикт по одному кандидату — по области, лежащей в самом артефакте.
+
+    Область доверия обучается вместе с суррогатом и едет внутри него (Р-72),
+    поэтому судить кандидата можно там, где датасетов нет вовсе: на машине без
+    прогонов, сразу после того как цикл собрал расписание. Датасеты нужны только
+    режиму, который строит область заново и меряет, что она ловит.
+
+    Печатается расстояние до обучающих сценариев, порог, ближайшие соседи и
+    список причин идти на полный расчёт. Пустой список означает «суррогату можно
+    доверить **ранжирование**» — и только его: заявляемое число подтверждается
+    полным расчётом всегда.
+    """
+    import joblib
+
+    from aios.neural import NeuralBundle, NeuralSurrogate
+
+    config = config_module.load(config_path)
+    bundle = joblib.load(model)
+    if not isinstance(bundle, NeuralBundle):
+        print(f"это не обученный суррогат: {type(bundle).__name__}", file=sys.stderr)
+        return 1
+    if not schedule.is_file():
+        print(f"нет расписания кандидата: {schedule}", file=sys.stderr)
+        return 1
+
+    reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    controlled = [step for step in reference.steps
+                  if step.date >= config.case.control_start]
+    surrogate = NeuralSurrogate.create(bundle, controlled, config.fluids,
+                                       require_quality=False)
+    candidate = parse_schedule(schedule)
+    steps = [step for step in candidate.steps if step.date >= config.case.control_start]
+    if not steps:
+        print(f"в {schedule} нет шагов с {config.case.control_start}", file=sys.stderr)
+        return 1
+
+    region = bundle.trust_region
+    distance = region.distance(surrogate.control_profile(steps)) if region else None
+    # запаса у артефакта нет: он считается по парам «прогноз — полный расчёт»,
+    # а их у нас единицы. «Не калибровано» — правильный ответ, а не недоработка
+    reasons = trust.routed_to_full_run(distance, None)
+
+    print(f"кандидат:  {schedule}")
+    print(f"модель:    {model} ({bundle.report.kind})")
+    print(f"шагов:     {len(steps)} с {config.case.control_start}")
+    if region is None:
+        print("область доверия: в артефакте её нет — судить нечем")
+    else:
+        print(f"сценариев в области: {len(region.scenarios)}, признаков {len(region.features)}")
+        print(f"расстояние: {distance.value:.3f} при пороге {distance.threshold:.3f} — "
+              f"{'ВНЕ области' if distance.outside else 'внутри области'}")
+        for neighbour in distance.neighbours[:3]:
+            print(f"  ближайший обучающий сценарий {neighbour.scenario}: {neighbour.distance:.3f}")
+    print()
+    print(f"причин идти на полный расчёт: {len(reasons)}")
+    for reason in reasons:
+        print(f"  - {reason}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, action="append", required=True)
+    parser.add_argument("--dataset", type=Path, action="append",
+                        help="датасеты DoE: режим сборки области заново")
+    parser.add_argument("--model", type=Path, default=None,
+                        help="обученный суррогат: судить кандидата областью из него")
+    parser.add_argument("--schedule", type=Path, default=None,
+                        help="wells_schedule.inc кандидата")
+    parser.add_argument("--config", type=Path, default=config_module.DEFAULT_PATH)
     parser.add_argument("--pairs", type=Path, default=None,
                         help="CSV «прогноз, полный расчёт» в млн руб. для калибровки")
     parser.add_argument("--out", type=Path, default=Path("artifacts/trust-gate.json"))
@@ -120,7 +195,20 @@ def main() -> None:
     parser.add_argument("--shifted", type=int, default=200)
     parser.add_argument("--share", type=float, default=0.6,
                         help="какую долю управлений сдвигать к краю")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if args.model or args.schedule:
+        if not (args.model and args.schedule):
+            print("режиму кандидата нужны оба ключа: --model и --schedule",
+                  file=sys.stderr)
+            return 1
+        return judge(args.model, args.schedule, args.config)
+
+    if not args.dataset:
+        print("нечего делать: задайте --dataset (собрать область заново) либо "
+              "--model и --schedule (судить кандидата областью из артефакта)",
+              file=sys.stderr)
+        return 1
 
     profiles = load_profiles(args.dataset)
     region = trust.TrustRegion.fit(profiles, k=args.k, quantile=args.quantile)
@@ -161,4 +249,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
