@@ -98,3 +98,27 @@ def test_the_previous_candidate_survives_only_as_history():
         text = _read(name)
         assert "Заявляем **13 271,8" not in text, f"{name} заявляет прежнего кандидата"
         assert "заявляем** | **13 271,8" not in text, f"{name} заявляет прежнего кандидата"
+
+
+def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
+    """Сменился сценарий — сменился и файл, и об этом забывают чаще, чем о числе.
+
+    23.08 (Б30) заявка перешла с `runs/inj-1.6` на `runs/matched-100`, числа во
+    всех документах машина А поменяла, а путь к сдаваемому расписанию остался
+    прежним в трёх местах: умолчание предполётной проверки, пример в `README.md`
+    и шаг демозапуска в презентации. Предполётная проверка при этом молча
+    проверяла бы **не тот** файл и говорила «пакет готов».
+
+    Сторож берёт имя файла из самой заявки, а не из литерала здесь: сменится
+    сценарий ещё раз — тест переедет вместе с ним.
+    """
+    import re
+
+    submission = _read("docs/submission.md")
+    declared = re.search(r"`(runs/[\w.-]+/wells_schedule\.inc)`", submission)
+    assert declared, "в docs/submission.md не найден сдаваемый файл"
+    path = declared.group(1)
+
+    assert path in _read("README.md"), "README показывает не тот файл"
+    assert path in _read("scripts/check_package.py"), "умолчание предполётной проверки отстало"
+

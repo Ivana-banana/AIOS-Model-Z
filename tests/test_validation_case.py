@@ -400,3 +400,96 @@ def test_a_deck_with_wconhist_is_refused_by_name(tmp_path: Path, capsys):
     printed = capsys.readouterr()
     assert "кейс не собран" in printed.err
     assert "WCONHIST" in printed.err
+
+
+def test_the_matched_rule_never_asks_more_than_the_uniform_multiplier():
+    """Правило «просить по достигнутому» обязано только снижать просьбу.
+
+    На этом стоит весь довод защиты: уставка ниже пропускной способности даёт
+    один и тот же расход в любом симуляторе, поэтому правило может оставить
+    деньги на столе, но не завысить заявку. Свойство проверяется на доле выше
+    единицы — скважина, взявшая больше запрошенного, не должна получить
+    множитель выше общего.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from build_matched_case import multipliers
+
+    wells = ["ровно", "половина", "сверх", "без замера"]
+    ratios = {"ровно": 1.0, "половина": 0.5, "сверх": 1.4}
+
+    chosen = multipliers(ratios, wells, injection=1.6, slack=1.0)
+
+    assert max(chosen.values()) <= 1.6 + 1e-12
+    assert chosen["половина"] == pytest.approx(0.8)
+    assert chosen["сверх"] == pytest.approx(1.6), "доля выше единицы не поднимает просьбу"
+    assert chosen["без замера"] == pytest.approx(1.6), "про скважину без замера ничего не известно"
+
+
+def test_a_zero_delivered_ratio_is_named_and_not_a_silent_shutdown(tmp_path: Path):
+    """Доля дошедшего, равная нулю, превращает масштабирование в остановку.
+
+    Замер 23.08 (Б30): множитель 0 уходит в `optimise.scale_injection`, тот
+    закрывает скважину, а отчёт масштабирования считает такую запись буквально
+    применённым множителем — 7 из 7, 100 %. То есть ни одна проверка не увидела
+    бы, что правило «просить меньше» кого-то остановило. Остановка стоит 1,0 млн
+    руб. по методике и меняет энергию пласта: это отдельное решение, а не
+    следствие арифметики.
+    """
+    import sys
+    from datetime import date as date_type
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from build_matched_case import multipliers
+
+    from aios.deck import InjectorControl, ScheduleStep
+    from aios.optimise import scale_injection, scaling_report
+
+    chosen = multipliers({"пусто": 0.0, "живая": 1.0}, ["пусто", "живая"],
+                         injection=1.6, slack=1.0)
+    assert chosen["пусто"] == 0.0
+
+    steps = [ScheduleStep(date_type(2007, 1, 1), (), (
+        InjectorControl("пусто", "WATER", "OPEN", "RATE", 200.0, 300.0),
+        InjectorControl("живая", "WATER", "OPEN", "RATE", 200.0, 300.0),
+    ))]
+    scaled = steps
+    for well, multiplier in chosen.items():
+        scaled = scale_injection(scaled, multiplier, {well})
+
+    shut = [control for control in scaled[0].injectors if control.status == "SHUT"]
+    assert [control.well for control in shut] == ["пусто"]
+
+    # и вот почему на это нужна отдельная строка предупреждения: шлюз Р-92 такую
+    # запись не отличает от честно применённого множителя
+    report = scaling_report(steps, scaled, production={}, injection=chosen)
+    assert report.share == 1.0, "отчёт масштабирования остановку не видит — это его предел"
+
+
+def test_the_matched_case_names_the_missing_export_instead_of_a_traceback(tmp_path: Path,
+                                                                          capsys):
+    """Команда 4 инструкции зависит от вывода команды 3 — и обязана это сказать.
+
+    Проверка 23.08 (Б30, раздел 3 `docs/submission.md`): без выгрузки первого
+    расчёта команда уходила в трассировку pandas на двенадцать кадров. Это
+    единственное, чего ей может не хватать на машине проверяющего.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import build_matched_case
+
+    config = _deck_project(tmp_path, WELLS_HEAD
+                           + "WCONPROD\n 'P1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /\n/\n"
+                           + "WCONINJE\n 'I1' 'WATER' 'OPEN' 'RATE' 200.0 1* 300 1* /\n/\n")
+
+    code = build_matched_case.main([str(tmp_path / "run"), "--rows",
+                                    str(tmp_path / "нет-такой.csv"),
+                                    "--production", "1.5", "--injection", "1.6",
+                                    "--slack", "1.0", "--config", str(config)])
+
+    assert code == 1
+    printed = capsys.readouterr().err
+    assert "нет выгрузки" in printed
+    assert "export_rows.py" in printed, "отказ обязан называть, чем выгрузка получается"

@@ -106,7 +106,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"в деке нет шагов с {config.case.control_start}", file=sys.stderr)
         return 1
 
-    rows = pd.read_csv(arguments.rows)
+    rows_file = Path(arguments.rows)
+    if not rows_file.is_file():
+        # Выгрузка первого расчёта — единственное, чего этой команде может не
+        # хватать, и упирается в неё каждый, кто идёт по инструкции на машине без
+        # симулятора. Отказ обязан называть, чего нет и чем это получить, а не
+        # уходить в трассировку pandas (Б30, проверка инструкции 23.08).
+        print(f"нет выгрузки {rows_file}: правило «просить по достигнутому» считает "
+              "долю дошедшего по уже посчитанному сценарию. Сначала посчитайте "
+              "опорный прогон и выгрузите его:\n"
+              "  bash scripts/run_flow.sh runs/inj-1.6/RUN.DATA 4 --parsing-strictness=low\n"
+              "  python scripts/export_rows.py runs/inj-1.6", file=sys.stderr)
+        return 1
+
+    rows = pd.read_csv(rows_file)
     reference = optimise.scale_injection(steps, arguments.injection)
     ratios = deliverable.delivered_ratios(
         rows, reference, since=config.case.control_start.isoformat())
@@ -117,6 +130,21 @@ def main(argv: list[str] | None = None) -> int:
 
     injectors = sorted({control.well for step in steps for control in step.injectors})
     chosen = multipliers(ratios, injectors, arguments.injection, arguments.slack)
+    # Доля дошедшего, равная нулю (или отрицательная — в выгрузке встречаются
+    # отрицательные величины), даёт множитель 0, а ноль в масштабировании
+    # означает **остановку**: правило, которое умеет только «просить меньше»,
+    # тихо закрыло бы скважину. Отчёт масштабирования это не ловит — запись со
+    # снятой уставкой он считает буквально применённым множителем (проверено
+    # исполнением 23.08, Б30). Файл не правим: он и есть тот, на котором
+    # посчитано заявляемое число. Называем.
+    stopped = sorted(well for well, value in chosen.items() if value <= 0.0)
+    if stopped:
+        print(f"ВНИМАНИЕ: правило остановило {len(stopped)} скважин(ы), потому что "
+              f"доля дошедшего у них не больше нуля: {', '.join(stopped)}", file=sys.stderr)
+        print("Остановка скважины — отдельное решение со своей ценой по методике "
+              "(1,0 млн руб. за событие) и своими последствиями для энергии пласта; "
+              "масштабирование просьбы такого решения принимать не должно. "
+              "Проверьте эти скважины прежде, чем считать кейс.", file=sys.stderr)
 
     if arguments.match_producers:
         producers = sorted({control.well for step in steps for control in step.producers})
@@ -176,7 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     report_path = Path(arguments.run_dir) / "scaling.json"
     report_path.write_text(
         json.dumps({"production": production_map, "injection": chosen,
-                    "slack": arguments.slack, **report.as_dict()},
+                    "slack": arguments.slack, "stopped_by_rule": stopped,
+                    **report.as_dict()},
                    ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

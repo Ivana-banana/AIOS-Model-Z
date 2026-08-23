@@ -220,7 +220,7 @@ python scripts/run_all.py --flow-args=--parsing-strictness=low
 
 ```bash
 python scripts/check_package.py \
-  --schedule runs/inj-1.6/wells_schedule.inc \
+  --schedule runs/matched-100/wells_schedule.inc \
   --model artifacts/surrogate.joblib
 ```
 
