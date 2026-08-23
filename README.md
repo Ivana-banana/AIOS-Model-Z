@@ -25,14 +25,35 @@
 
 ## Установка
 
+**Что нужно иметь до начала:** Python **3.11 или новее** (проверено на 3.14), Git
+и около 300 МБ на диске. Для гидродинамического расчёта дополнительно нужен OPM
+Flow или Docker (раздел «Расчёт в Docker»); без них ставится и проверяется всё,
+кроме самого прогона.
+
 Окружение лежит прямо в корне проекта (`Scripts/`, `Lib/`) и в репозиторий не
 попадает. На чистой машине:
 
 ```powershell
-py -3.11 -m venv .venv
+py -3 -m venv .venv          # именно -3, а не -3.11: подойдёт любая 3.11+
 .venv\Scripts\activate
 pip install -r requirements-dev.txt
 ```
+
+```bash
+python3 -m venv .venv         # Linux и macOS
+. .venv/bin/activate
+pip install -r requirements-dev.txt
+```
+
+До 23.08 здесь стояло `py -3.11`, и на машине без ровно этой версии команда
+отвечала «Requested Python version (3.11) not installed» — проверено буквальным
+исполнением (`docs/clean-clone-check.md`).
+
+**`requirements.lock` на Windows не поставится.** Он снят на Linux и несёт хэши
+колёс той платформы: `pip install --require-hashes -r requirements.lock`
+завершается «THESE PACKAGES DO NOT MATCH THE HASHES». Lock нужен для
+воспроизведения **среды образа**, а не рабочего места; на Windows ставьте
+`requirements-dev.txt`.
 
 `requirements.txt` — рантайм решения (то, что попадает в Docker-образ),
 `requirements-dev.txt` — плюс тесты, линтер и инструменты разбора материалов.
@@ -42,8 +63,17 @@ pip install -r requirements-dev.txt
 
 ```powershell
 Expand-Archive materials\Model_Z_final_OPM.zip -DestinationPath vendor
-Rename-Item vendor\Model_Z vendor\Model_Z_OPM
+Rename-Item vendor\Model_Z Model_Z_OPM
 ```
+
+```bash
+unzip -q materials/Model_Z_final_OPM.zip -d vendor -x "__MACOSX/*"
+mv vendor/Model_Z vendor/Model_Z_OPM
+```
+
+Второй аргумент `Rename-Item` — **имя**, а не путь. До 23.08 здесь стояло
+`vendor\Model_Z_OPM`, и команда падала с «Cannot rename the specified target,
+because it represents a path or device name»: инструкция не исполнялась буквально.
 
 Опись материалов и что из них извлечено — `materials/README.md`. Записей встреч
 там нет: они по 500-800 МБ и в GitHub не помещаются, вместо них — расшифровки в
