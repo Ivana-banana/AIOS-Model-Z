@@ -55,3 +55,18 @@ def test_the_jury_answers_keep_the_section_of_open_questions():
 
     assert "## 6. Вопросы, на которые у нас ответа нет" in answers
     assert answers.count("| Вопрос | Почему нет ответа | Что бы его дало |") == 1
+
+
+def test_the_presentation_keeps_the_slide_we_agreed_not_to_cut():
+    """Слайд «что мы не заявляем» вырезается первым, когда доклад не помещается.
+
+    Он же самый ценный: слабое место, названное докладчиком, стоит дешевле
+    найденного жюри. Поэтому его присутствие и его три пункта закреплены тестом,
+    а не памятью выступающего.
+    """
+    presentation = _read("docs/presentation.md")
+
+    assert "## Слайд 7. Что мы не заявляем" in presentation
+    assert "13 271,8" in presentation, "презентация потеряла заявляемый ЧДД"
+    assert "54–78" in presentation or "54…78" in presentation, "нет оговорки про воду"
+    assert "−0,058" in presentation or "минус 0,058" in presentation, "нет порога суррогата"
