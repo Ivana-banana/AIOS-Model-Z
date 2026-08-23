@@ -70,7 +70,8 @@ def test_the_presentation_keeps_the_slide_we_agreed_not_to_cut():
     assert "## Слайд 7. Что мы не заявляем" in presentation
     assert "13 147,5" in presentation, "презентация потеряла заявляемый ЧДД"
     assert "27 процентов" in presentation, "нет оговорки про сторонний водоисточник"
-    assert "−0,058" in presentation or "минус 0,058" in presentation, "нет порога суррогата"
+    assert "необходимое, а не достаточное" in presentation, (
+        "со слайда пропала оговорка: порог суррогата пройден, но заявка не на нём")
 
 
 def test_the_declared_pair_names_the_run_it_came_from():
