@@ -20,17 +20,46 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from aios import config as config_module  # noqa: E402
 from aios import (  # noqa: E402
+    balance,
     economics,
-    pvt,  # noqa: E402
+    pvt,
     summary,
 )
+from aios import config as config_module  # noqa: E402
 
 #: Ориентир организаторов по накопленной нефти за историю, тыс. т. Их число из
 #: разбора задачи; расхождение больше пары процентов означает, что мы посчитали
 #: не ту модель, а не что мы её улучшили.
 REFERENCE_OIL_KT = 4771.0
+
+
+def water_notes(rows: list[dict[str, object]], config) -> list[str]:
+    """Что говорит о прогоне наше же ограничение по воде.
+
+    Печатается здесь, а не только в цикле, потому что сдаваемый сценарий цикл не
+    проходил: он собран `build_scaled_case.py` — тупым бейзлайном, — и до 23.08
+    его никто не сверял с правилом, которое мы объявили своим (Р-61). Проверка
+    ничего не режет и прогон не роняет: она называет годы, где правило нарушено,
+    и оставляет решение человеку.
+    """
+    limits = config.limits
+    if not limits.enforce_water_balance:
+        return ["проверка выключена (`enforce_water_balance = false`)"]
+    rule = limits.water_balance_rule
+    if rule == "compensation":
+        found = balance.compensation_problems(rows, fluids=config.fluids,
+                                              ceiling=limits.water_tolerance)
+    elif rule == "produced_water":
+        found = balance.problems(rows, fluids=config.fluids,
+                                 tolerance=limits.water_tolerance)
+    elif rule == "external_water":
+        found = balance.external_water_problems(
+            rows, fluids=config.fluids,
+            limit_m3_per_day=limits.max_external_water_m3_per_day)
+    else:
+        return [f"неизвестное правило {rule!r} — проверка не делалась"]
+    return found or ["нарушений нет"]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,6 +130,14 @@ def main(argv: list[str] | None = None) -> int:
         # и организаторы. Печатаем, считаем дальше.
         print("  (строки с отрицательными приращениями расчётчик исключает сам — "
               "правки выгрузки запрещены)")
+
+    water = water_notes(rows, config)
+    print()
+    print(f"--- баланс воды: правило {config.limits.water_balance_rule} ---")
+    for line in water[:5]:
+        print(f"  {line}")
+    if len(water) > 5:
+        print(f"  … ещё {len(water) - 5} лет")
 
     csv_path = summary.write_csv(rows, run_dir / "rows.csv")
     # Пометка о происхождении плотностей ложится рядом с выгрузкой: `rows.csv`

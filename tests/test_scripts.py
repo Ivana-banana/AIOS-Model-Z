@@ -271,6 +271,67 @@ def test_export_rows_labels_two_different_totals_blocks(tmp_path, monkeypatch, c
     assert printed.count("закачка") >= 2, "закачки не было в блоке ЧДД вовсе"
 
 
+def test_export_rows_says_whether_the_run_obeys_our_own_water_rule(tmp_path, monkeypatch,
+                                                                    capsys):
+    """Сдаваемый сценарий собран тупым бейзлайном и правило по воде не проходил.
+
+    До 23.08 ограничение по воде жило только в цикле планировщика, а
+    `build_scaled_case.py` его не звал вовсе. Проверенный этой проверкой прогон
+    ×1.5/×1.6 нарушает наш же потолок компенсации в десяти годах — и узнали мы
+    это только когда проверку поставили в путь, которым считается выгрузка.
+    """
+    from conftest import make_row
+
+    from aios import pvt, summary
+    from scripts import export_rows
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "RUN.UNSMRY").write_bytes(b"")
+    rows = [
+        make_row("2013-01-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        # закачка вчетверо выше отобранного объёма — потолок компенсации пробит
+        make_row("2013-02-01", "2", wwir=200.0, injection=6000.0),
+    ]
+    monkeypatch.setattr(summary, "monthly_rows", lambda *a, **k: rows)
+    monkeypatch.setattr(export_rows.summary, "monthly_rows", lambda *a, **k: rows)
+    monkeypatch.setattr(
+        export_rows.pvt, "fluids_by_well",
+        lambda *a, **k: pvt.DeckFluids({}, "плотности: подставные, тест"),
+    )
+
+    code = export_rows.main([str(run_dir), "--case-name", "RUN"])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert "баланс воды" in printed, "выгрузка молчит о нашем же ограничении"
+    assert "выше предела" in printed, "нарушение потолка компенсации не названо"
+
+
+def test_water_notes_follow_the_rule_named_in_the_config(tmp_path):
+    """Правило выбирается конфигом: подменять одно другим молча значит менять ЧДД."""
+    from dataclasses import replace
+
+    from conftest import make_row
+
+    from aios import config as config_module
+    from scripts import export_rows
+
+    configuration = config_module.load(config_module.DEFAULT_PATH)
+    rows = [
+        make_row("2013-01-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2013-02-01", "2", wwir=200.0, injection=6000.0),
+    ]
+
+    strict = replace(configuration.limits, water_balance_rule="produced_water")
+    off = replace(configuration.limits, enforce_water_balance=False)
+
+    assert export_rows.water_notes(rows, replace(configuration, limits=strict))
+    assert export_rows.water_notes(rows, replace(configuration, limits=off)) == [
+        "проверка выключена (`enforce_water_balance = false`)"
+    ]
+
+
 def test_pack_npv_skips_an_unfinished_scenario(tmp_path, monkeypatch, capsys):
     """Оборванный сценарий обязан выпасть из таблицы, а не встать в неё числом.
 
