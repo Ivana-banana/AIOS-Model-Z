@@ -100,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         tune_rates=not arguments.no_tune_rates,
         joint_rate_search=selected.joint_rate_search,
         limits=config.limits,
+        norms_file=config.economics.norms_file,
         # см. пояснение выше: цикл считает прогноз одной плотностью, а
         # подеквенные идут в выгрузку, из которой берётся заявляемое число
         fluids=config.fluids,
@@ -126,9 +127,11 @@ def main(argv: list[str] | None = None) -> int:
         base_npv = economics.compute_npv(
             history, headers=economics.REQUIRED_COLUMNS,
             start_date=config.economics.start_date.isoformat(),
+            norms_file=config.economics.norms_file,
         )
         confirmed = loop.confirm(result, rows, config.economics.start_date,
-                                 base_rows=history)
+                                 base_rows=history,
+                                 norms_file=config.economics.norms_file)
 
         print("--- подтверждение полным расчётом ---")
         print(f"ЧДД базового сценария (ГГДМ):  {confirmed.base_chdd_m:12.1f} млн руб.")
@@ -149,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         confirmed_npv = economics.compute_npv(
             rows, headers=economics.REQUIRED_COLUMNS,
             start_date=config.economics.start_date.isoformat(),
+            norms_file=config.economics.norms_file,
         )
         print(f"нефть за период экономики (с {config.economics.start_date}): "
               f"{base_npv.oil_kt:.1f} → {confirmed_npv.oil_kt:.1f} тыс. т")

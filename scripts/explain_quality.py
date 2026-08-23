@@ -80,7 +80,7 @@ def corpus(rows_path: Path, schedule_path: Path, config) -> list[tuple[str, expl
     base_steps = [step for step in schedule.steps if step.date >= config.case.control_start]
     if not base_steps:
         base_steps = list(schedule.steps)
-    norms = margin.Norms.from_file()
+    norms = margin.Norms.from_file(config.economics.norms_file)
     selected = for_cycle(neural_path=None, history=history,
                          reference_steps=base_steps, fluids=config.fluids)
 
@@ -95,6 +95,7 @@ def corpus(rows_path: Path, schedule_path: Path, config) -> list[tuple[str, expl
             tune_rates=tune_rates,
             joint_rate_search=selected.joint_rate_search,
             limits=config.limits,
+            norms_file=config.economics.norms_file,
             fluids=config.fluids,
         )
         packets.append((selected.name, explain_module.evidence_from_cycle(result, selected.name)))

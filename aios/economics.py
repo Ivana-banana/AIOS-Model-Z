@@ -84,6 +84,7 @@ def compute_npv(
     headers: Iterable[str] | None = None,
     assumptions: dict[str, Any] | None = None,
     pumps: list[dict[str, Any]] | None = None,
+    norms_file: Path = NORMS_FILE,
     name: str = "Расчет ЧДД",
     source_file: str = "",
 ) -> NpvResult:
@@ -99,10 +100,19 @@ def compute_npv(
     Передать `None` осознанно по-прежнему можно: тогда действует умолчание эталона,
     но это решение видно в коде вызова.
 
-    Нормативы и таблица ЭЦН по умолчанию читаются из файла организаторов.
+    `norms_file` — откуда взять нормативы и таблицу ЭЦН, если они не переданы
+    готовыми. Умолчание — файл действующей поставки, но на валидационном кейсе
+    (ТЗ п. 4.3) нормативы приходят от организаторов и путь к ним живёт в
+    `[economics].norms_file`. Замер 23.08 показал, чем это кончалось: страница
+    прогона считала маржу скважин по файлу из конфигурации, а ЧДД — по
+    вендоренному, и при цене нефти 42 000 руб./т вместо 28 000 маржа менялась
+    (53,4 → 148,1 млн), а ЧДД оставался прежним (11,8 млн). Расхождения не видно
+    ниоткуда, кроме исходников. Поэтому в `aios/` и `scripts/` источник
+    нормативов передаётся явно — это проверяет
+    `tests/test_validation_case.py::test_every_npv_call_names_its_norms`.
     """
     if assumptions is None or pumps is None:
-        file_assumptions, file_pumps = load_norms()
+        file_assumptions, file_pumps = load_norms(norms_file)
         assumptions = file_assumptions if assumptions is None else assumptions
         pumps = file_pumps if pumps is None else pumps
 

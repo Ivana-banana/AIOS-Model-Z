@@ -74,7 +74,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         result = economics.compute_npv(
             rows, headers=economics.REQUIRED_COLUMNS,
-            start_date=config.economics.start_date.isoformat(), name=name,
+            start_date=config.economics.start_date.isoformat(),
+            norms_file=config.economics.norms_file, name=name,
         )
         rows_out.append((
             name, result.chdd_m,

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from aios import economics, planner, trust
@@ -249,6 +250,7 @@ def choose_joint_rates(
     margin: trust.OptimismMargin | None = None,
     penalty: float = TRUST_PENALTY,
     weight: float = TRUST_WEIGHT,
+    norms_file: Path = economics.NORMS_FILE,
 ) -> list[JointRateChoice]:
     """Координатный поиск для суррогата с межскважинными связями.
 
@@ -320,7 +322,7 @@ def choose_joint_rates(
     selected = dict.fromkeys(controls, 1.0)
     current_steps = _scale_individually(base_steps, selected)
     current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids,
-                             region, margin, penalty, weight)
+                             region, margin, penalty, weight, norms_file)
     choices: list[JointRateChoice] = []
 
     for kind, well, start in controls:
@@ -337,7 +339,7 @@ def choose_joint_rates(
             candidate_multipliers = selected | {(kind, well, start): multiplier}
             candidate = _scale_individually(base_steps, candidate_multipliers)
             candidate_chdd = _value_of(surrogate, candidate, start_date, limits, norms,
-                                       fluids, region, margin, penalty, weight)
+                                       fluids, region, margin, penalty, weight, norms_file)
             if candidate_chdd > best_chdd + 1e-9:
                 best_multiplier = multiplier
                 best_steps = candidate
@@ -363,6 +365,7 @@ def _value_of(
     margin: trust.OptimismMargin | None = None,
     penalty: float = TRUST_PENALTY,
     weight: float = TRUST_WEIGHT,
+    norms_file: Path = economics.NORMS_FILE,
 ) -> float:
     """Чего кандидат стоит — уже с учётом общего ресурса, если он задан.
 
@@ -373,10 +376,10 @@ def _value_of(
     """
     forecast = surrogate.predict(steps)
     if limits is None:
-        value, judged = _chdd(forecast, start_date), steps
+        value, judged = _chdd(forecast, start_date, norms_file), steps
     else:
         fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids)
-        value, judged = _chdd(surrogate.predict(fitted), start_date), fitted
+        value, judged = _chdd(surrogate.predict(fitted), start_date, norms_file), fitted
     return trust.safe_value(value, _distance_of(surrogate, judged, region), margin,
                             penalty=penalty, weight=weight)
 
@@ -706,9 +709,17 @@ def _period_starts(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     return doe_period_starts(steps, periods)
 
 
-def _chdd(rows: list[dict[str, Any]], start_date: date) -> float:
+def _chdd(rows: list[dict[str, Any]], start_date: date,
+          norms_file: Path = economics.NORMS_FILE) -> float:
+    """ЧДД кандидата. Нормативы — те же, по которым будет считаться заявляемое число.
+
+    Поиск обязан оптимизировать ту экономику, в которой нас потом посчитают: на
+    валидационном кейсе (ТЗ п. 4.3) нормативы приходят от организаторов, и поиск
+    по вендоренному файлу выбирал бы режимы под чужую цену нефти.
+    """
     return economics.compute_npv(
-        rows, headers=economics.REQUIRED_COLUMNS, start_date=start_date.isoformat()
+        rows, headers=economics.REQUIRED_COLUMNS, start_date=start_date.isoformat(),
+        norms_file=norms_file,
     ).chdd_m
 
 

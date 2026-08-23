@@ -194,7 +194,11 @@ def _fit_injection_to_capacity(
                         after=reduced,
                         reason=(
                             f"закачка по объекту {total:,.0f} > предела "
-                            f"{capacity:,.0f} м³/сут"
+                            # предел печатается без округления до целого: у
+                            # организаторов он может прийти дробным, а «предела
+                            # 0 м³/сут» при пределе 0,5 — объяснение, которому
+                            # нельзя верить (замер 23.08, Б28)
+                            f"{capacity:,.10g} м³/сут"
                         ),
                     )
                 )
@@ -301,7 +305,7 @@ def _fit_injection_to_external_water(
     return _scale_injection(
         steps, allowed / planned,
         f"закачке нужно {need:,.0f} м³/сут воды со стороны при мощности источника "
-        f"{limit_m3_per_day:,.0f} м³/сут",
+        f"{limit_m3_per_day:,.10g} м³/сут",
     )
 
 
@@ -427,7 +431,7 @@ def _fit_liquid_to_capacity(steps: list[ScheduleStep],
                         before=control.liquid_rate or 0.0,
                         after=new_rate,
                         reason=(
-                            f"отбор по объекту {total:,.0f} > предела {capacity:,.0f} м³/сут; "
+                            f"отбор по объекту {total:,.0f} > предела {capacity:,.10g} м³/сут; "
                             # значащими цифрами, а не четырьмя знаками после
                             # запятой: удельная маржа — тысячные доли миллиона, и
                             # при `.4f` две разные скважины печатались одинаково

@@ -200,7 +200,7 @@ def sanity_problems(rows: list[dict[str, Any]],
     Симулятор и суррогат не падают, а тихо врут, поэтому физический диапазон
     проверяется явно, до того как числа попадут в ЧДД.
     """
-    problems: list[str] = []
+    problems: list[str] = list(_monthly_step_problems(rows))
     previous: dict[str, dict[str, float]] = {}
 
     for row in rows:
@@ -249,6 +249,48 @@ def sanity_problems(rows: list[dict[str, Any]],
         previous[well] = {column: row[column] for column in ("WLPT", "WOMT", "WWIT")}
 
     return problems
+
+
+def _monthly_step_problems(rows: list[dict[str, Any]]) -> list[str]:
+    """Проверить, что календарь выгрузки — сплошные месяцы.
+
+    Одна строка = скважина × **месяц**: на этом стоит и наш скрининг
+    (`fund_m_per_well_month`), и сам эталонный расчётчик — он считает
+    скважино-месяцы строками, а не сутками. Замер 23.08 (Б28): тот же годовой
+    объём, разложенный на кварталы, даёт OPEX фонда 0,333 вместо 1,0 млн руб. в
+    год и ЧДД на 1,7 % выше, а на годовом шаге — 0,083 млн и +2,3 %. Ни ошибки,
+    ни предупреждения при этом не возникает нигде: деньги просто становятся
+    другими.
+
+    В валидационном кейсе (ТЗ п. 4.3) шаг отчётности задают организаторы. Если
+    он не месячный, выгрузку нужно привести к месяцам **до** экономики, а не
+    считать как есть; эта проверка не даёт пропустить такой кейс молча.
+    Ограничение сюда же: `aios.balance.days_of` переводит суточные лимиты в
+    объём по числу присутствующих месяцев и на квартальном шаге занижает его
+    втрое (246 суток вместо 730).
+    """
+    stamps = sorted({str(row["DATA"])[:7] for row in rows if row.get("DATA")})
+    if len(stamps) < 2:
+        return []
+
+    gaps: list[str] = []
+    for previous, following in zip(stamps, stamps[1:], strict=False):
+        year, month = int(previous[:4]), int(previous[5:7])
+        month += 1
+        if month == 13:
+            year, month = year + 1, 1
+        if f"{year}-{month:02d}" != following:
+            gaps.append(f"{previous} → {following}")
+
+    if not gaps:
+        return []
+    shown = ", ".join(gaps[:5])
+    more = f" и ещё {len(gaps) - 5}" if len(gaps) > 5 else ""
+    return [
+        f"шаг выгрузки не месячный (разрывов календаря {len(gaps)}: {shown}{more}); "
+        "экономика считает строку за скважино-месяц, поэтому такую выгрузку надо "
+        "привести к месяцам до расчёта ЧДД"
+    ]
 
 
 def write_csv(rows: list[dict[str, Any]], path: str | Path) -> Path:

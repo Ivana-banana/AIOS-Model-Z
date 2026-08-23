@@ -115,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         rows,
         headers=economics.REQUIRED_COLUMNS,
         start_date=config.economics.start_date.isoformat(),
+        norms_file=config.economics.norms_file,
         name=f"ЧДД {run_dir.name}",
         source_file=str(csv_path),
     )

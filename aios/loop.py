@@ -19,13 +19,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from aios import economics, optimise, planner
 from aios.deck import ScheduleStep
 from aios.margin import Norms
 from aios.policy import Action, apply, explain, plan_shutdowns
-from aios.schedule import ScheduleProblem, validate
+from aios.schedule import ScheduleProblem, liquid_limit, validate
 from aios.summary import Fluids
 from aios.surrogate import Surrogate
 
@@ -123,7 +124,8 @@ def run_cycle(surrogate: Surrogate,
               tune_rates: bool = True,
               joint_rate_search: bool = False,
               limits: planner.Limits | None = None,
-              fluids: Fluids | None = None) -> CycleResult:
+              fluids: Fluids | None = None,
+              norms_file: Path = economics.NORMS_FILE) -> CycleResult:
     """Пройти цикл один раз: спрогнозировать, продиагностировать, решить, оценить.
 
     Порядок именно такой и не иначе: диагноз ставится по прогнозу базового
@@ -142,7 +144,7 @@ def run_cycle(surrogate: Surrogate,
       убыточными по ходу горизонта даже на лучшем из режимов.
     """
     base_rows = surrogate.predict(base_steps)
-    base = _npv(base_rows, start_date)
+    base = _npv(base_rows, start_date, norms_file)
 
     choices: list[optimise.RateChoice] | list[optimise.JointRateChoice] = []
     tuned = list(base_steps)
@@ -156,6 +158,7 @@ def run_cycle(surrogate: Surrogate,
                 # не мешает применить область одной модели к прогнозу другой.
                 # `None` у артефактов до 22.08 — поиск работает как раньше
                 region=getattr(getattr(surrogate, "bundle", None), "trust_region", None),
+                norms_file=norms_file,
             )
         else:
             choices = optimise.choose_rates(surrogate, base_steps, norms, start_date=start_date)
@@ -175,10 +178,13 @@ def run_cycle(surrogate: Surrogate,
         )
 
     rows = surrogate.predict(steps)
-    result = _npv(rows, start_date)
+    result = _npv(rows, start_date, norms_file)
 
     warnings = list(surrogate.in_training_range(steps))
-    problems = validate(steps, known_wells)
+    # предел дебита жидкости — из таблицы ЭЦН тех нормативов, по которым считается
+    # ЧДД этого прогона, а не из литерала 500 от Модели Z (Б28)
+    problems = validate(steps, known_wells,
+                        max_liquid_rate=liquid_limit(economics.load_norms(norms_file)[1]))
 
     return CycleResult(
         base_chdd_m=base.chdd_m,
@@ -195,7 +201,8 @@ def run_cycle(surrogate: Surrogate,
 
 
 def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
-            *, base_rows: list[dict[str, Any]]) -> CycleResult:
+            *, base_rows: list[dict[str, Any]],
+            norms_file: Path = economics.NORMS_FILE) -> CycleResult:
     """Заменить прогнозные числа результатом полного расчёта.
 
     `rows` — выгрузка ГГДМ по расписанию цикла, `base_rows` — выгрузка ГГДМ по
@@ -214,9 +221,9 @@ def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
     Аргумент обязателен по той же причине, по какой обязателен `start_date` в
     `economics.compute_npv`: забыть его можно ровно один раз.
     """
-    confirmed = _npv(rows, start_date)
+    confirmed = _npv(rows, start_date, norms_file)
     return CycleResult(
-        base_chdd_m=_npv(base_rows, start_date).chdd_m,
+        base_chdd_m=_npv(base_rows, start_date, norms_file).chdd_m,
         chdd_m=confirmed.chdd_m,
         actions=result.actions,
         rate_choices=result.rate_choices,
@@ -229,7 +236,9 @@ def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
     )
 
 
-def _npv(rows: list[dict[str, Any]], start_date: date) -> economics.NpvResult:
+def _npv(rows: list[dict[str, Any]], start_date: date,
+         norms_file: Path = economics.NORMS_FILE) -> economics.NpvResult:
     return economics.compute_npv(
-        rows, headers=economics.REQUIRED_COLUMNS, start_date=start_date.isoformat()
+        rows, headers=economics.REQUIRED_COLUMNS, start_date=start_date.isoformat(),
+        norms_file=norms_file,
     )

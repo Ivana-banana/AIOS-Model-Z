@@ -49,10 +49,17 @@ class Norms:
         )
 
     @classmethod
-    def from_file(cls) -> Norms:
-        from aios.economics import load_norms
+    def from_file(cls, norms_file: Any = None) -> Norms:
+        """Нормативы из файла организаторов. Путь берётся из `[economics].norms_file`.
 
-        assumptions, _ = load_norms()
+        Без аргумента читается файл действующей поставки. На валидационном кейсе
+        (ТЗ п. 4.3) нормативы приходят их, и скрининг обязан считать по тому же
+        файлу, по какому считается ЧДД, — иначе одна страница показывает маржу
+        по одной цене нефти, а число по другой (замер 23.08).
+        """
+        from aios.economics import NORMS_FILE, load_norms
+
+        assumptions, _ = load_norms(NORMS_FILE if norms_file is None else norms_file)
         return cls.from_assumptions(assumptions)
 
     @property

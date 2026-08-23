@@ -38,12 +38,15 @@ if str(ROOT) not in sys.path:
 
 from aios import config as config_module  # noqa: E402
 from aios import deck as deck_module  # noqa: E402
+from aios import economics  # noqa: E402
 from aios import run as run_module  # noqa: E402
 from aios import schedule as schedule_module  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 
 
-def check(text: str, deck_text: str, control_start: date) -> tuple[list[str], list[str]]:
+def check(text: str, deck_text: str, control_start: date,
+          max_liquid_rate: float = schedule_module.MAX_LIQUID_RATE_M3_PER_DAY,
+          ) -> tuple[list[str], list[str]]:
     """Разобрать сдаваемый файл и сверить его с деком.
 
     Возвращает `(отказы, предупреждения)`. Дек нужен целиком: только он знает,
@@ -67,10 +70,12 @@ def check(text: str, deck_text: str, control_start: date) -> tuple[list[str], li
         )
     # проверяется управляемая часть: история задана организаторами, и отвергать
     # их собственный дек по нашим правилам значило бы забраковать исправный файл
-    for problem in schedule_module.validate(controlled, known):
+    for problem in schedule_module.validate(controlled, known,
+                                            max_liquid_rate=max_liquid_rate):
         failures.append(str(problem))
 
-    for problem in _preamble_problems(text, submitted, known, control_start):
+    for problem in _preamble_problems(text, submitted, known, control_start,
+                                      max_liquid_rate):
         failures.append(f"до первого DATES: {problem}")
 
     if submitted.unsupported_controls:
@@ -96,7 +101,9 @@ def check(text: str, deck_text: str, control_start: date) -> tuple[list[str], li
 
 
 def _preamble_problems(text: str, submitted: deck_module.Schedule,
-                       known: frozenset[str], control_start: date) -> list[str]:
+                       known: frozenset[str], control_start: date,
+                       max_liquid_rate: float = schedule_module.MAX_LIQUID_RATE_M3_PER_DAY,
+                       ) -> list[str]:
     """Нарушения в режимах, записанных до первого DATES.
 
     `aios.deck` кладёт такое ключевое слово в преамбулу, а не в шаг: даты у него
@@ -127,7 +134,8 @@ def _preamble_problems(text: str, submitted: deck_module.Schedule,
     head = probe.steps[0]
     if not head.producers and not head.injectors:
         return []
-    return [str(problem) for problem in schedule_module.validate([head], known)]
+    return [str(problem) for problem in schedule_module.validate(
+        [head], known, max_liquid_rate=max_liquid_rate)]
 
 
 def _horizon_notes(first: date, last: date, reference: deck_module.Schedule) -> list[str]:
@@ -250,7 +258,12 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8", errors="replace"
     )
 
-    failures, notes = check(text, deck_text, config.case.control_start)
+    # предел дебита жидкости берётся из таблицы ЭЦН нормативов кейса: на
+    # валидационном кейсе (ТЗ п. 4.3) старший насос может быть другим (Б28)
+    failures, notes = check(
+        text, deck_text, config.case.control_start,
+        schedule_module.liquid_limit(economics.load_norms(config.economics.norms_file)[1]),
+    )
     submitted = deck_module.parse_schedule_text(text)
 
     print(f"файл:      {arguments.path} ({arguments.path.stat().st_size / 1e6:.2f} МБ)")

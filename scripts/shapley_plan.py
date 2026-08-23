@@ -63,7 +63,11 @@ def build(arguments) -> int:
         return 1
 
     rows = pd.read_csv(arguments.rows)
-    found = groups_module.build_groups(rows, since=arguments.since)
+    # окно берётся из конфигурации, а не из литерала в умолчании ключа: на
+    # валидационном кейсе (ТЗ п. 4.3) управление начинается с другой даты, и
+    # группы, посчитанные «с 2007», описывали бы не тот период (Б28)
+    since = arguments.since or config.case.control_start.isoformat()
+    found = groups_module.build_groups(rows, since=since)
     if arguments.merge_producers:
         found = _merge_producers(found)
 
@@ -130,6 +134,7 @@ def collect(arguments) -> int:
             pd.read_csv(rows_file).to_dict("records"),
             headers=economics.REQUIRED_COLUMNS,
             start_date=config.economics.start_date.isoformat(),
+            norms_file=config.economics.norms_file,
             name=entry["case"],
         )
         known.append(
@@ -179,8 +184,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("out", help="каталог плана коалиций")
     parser.add_argument("--rows", default="runs/base/rows.csv",
                         help="выгрузка, по которой строятся группы")
-    parser.add_argument("--since", default="2007-01-01",
-                        help="с какой даты считать связность и обводнённость групп")
+    parser.add_argument("--since", default=None,
+                        help="с какой даты считать связность и обводнённость групп "
+                             "(по умолчанию — [case].control_start из конфигурации)")
     parser.add_argument("--production", type=float, default=1.5)
     parser.add_argument("--injection", type=float, default=1.6)
     parser.add_argument("--merge-producers", action="store_true",

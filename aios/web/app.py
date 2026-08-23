@@ -325,6 +325,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             rows,
             headers=economics.REQUIRED_COLUMNS,
             start_date=configuration.economics.start_date.isoformat(),
+            norms_file=configuration.economics.norms_file,
         )
         assumptions, _ = economics.load_norms(configuration.economics.norms_file)
         verdicts = screen(rows, Norms.from_assumptions(assumptions))
@@ -386,9 +387,11 @@ def create_app(root: Path | None = None) -> FastAPI:
 
         start = configuration.economics.start_date.isoformat()
         left_npv = economics.compute_npv(left_rows, headers=economics.REQUIRED_COLUMNS,
-                                         start_date=start)
+                                         start_date=start,
+                                         norms_file=configuration.economics.norms_file)
         right_npv = economics.compute_npv(right_rows, headers=economics.REQUIRED_COLUMNS,
-                                          start_date=start)
+                                          start_date=start,
+                                          norms_file=configuration.economics.norms_file)
 
         left_annual = {year["year"]: year for year in left_npv.annual}
         right_annual = {year["year"]: year for year in right_npv.annual}
@@ -592,6 +595,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             tune_rates=options.tune_rates,
             joint_rate_search=selected.joint_rate_search,
             limits=configuration.limits,
+            norms_file=configuration.economics.norms_file,
             fluids=configuration.fluids,
         )
         return CycleRun(result=result, surrogate_name=selected.name, deck_wells=deck_wells)

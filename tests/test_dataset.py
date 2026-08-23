@@ -111,7 +111,7 @@ control_start = 2007-01-01
 
 [economics]
 start_date = 2007-01-01
-norms_file = "norms.xlsx"
+norms_file = "{norms}"
 
 [fluids]
 oil_density = 913.0765883224138
@@ -155,8 +155,16 @@ def _tiny_project(tmp_path) -> Path:
     (deck / "r.inc").write_text("-- пусто\n", encoding="utf-8")
     (deck / "h.inc").write_text(DECK_SCHEDULE, encoding="utf-8")
 
+    # нормативы — настоящий файл организаторов: с 23.08 путь из конфигурации
+    # действительно читается (Б28), и выдуманное имя означало бы отказ там, где
+    # предмет теста совсем другой
+    from aios import economics
+
     config = tmp_path / "config.toml"
-    config.write_text(TINY_CONFIG, encoding="utf-8")
+    config.write_text(
+        TINY_CONFIG.format(norms=Path(economics.NORMS_FILE).resolve().as_posix()),
+        encoding="utf-8",
+    )
     return config
 
 

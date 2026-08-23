@@ -13,10 +13,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep, format_date_record
 
 #: Дебит жидкости добывающей скважины выше этого значения методикой не допускается.
+#: Число не наше: это верхняя граница старшего ЭЦН из `Нормативы_ЧДД.xlsx`
+#: организаторов. Здесь оно стоит умолчанием для действующей поставки; на кейсе
+#: с другими нормативами предел берётся из их таблицы — `liquid_limit()`.
 MAX_LIQUID_RATE_M3_PER_DAY = 500.0
 
 #: Предельное давление нагнетания, атм. Ровно это значение стоит во всей истории
@@ -55,8 +59,23 @@ class ScheduleProblem:
         return f"{self.step_date.isoformat()} скв. {self.well}: {self.message}"
 
 
+def liquid_limit(pumps: list[dict[str, Any]]) -> float:
+    """Предел дебита жидкости по таблице ЭЦН организаторов, м³/сут.
+
+    Верхний насос закрывает верхний интервал, и его правая граница и есть тот
+    предел, который методика запрещает превышать. Своего числа у нас здесь нет:
+    на валидационном кейсе (ТЗ п. 4.3) таблица придёт от организаторов, и предел
+    обязан приехать вместе с ней, а не остаться литералом 500 от Модели Z.
+    """
+    if not pumps:
+        raise ValueError("таблица ЭЦН пуста: предел дебита жидкости брать не из чего")
+    return max(float(pump["max"]) for pump in pumps)
+
+
 def validate(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-             known_wells: frozenset[str] | None = None) -> list[ScheduleProblem]:
+             known_wells: frozenset[str] | None = None,
+             *,
+             max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> list[ScheduleProblem]:
     """Собрать все нарушения. Пустой список — расписание пригодно к расчёту."""
     problems: list[ScheduleProblem] = []
     previous_date: date | None = None
@@ -72,7 +91,8 @@ def validate(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         working: dict[str, set[str]] = {}
 
         for control in step.producers:
-            problems.extend(_check_producer(step.date, control, known_wells))
+            problems.extend(_check_producer(step.date, control, known_wells,
+                                            max_liquid_rate))
             _note_role(problems, records, working, step.date, control.well, "добыча",
                        control.status == "OPEN")
         for control in step.injectors:
@@ -90,9 +110,11 @@ def validate(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
 
 
 def assert_valid(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-                 known_wells: frozenset[str] | None = None) -> None:
+                 known_wells: frozenset[str] | None = None,
+                 *,
+                 max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> None:
     """Упасть, если расписание нарушает ограничения."""
-    problems = validate(steps, known_wells)
+    problems = validate(steps, known_wells, max_liquid_rate=max_liquid_rate)
     if problems:
         listed = "\n".join(f"  - {problem}" for problem in problems[:50])
         more = "" if len(problems) <= 50 else f"\n  ... ещё {len(problems) - 50}"
@@ -174,7 +196,9 @@ def _rate_value(number: float | None, status: str) -> str:
 
 
 def _check_producer(step_date: date, control: ProducerControl,
-                    known_wells: frozenset[str] | None) -> list[ScheduleProblem]:
+                    known_wells: frozenset[str] | None,
+                    max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY,
+                    ) -> list[ScheduleProblem]:
     problems: list[ScheduleProblem] = []
 
     def add(message: str) -> None:
@@ -193,8 +217,8 @@ def _check_producer(step_date: date, control: ProducerControl,
             add("режим LRAT без дебита жидкости")
         elif rate <= 0:
             add(f"дебит жидкости {rate:g} м3/сут: открытая скважина не может иметь нулевой дебит")
-        elif rate > MAX_LIQUID_RATE_M3_PER_DAY:
-            add(f"дебит жидкости {rate:g} > {MAX_LIQUID_RATE_M3_PER_DAY:g} м3/сут — запрещено методикой")
+        elif rate > max_liquid_rate:
+            add(f"дебит жидкости {rate:g} > {max_liquid_rate:g} м3/сут — запрещено методикой")
     elif rate is not None and rate < 0:
         add(f"отрицательный дебит жидкости {rate:g}")
 
