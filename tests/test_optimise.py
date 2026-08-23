@@ -795,3 +795,33 @@ def test_the_objective_ignores_rows_the_methodology_drops(norms):
         "исключённая строка попала в целевую функцию"
     )
     assert with_dropped < clean, "проверка вырождена: строка ничего не меняла"
+
+
+def test_the_scaling_report_accepts_a_multiplier_per_well():
+    """Сценарий «просить по достигнутому» назначает каждой скважине свой множитель.
+
+    Проверять его общим числом значило бы считать умышленно сниженную просьбу
+    потерей множителя: скважина, которой мы сами назначили ×0.4, получила ровно
+    то, что назначено, и запись буквальная. Скважина, которой карта ничего не
+    назначила, в отчёт не входит — к ней множитель не применялся.
+    """
+    from aios.optimise import scale, scaling_report
+
+    steps = [ScheduleStep(
+        date=date(2007, 1, 1),
+        producers=(
+            ProducerControl(well="1", status="OPEN", mode="LRAT", liquid_rate=100.0, bhp=50.0),
+            ProducerControl(well="2", status="OPEN", mode="LRAT", liquid_rate=100.0, bhp=50.0),
+        ),
+        injectors=(),
+    )]
+    chosen = {"1": 0.4, "2": 1.0}
+    scaled = steps
+    for well, multiplier in chosen.items():
+        scaled = scale(scaled, multiplier, {well})
+
+    report = scaling_report(steps, scaled, production=chosen, injection={})
+
+    assert report.records == 1, "скважина с множителем 1.0 в отчёт не входит"
+    assert report.literal == 1
+    assert report.share == 1.0

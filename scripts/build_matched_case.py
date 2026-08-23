@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -159,6 +160,29 @@ def main(argv: list[str] | None = None) -> int:
           f"равномерного ×{arguments.injection} "
           f"({asked_here / asked_uniform * 100:.1f} %)")
     print(f"кейс:         {case.data_file}")
+
+    # Тот же отчёт, что пишет build_scaled_case.py: доля буквально применённых
+    # записей — величина, которую проверяет шлюз пакета (Р-92). Здесь множитель
+    # у каждой скважины свой, поэтому в отчёт уходят карты, а не два числа:
+    # проверять поскважинный сценарий общим числом значило бы считать умышленное
+    # снижение просьбы потерей множителя.
+    production_map = chosen_producers or {
+        well: arguments.production
+        for step in steps for control in step.producers
+        for well in (control.well,)
+    }
+    report = optimise.scaling_report(steps, scaled,
+                                     production=production_map, injection=chosen)
+    report_path = Path(arguments.run_dir) / "scaling.json"
+    report_path.write_text(
+        json.dumps({"production": production_map, "injection": chosen,
+                    "slack": arguments.slack, **report.as_dict()},
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"множитель применён буквально к {report.literal} записям из "
+          f"{report.records} ({100.0 * report.share:.1f} %)")
+    print(f"отчёт:        {report_path}")
     print()
     print(f"{'скв':>6} {'дошло':>7} {'множитель':>10}")
     for well in sorted(reduced, key=lambda name: chosen[name]):

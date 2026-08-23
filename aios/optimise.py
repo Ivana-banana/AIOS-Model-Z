@@ -31,6 +31,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -492,11 +493,18 @@ class ScalingReport:
 
 def scaling_report(before: list[ScheduleStep] | tuple[ScheduleStep, ...],
                    after: list[ScheduleStep] | tuple[ScheduleStep, ...],
-                   *, production: float, injection: float) -> ScalingReport:
+                   *, production: float | Mapping[str, float],
+                   injection: float | Mapping[str, float]) -> ScalingReport:
     """Сравнить расписание до и после масштабирования запись за записью.
 
     Считаются только открытые записи и только те, к которым множитель вообще
     применялся: при множителе 1.0 сравнивать нечего.
+
+    Множитель может быть общим числом или **картой «скважина → множитель»**:
+    сценарий «просить по достигнутому» (Р-90) назначает каждой скважине свой,
+    и проверять его общим числом значило бы считать умышленное снижение
+    просьбы потерей множителя. Скважина, которой карта ничего не назначила,
+    в отчёт не входит — к ней множитель не применялся.
     """
     records = literal = capped = 0
     off_mode: dict[str, int] = {}
@@ -507,12 +515,14 @@ def scaling_report(before: list[ScheduleStep] | tuple[ScheduleStep, ...],
 
     for step_before, step_after in zip(before, after, strict=True):
         pairs: list[tuple[str, float, object, object]] = [
-            ("producer", production, control_before, control_after)
+            ("producer", _multiplier_of(production, control_before.well),
+             control_before, control_after)
             for control_before, control_after in zip(step_before.producers,
                                                      step_after.producers, strict=True)
         ]
         pairs += [
-            ("injector", injection, control_before, control_after)
+            ("injector", _multiplier_of(injection, control_before.well),
+             control_before, control_after)
             for control_before, control_after in zip(step_before.injectors,
                                                      step_after.injectors, strict=True)
         ]
@@ -539,6 +549,12 @@ def scaling_report(before: list[ScheduleStep] | tuple[ScheduleStep, ...],
     return ScalingReport(records=records, literal=literal, capped=capped,
                          off_mode=off_mode, without_rate=without_rate)
 
+
+def _multiplier_of(spec: float | Mapping[str, float], well: str) -> float:
+    """Множитель записи: общий или назначенный этой скважине картой."""
+    if isinstance(spec, Mapping):
+        return float(spec.get(well, 1.0))
+    return float(spec)
 
 def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
           multiplier: float,
