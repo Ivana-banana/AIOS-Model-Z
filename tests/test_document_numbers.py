@@ -171,6 +171,8 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     assert "подменяет секцию SCHEDULE целиком; история включена" in sheet
     assert "В-03 не получен" in sheet
     assert "docs/submission-day.md" in _read("README.md")
+    assert "в **отдельной чистой копии** `submit-2026-08-24.1`" in sheet
+    assert "вернуть в текущий `main`" in sheet
 
 
 def test_declared_schedule_checksum_is_the_same_in_current_documents():
