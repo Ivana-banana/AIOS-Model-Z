@@ -138,6 +138,41 @@ def test_another_quality_model_cannot_replace_the_declared_artifact(tmp_path):
     assert "в пакет входит artifacts/surrogate.joblib" in checks["9"].detail
 
 
+def test_changed_bytes_under_the_declared_model_name_are_rejected(tmp_path):
+    schedule, _model = _package(tmp_path)
+    model = tmp_path / "artifacts" / "surrogate.joblib"
+    model.parent.mkdir()
+    model.write_bytes(b"accepted quality model")
+    expected = hashlib.sha256(model.read_bytes()).hexdigest()
+    submission = tmp_path / "docs" / "submission.md"
+    submission.write_text(
+        submission.read_text(encoding="utf-8")
+        + "| модель | `artifacts/surrogate.joblib`, "
+        f"`sha256 {expected}` |\n",
+        encoding="utf-8",
+    )
+
+    ready = {item.number: item for item in audit(
+        tmp_path,
+        schedule,
+        model,
+        model_validator=lambda _: None,
+        schedule_validator=lambda _: None,
+    )}
+    assert ready["9"].ready
+
+    model.write_bytes(b"another quality model")
+    changed = {item.number: item for item in audit(
+        tmp_path,
+        schedule,
+        model,
+        model_validator=lambda _: None,
+        schedule_validator=lambda _: None,
+    )}
+    assert not changed["9"].ready
+    assert "другой артефакт" in changed["9"].detail
+
+
 def test_existing_schedule_must_pass_the_schedule_gate(tmp_path):
     schedule, model = _package(tmp_path)
 

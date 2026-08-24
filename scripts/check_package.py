@@ -29,6 +29,9 @@ DECLARED_NPV = re.compile(r"\| \*\*ЧДД\*\* \| \*\*([^*]+ млн руб\.)\*\*
 DECLARED_SCHEDULE = re.compile(r"`(runs/[\w.-]+/wells_schedule\.inc)`")
 DECLARED_MD5 = re.compile(r"`md5 ([0-9a-fA-F]{32})`")
 DECLARED_MODEL = re.compile(r"`(artifacts/[\w.-]+\.joblib)`")
+DECLARED_MODEL_SHA256 = re.compile(
+    r"`artifacts/[\w.-]+\.joblib`[^\n]*`sha256 ([0-9a-fA-F]{64})`"
+)
 
 
 @dataclass(frozen=True)
@@ -81,7 +84,7 @@ def audit(
     if model_path.is_file():
         model_error = (model_validator or _model_problem)(model_path) or _wrong_model(
             submission, model_path
-        )
+        ) or _model_checksum_problem(submission, model_path)
     ui = (root / "aios" / "web" / "app.py", root / "aios" / "explain.py")
     templates = _files(root / "aios" / "web" / "templates", "*.html")
     licenses = (
@@ -238,6 +241,27 @@ def _wrong_model(submission: Path, model: Path) -> str | None:
     if model.as_posix().endswith(declared):
         return None
     return f"проверяется {model.as_posix()}, а в пакет входит {declared}"
+
+
+def _model_checksum_problem(submission: Path, model: Path) -> str | None:
+    """Сверить байты суррогата с артефактом, прошедшим пакетный допуск."""
+    if not submission.is_file():
+        return None
+    match = DECLARED_MODEL_SHA256.search(submission.read_text(encoding="utf-8"))
+    if match is None:
+        return None
+    expected = match.group(1).lower()
+    digest = hashlib.sha256()
+    try:
+        with model.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        return f"sha256 модели не посчитан: {error}"
+    actual = digest.hexdigest()
+    if actual != expected:
+        return f"sha256 модели {actual}, а в заявке {expected}: другой артефакт"
+    return None
 
 
 def _checksum_problem(submission: Path, schedule: Path) -> tuple[str | None, str]:

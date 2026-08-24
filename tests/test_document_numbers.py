@@ -187,7 +187,10 @@ def test_submission_does_not_reopen_resolved_blockers():
 def test_submission_includes_the_required_surrogate_artifact():
     submission = _read("docs/submission.md")
 
-    assert "`artifacts/surrogate.joblib`, `aios/neural.py`" in submission
+    model_sha = "2941475afb8d13938a66ad46cbac14500f2601a089152b86c6ce2acb37dc5346"
+    assert "`artifacts/surrogate.joblib`" in submission
+    assert f"`sha256 {model_sha}`" in submission
+    assert f"`sha256 {model_sha}`" in _read("docs/submission-day.md")
     assert "допущенный `artifacts/surrogate.joblib`" in submission
     assert "обученные модели `artifacts/` | воспроизводятся" not in submission
 
