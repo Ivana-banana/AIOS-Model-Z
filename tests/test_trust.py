@@ -295,3 +295,33 @@ def test_the_gate_refuses_half_of_the_candidate_mode(tmp_path, capsys):
     assert trust_gate.main(["--model", str(tmp_path / "нет.joblib")]) == 1
     assert "оба ключа" in capsys.readouterr().err
 
+
+
+def test_the_margin_is_negative_when_the_model_never_overpromises():
+    """Калибровка по сценариям, которых никто не оптимизировал, защиты не даёт.
+
+    Замер 24.08 (`docs/data/margin-pairs.csv`): на 21 ручном сценарии суррогат
+    занижает ЧДД **всегда** — остатки от −340 до −1 211 млн руб., и односторонний
+    квантиль выходит отрицательным (−351,8). На двух кандидатах оптимизатора та
+    же модель завышает: +376,6 и +927,8. Знак остатка разделяет семейства
+    начисто, и это ровно тот механизм, ради которого запас и существует: применять
+    к кандидатам поиска запас, посчитанный по ручным прогонам, значит не иметь
+    защиты вовсе.
+    """
+    from aios.trust import OptimismMargin
+
+    manual = [(11197.7, 11851.8), (12255.4, 12783.2), (12730.2, 13264.6),
+              (12099.7, 13152.9), (11659.4, 12812.0), (12181.6, 13183.5),
+              (12379.8, 13224.6), (11744.9, 12956.4), (13305.3, 13645.7),
+              (11698.3, 12428.8), (11516.0, 12396.0), (11847.7, 12761.6)]
+    search = [(12664.9, 12288.3), (13240.4, 12312.6)]
+
+    on_manual = OptimismMargin.fit(manual)
+    on_search = OptimismMargin.fit(search)
+
+    assert on_manual.calibrated
+    assert on_manual.value < 0.0, "запас по ручным сценариям отрицателен — защиты нет"
+    assert not on_search.calibrated, "двух пар не хватает на уровень 90 %"
+    assert "нужен" in on_search.reason
+    assert all(predicted > actual for predicted, actual in search), (
+        "на кандидатах оптимизатора суррогат завышает — знак остатка разделяет семейства")
