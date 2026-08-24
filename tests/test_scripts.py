@@ -29,6 +29,7 @@ REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "r
             "docx_to_text.py", "profiles.py", "pack_npv.py",
             "surrogate_warnings.py", "build_scaled_case.py", "check_deck.py",
             "forcing_check.py")
+PYTHON_ENTRYPOINTS = tuple(sorted(path.name for path in SCRIPTS.glob("*.py")))
 
 
 @pytest.mark.parametrize("name", REQUIRED)
@@ -191,7 +192,7 @@ def test_run_flow_reports_skipped_keywords(tmp_path: Path):
     )
 
 
-@pytest.mark.parametrize("name", [name for name in REQUIRED if name.endswith(".py")])
+@pytest.mark.parametrize("name", PYTHON_ENTRYPOINTS)
 def test_python_scripts_run_from_a_clean_checkout(name: str):
     """`python scripts/<имя>.py --help` обязан работать без установки пакета.
 
@@ -207,7 +208,7 @@ def test_python_scripts_run_from_a_clean_checkout(name: str):
     assert result.returncode == 0, f"{name} --help упал:\n{result.stderr}"
 
 
-@pytest.mark.parametrize("name", [name for name in REQUIRED if name.endswith(".py")])
+@pytest.mark.parametrize("name", PYTHON_ENTRYPOINTS)
 def test_python_scripts_survive_a_cp1251_console(name: str):
     """Вывод не должен зависеть от кодировки консоли.
 
@@ -690,7 +691,7 @@ def test_no_call_passes_an_argument_the_callee_does_not_accept():
     modules = sorted(Path(__file__).resolve().parent.parent.glob("aios/**/*.py"))
     # скрипты берём списком, а не маской: на Windows каталог venv `Scripts/` —
     # для файловой системы тот же путь, что наш `scripts/`
-    scripts = [SCRIPTS / name for name in REQUIRED if name.endswith(".py")]
+    scripts = [SCRIPTS / name for name in PYTHON_ENTRYPOINTS]
 
     mismatches = [line for path in modules + scripts for line in _keyword_mismatches(path)]
 
