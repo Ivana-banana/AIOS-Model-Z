@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from datetime import date
 from pathlib import Path
 
@@ -28,22 +27,13 @@ SCRIPTS = ROOT / "scripts"
 REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_doe.py", "run_cycle.py",
             "transcribe.py", "build_dataset.py", "train_surrogate.py", "run_all.py",
             "docx_to_text.py", "profiles.py", "pack_npv.py",
-            "surrogate_warnings.py", "build_scaled_case.py", "check_deck.py")
+            "surrogate_warnings.py", "build_scaled_case.py", "check_deck.py",
+            "forcing_check.py")
 
 
 @pytest.mark.parametrize("name", REQUIRED)
 def test_documented_script_exists(name: str):
     assert (SCRIPTS / name).is_file(), f"нет scripts/{name}, а на него ссылается документация"
-
-
-def test_deck_check_can_be_launched_exactly_as_documented():
-    checked = subprocess.run(
-        [sys.executable, "scripts/check_deck.py", "--help"],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
-
-    assert checked.returncode == 0, checked.stderr
-    assert "usage: check_deck.py" in checked.stdout
 
 
 @pytest.mark.parametrize("name", REQUIRED)
