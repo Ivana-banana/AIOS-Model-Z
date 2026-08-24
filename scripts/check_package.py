@@ -91,6 +91,10 @@ def audit(
     ui = (root / "aios" / "web" / "app.py", root / "aios" / "explain.py")
     templates = _files(root / "aios" / "web" / "templates", "*.html")
     licenses = (
+        # сама лицензия нашего кода — первым файлом: без неё пакет уезжает без
+        # условий, на которых его можно использовать, и заметить это некому
+        # (Р-107 объявил MIT 24.08, шлюз до этого проверял только чужие)
+        root / "LICENSE",
         root / "THIRD_PARTY_NOTICES.md",
         root / "MODIFICATIONS.md",
         root / "PROVENANCE_AND_RIGHTS.md",
@@ -131,7 +135,8 @@ def audit(
                   else f"нет обученного артефакта {model_path}"
               )),
         Check("L", "лицензии и происхождение", _all_files(licenses),
-              _missing(licenses) or "реестр, уведомления, модификации и тексты лицензий"),
+              _missing(licenses)
+              or "LICENSE, реестр, уведомления, модификации и тексты лицензий"),
     ]
 
 

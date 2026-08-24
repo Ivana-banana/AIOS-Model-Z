@@ -27,6 +27,8 @@ def _package(root: Path) -> tuple[Path, Path]:
         "docker/Dockerfile": "",
         "requirements.lock": "",
         "GIT.md": "",
+        # с 24.08 пакет обязан нести собственную лицензию (Р-107)
+        "LICENSE": "MIT License\n",
         ".git/HEAD": "ref: refs/heads/main\n",
         "THIRD_PARTY_NOTICES.md": "",
         "MODIFICATIONS.md": "",
@@ -269,3 +271,30 @@ def test_the_audit_refuses_changed_bytes_under_the_declared_name(tmp_path):
     assert not changed["6"].ready
     assert "проверяется другой файл" in changed["6"].detail
     assert expected in changed["6"].detail
+
+
+def test_the_package_is_incomplete_without_our_own_license(tmp_path):
+    """Пакет без `LICENSE` — это код без условий использования.
+
+    Шлюз проверял чужие лицензии (реестр, уведомления, модификации, тексты) и не
+    проверял нашу: до 24.08 её не существовало, а с Р-107 она есть. Пакет,
+    уехавший без неё, выглядит полным — заметить это некому.
+    """
+    from check_package import audit
+
+    root = tmp_path
+    schedule, model = _package(root)
+
+    checks = {check.number: check for check in audit(
+        root, schedule, model,
+        schedule_validator=lambda path: None, model_validator=lambda path: None,
+    )}
+    assert checks["L"].ready, checks["L"].detail
+
+    (root / "LICENSE").unlink()
+    checks = {check.number: check for check in audit(
+        root, schedule, model,
+        schedule_validator=lambda path: None, model_validator=lambda path: None,
+    )}
+    assert not checks["L"].ready
+    assert "LICENSE" in checks["L"].detail
