@@ -83,6 +83,19 @@ def manifest_problem(manifest: Manifest, tag_message: str) -> str | None:
     return None
 
 
+def reproduction_problem(manifest: Manifest, submission: str) -> str | None:
+    """Проверить, что инструкция снимка тега строит объявленный сценарий."""
+    try:
+        commands = submission.split("## 3.", maxsplit=1)[1]
+        commands = commands.split("## 4.", maxsplit=1)[0]
+    except IndexError:
+        return "в снимке тега нет полного раздела 3 инструкции воспроизведения"
+    run = manifest.schedule.rsplit("/", maxsplit=1)[0]
+    if f"{run}/RUN.DATA" not in commands:
+        return f"инструкция снимка тега не считает заявленный сценарий {run}"
+    return None
+
+
 def _tag_message(root: Path, tag: str) -> str:
     result = subprocess.run(
         ["git", "for-each-ref", f"refs/tags/{tag}", "--format=%(objecttype)%00%(contents)"],
@@ -98,6 +111,18 @@ def _tag_message(root: Path, tag: str) -> str:
     if kind != "tag":
         raise ValueError(f"тег {tag} не аннотированный")
     return message
+
+
+def _tag_file(root: Path, tag: str, path: str) -> str:
+    result = subprocess.run(
+        ["git", "show", f"{tag}:{path}"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.stdout
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -116,7 +141,15 @@ def main(argv: list[str] | None = None) -> int:
             if match is None:
                 raise ValueError("в паспорте не найден активный тег submit-<дата>")
             tag = match.group(1)
-        problem = manifest_problem(declared_manifest(submission), _tag_message(root, tag))
+        current = declared_manifest(submission)
+        tagged_submission = _tag_file(root, tag, "docs/submission.md")
+        tagged = declared_manifest(tagged_submission)
+        problem = (
+            "манифест в снимке тега расходится с текущей заявкой"
+            if tagged != current
+            else reproduction_problem(tagged, tagged_submission)
+            or manifest_problem(current, _tag_message(root, tag))
+        )
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
         print(f"[НЕТ] тег заявки: {error}")
         return 1
@@ -124,7 +157,10 @@ def main(argv: list[str] | None = None) -> int:
     if problem:
         print(f"[НЕТ] тег заявки: {problem}")
         return 1
-    print(f"[ГОТОВО] тег заявки: {tag} совпадает с docs/submission.md")
+    print(
+        f"[ГОТОВО] тег заявки: {tag}, манифест и инструкция совпадают "
+        "с docs/submission.md"
+    )
     return 0
 
 

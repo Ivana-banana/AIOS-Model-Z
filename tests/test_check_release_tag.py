@@ -11,6 +11,7 @@ from check_release_tag import (  # noqa: E402
     Manifest,
     declared_manifest,
     manifest_problem,
+    reproduction_problem,
 )
 
 MANIFEST = Manifest(
@@ -62,3 +63,24 @@ def test_historical_correct_number_does_not_hide_wrong_tag_header():
 
     assert problem is not None
     assert "npv" in problem
+
+
+def test_tag_snapshot_must_rebuild_the_declared_run():
+    wrong = """## 3. Как повторить число
+python scripts/build_matched_case.py runs/matched-100
+bash scripts/run_flow.sh runs/matched-100/RUN.DATA 4
+## 4. Проверки
+"""
+
+    problem = reproduction_problem(MANIFEST, wrong)
+
+    assert problem is not None
+    assert "runs/matched-0995" in problem
+
+
+def test_tag_snapshot_with_the_declared_run_passes():
+    current = (Path(__file__).resolve().parent.parent / "docs" / "submission.md")
+
+    assert reproduction_problem(
+        MANIFEST, current.read_text(encoding="utf-8")
+    ) is None
