@@ -81,10 +81,13 @@ def audit(
         )
         scaling = f"{scaling}; {checksum}"
     model_error = None
+    model_checksum = "sha256 модели в заявке не указан"
     if model_path.is_file():
         model_error = (model_validator or _model_problem)(model_path) or _wrong_model(
             submission, model_path
-        ) or _model_checksum_problem(submission, model_path)
+        )
+        if model_error is None:
+            model_error, model_checksum = _model_checksum_problem(submission, model_path)
     ui = (root / "aios" / "web" / "app.py", root / "aios" / "explain.py")
     templates = _files(root / "aios" / "web" / "templates", "*.html")
     licenses = (
@@ -124,7 +127,7 @@ def audit(
               and (root / "docs" / "surrogate.md").is_file(),
               (
                   model_error if model_error is not None
-                  else f"{model_path} + код + описание" if model_path.is_file()
+                  else f"{model_path} + код + описание; {model_checksum}" if model_path.is_file()
                   else f"нет обученного артефакта {model_path}"
               )),
         Check("L", "лицензии и происхождение", _all_files(licenses),
@@ -243,13 +246,13 @@ def _wrong_model(submission: Path, model: Path) -> str | None:
     return f"проверяется {model.as_posix()}, а в пакет входит {declared}"
 
 
-def _model_checksum_problem(submission: Path, model: Path) -> str | None:
+def _model_checksum_problem(submission: Path, model: Path) -> tuple[str | None, str]:
     """Сверить байты суррогата с артефактом, прошедшим пакетный допуск."""
     if not submission.is_file():
-        return None
+        return None, "sha256 модели в заявке не указан"
     match = DECLARED_MODEL_SHA256.search(submission.read_text(encoding="utf-8"))
     if match is None:
-        return None
+        return None, "sha256 модели в заявке не указан"
     expected = match.group(1).lower()
     digest = hashlib.sha256()
     try:
@@ -257,11 +260,14 @@ def _model_checksum_problem(submission: Path, model: Path) -> str | None:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
     except OSError as error:
-        return f"sha256 модели не посчитан: {error}"
+        return f"sha256 модели не посчитан: {error}", "sha256 модели не посчитан"
     actual = digest.hexdigest()
     if actual != expected:
-        return f"sha256 модели {actual}, а в заявке {expected}: другой артефакт"
-    return None
+        return (
+            f"sha256 модели {actual}, а в заявке {expected}: другой артефакт",
+            f"sha256 {actual}",
+        )
+    return None, f"sha256 {actual} совпал с заявкой"
 
 
 def _checksum_problem(submission: Path, schedule: Path) -> tuple[str | None, str]:

@@ -160,6 +160,7 @@ def test_changed_bytes_under_the_declared_model_name_are_rejected(tmp_path):
         schedule_validator=lambda _: None,
     )}
     assert ready["9"].ready
+    assert f"sha256 {expected} совпал с заявкой" in ready["9"].detail
 
     model.write_bytes(b"another quality model")
     changed = {item.number: item for item in audit(
