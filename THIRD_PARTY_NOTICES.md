@@ -33,15 +33,34 @@ notices, приложить текст лицензии, обозначить с
 
 | Компонент | Версия | Лицензия | Corresponding Source |
 |---|---|---|---|
-| OPM Flow (`opm-simulators`) | 2026.04, точная версия Debian-пакета **не зафиксирована** | GPL-3.0-or-later (README ветки Flow 2026.04) | https://github.com/OPM/opm-simulators |
-| `opm-common` | 2026.04, точная версия Debian-пакета **не зафиксирована** | GPL-3.0-or-later | https://github.com/OPM/opm-common |
-| `opm-grid` | 2026.04, точная версия Debian-пакета **не зафиксирована** | GPLv3; формула `only` / `or later` **в проверенных источниках не подтверждена** | https://github.com/OPM/opm-grid |
+| OPM Flow (`libopm-simulators-bin`) | **2026.04-1~noble** | преимущественно GPL-3.0+; внутри также GPL-2.0+, BSL-1.0, ODbL-1.0 и DbCL-1.0 (данные) | https://github.com/OPM/opm-simulators |
+| `opm-common` (`libopm-common`) | **2026.04-1~noble** | GPL-3.0+ и GPL-3.0; отдельные файлы — GPL-2.0+, BSD-2-Clause, LGPL-2.1, «GPL-3.0+ or LGPL-2.1» | https://github.com/OPM/opm-common |
+| `opm-grid` (`libopm-grid`) | **2026.04-1~noble** | **GPL-3.0+** — формула `or later` подтверждена файлом `copyright` самого пакета; отдельные файлы GPL-2.0+ и «GPL-2 with DUNE exception» | https://github.com/OPM/opm-grid |
+| Open MPI (`libopenmpi3t64`, `mpi-default-bin`) | 4.1.6-7ubuntu2 и 1.15build1 | BSD-3-Clause (Open MPI) | https://www.open-mpi.org |
 | `resdata` | 6.3.3 | `GPL-3.0` — взято из метаданных установленного дистрибутива (`License-Expression`), проверено 22.08 | https://github.com/equinor/resdata |
 
 Текст GPLv3 — `LICENSES/GPL-3.0.txt`; копия, приложенная самим `resdata`, —
 `LICENSES/resdata-6.3.3-GPL-3.0.txt`.
 
-**Чего здесь нет и почему.** Точные версии Debian-пакетов OPM, их хэши и
+**Откуда взяты версии и лицензии (важно для точности).** Не из образа, а из
+установки того же PPA `ppa:opm/ppa` в WSL Ubuntu 24.04 (noble) на машине А —
+Docker там не установлен вовсе, Flow стоит напрямую. База образа
+(`FROM ubuntu:24.04`) и источник пакетов те же, поэтому версии совпадут; **но
+это не замер внутри образа**, и разница остаётся: системный Python и патч-версии
+части зависимостей у образа могут отличаться. Команда, которой снято:
+
+```bash
+dpkg-query -W -f='${Package}	${Version}
+' libopm-simulators-bin libopm-common libopm-grid
+grep "^License:" /usr/share/doc/<пакет>/copyright | sort | uniq -c
+```
+
+**Одна открытая формулировка этим закрыта.** До 24.08 у `opm-grid` стояло
+«GPLv3; формула `only` / `or later` не подтверждена» — файл `copyright` самого
+пакета даёт **GPL-3.0+**, то есть «or later». Это ответ из первоисточника, а не
+вывод по README.
+
+**Чего здесь по-прежнему нет и почему.** Хэши Debian-пакетов OPM и
 лицензионные файлы из `/usr/share/doc/*/copyright` берутся из **собранного
 образа**. Docker на машине, где составлялся этот файл, нет (`BLOCKED.md`, п. 7),
 поэтому поля оставлены пустыми, а не заполнены правдоподобными числами. Команда,
