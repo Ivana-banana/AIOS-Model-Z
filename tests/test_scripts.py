@@ -959,16 +959,22 @@ def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
     assert run_cycle.written_identity(tmp_path) is None, "битый файл не должен ронять прогон"
 
 
-def test_base_schedule_is_refused_for_a_model_that_thinks_in_multipliers(tmp_path,
-                                                                        monkeypatch,
-                                                                        capsys):
-    """Подставить обученной модели другое опорное расписание — не сдвиг старта.
+class _CycleStopped(Exception):
+    """Прервать `main` сразу после вызова цикла: дальше нас не интересует."""
 
-    Она принимает режим множителями к опорному расписанию дека, и опорным при
-    обучении был исторический дек. Замер 24.08: тот же файл `runs/srg-narrow`
-    модель оценивает в 12 664,9 как кандидата и в 11 201,4 как опорное — разница
-    1 463,5 млн руб. на одном и том же расписании. Молча принять такой запуск
-    значит показать число, которое ничего не описывает.
+
+def test_the_model_measures_from_the_deck_while_the_search_starts_elsewhere(
+        tmp_path, monkeypatch, capsys):
+    """Опорное расписание модели и точка старта поиска — разные вещи.
+
+    Обученная модель принимает режим множителями к опорному расписанию, и опорным
+    при обучении был исторический дек. Замер машины Б 24.08: тот же файл
+    `runs/srg-narrow` она оценивает в 12 664,9 как кандидата и в 11 201,4 как
+    опорное — разница 1 463,5 млн руб. на одном расписании. Пока оба смысла жили
+    в одном списке, `--base-schedule` с обученной моделью приходилось отвергать.
+
+    Теперь они разведены: модель меряет от дека, поиск стартует оттуда, куда
+    указали. Тест закрепляет именно это разделение.
     """
     from conftest import make_row
     from test_dataset import _tiny_project
@@ -987,7 +993,19 @@ def test_base_schedule_is_refused_for_a_model_that_thinks_in_multipliers(tmp_pat
         joint_rate_search = True
         model = object()
 
-    monkeypatch.setattr(run_cycle, "for_cycle", lambda **kwargs: Chosen())
+    seen: dict[str, object] = {}
+
+    def remember(**kwargs):
+        seen["reference"] = kwargs["reference_steps"]
+        return Chosen()
+
+    def stop(model, steps, *args, **kwargs):
+        seen["search"] = steps
+        raise _CycleStopped
+
+    monkeypatch.setattr(run_cycle, "for_cycle", remember)
+    monkeypatch.setattr(run_cycle.loop, "run_cycle", stop)
+
     source = tmp_path / "runs" / "RUN"
     source.mkdir(parents=True)
     source.with_suffix(".UNSMRY").write_bytes(b"")
@@ -998,11 +1016,16 @@ def test_base_schedule_is_refused_for_a_model_that_thinks_in_multipliers(tmp_pat
         encoding="utf-8",
     )
 
-    code = run_cycle.main(["--from", str(source.parent), "--out", str(tmp_path / "out"),
-                            "--surrogate-model", str(tmp_path / "s.joblib"),
-                            "--base-schedule", str(other), "--config", str(config)])
+    with pytest.raises(_CycleStopped):
+        run_cycle.main(["--from", str(source.parent), "--out", str(tmp_path / "out"),
+                        "--surrogate-model", str(tmp_path / "s.joblib"),
+                        "--base-schedule", str(other), "--config", str(config)])
 
-    assert code == 1
-    printed = capsys.readouterr().err
-    assert "множителями к опорному расписанию" in printed
-    assert "тривиальным бейзлайном" in printed, "отказ обязан называть, где ключ работает"
+    printed = capsys.readouterr().out
+    assert "поиск стартует от candidate.inc" in printed
+    def rates(steps):
+        return [control.liquid_rate for step in steps for control in step.producers]
+
+    assert rates(seen["search"]) == [45.0], "поиск обязан стартовать с подставленного файла"
+    assert rates(seen["reference"]) != rates(seen["search"]), (
+        "модель обязана мерить множители от дека, а не от подставленного расписания")
