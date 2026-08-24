@@ -47,4 +47,18 @@ def test_changed_schedule_is_rejected_even_when_numbers_match():
     problem = manifest_problem(MANIFEST, message)
 
     assert problem is not None
-    assert MANIFEST.schedule in problem
+    assert "schedule" in problem
+
+
+def test_historical_correct_number_does_not_hide_wrong_tag_header():
+    message = """Заявляемый ЧДД: 13 152,9 млн руб.
+База: 11 851,8. Прирост: +1 281,9 (+10,8 %).
+Файл: runs/matched-0995/wells_schedule.inc, md5 41d813345e95f9d484c792ee6312a270.
+
+Историческая справка: прежний документ называл 13 133,8 млн руб.
+"""
+
+    problem = manifest_problem(MANIFEST, message)
+
+    assert problem is not None
+    assert "npv" in problem

@@ -50,17 +50,36 @@ def declared_manifest(text: str) -> Manifest:
     return Manifest(npv, base, uplift, uplift_percent, schedule, md5.lower())
 
 
-def manifest_problem(manifest: Manifest, tag_message: str) -> str | None:
-    expected = (
-        f"{manifest.npv} млн руб.",
-        f"База: {manifest.base}",
-        f"+{manifest.uplift} (+{manifest.uplift_percent} %)",
-        manifest.schedule,
-        f"md5 {manifest.md5}",
+def tagged_manifest(text: str) -> Manifest:
+    """Прочитать декларативную шапку тега, не принимая числа из его истории."""
+    npv, = _capture(
+        r"^Заявляемый ЧДД: ([\d ]+,\d) млн руб\.", text, "ЧДД в теге"
     )
-    missing = [fragment for fragment in expected if fragment not in tag_message]
-    if missing:
-        return "тег расходится с заявкой; не найдено: " + ", ".join(missing)
+    base, uplift, uplift_percent = _capture(
+        r"^База: ([\d ]+,\d)\. Прирост: \+([\d ]+,\d) \(\+([\d,]+) %\)\.",
+        text,
+        "база и прирост в теге",
+    )
+    schedule, md5 = _capture(
+        r"^Файл: (runs/[\w.-]+/wells_schedule\.inc), md5 ([0-9a-fA-F]{32})\.",
+        text,
+        "файл и md5 в теге",
+    )
+    return Manifest(npv, base, uplift, uplift_percent, schedule, md5.lower())
+
+
+def manifest_problem(manifest: Manifest, tag_message: str) -> str | None:
+    try:
+        tagged = tagged_manifest(tag_message)
+    except ValueError as error:
+        return str(error)
+    differences = [
+        name
+        for name in Manifest.__dataclass_fields__
+        if getattr(manifest, name) != getattr(tagged, name)
+    ]
+    if differences:
+        return "тег расходится с заявкой; поля: " + ", ".join(differences)
     return None
 
 
