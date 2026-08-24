@@ -1777,6 +1777,13 @@ python scripts/run_cycle.py --from runs/base --out runs/srg-shutdowns \
 |---|---|---|
 | `rows.csv` | `runs/base/rows.csv` (и `~/runs/base/` в WSL) | 5,2 МБ |
 | `wells_schedule.inc` | `runs/base/wells_schedule.inc` | 1,5 МБ |
+| `rows.csv` **заявляемого сценария** | `runs/matched-100/rows.csv` | 5,3 МБ |
+| `wells_schedule.inc` заявляемого | `runs/matched-100/wells_schedule.inc` | 1,56 МБ |
+
+**Второй прогон положен на Windows-сторону 24.08** — без него шаг «сравнение с
+базовым» в демо отвечает 404, и именно так он и отвечал на репетиции машины Б
+(`docs/demo.md`, шаг 3). Теперь сравнивать есть с чем: `/compare?a=base&b=matched-100`
+показывает разницу между историей и тем, что мы заявляем.
 
 Оба положены в `runs/base/` на **Windows-стороне** машины А 20.08 — раньше там
 лежал только `rows.csv`, и показ на этой машине тоже упал бы на странице цикла.
