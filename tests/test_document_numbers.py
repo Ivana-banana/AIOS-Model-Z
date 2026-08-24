@@ -164,3 +164,16 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     assert "+1 281,9 млн руб. (+10,8 %)" in sheet
     assert "подменяет секцию SCHEDULE целиком; история включена" in sheet
     assert "В-03 не получен" in sheet
+
+
+def test_declared_schedule_checksum_is_the_same_in_current_documents():
+    """Хэш старого кандидата не должен пережить смену сдаваемого файла."""
+    import re
+
+    submission = _read("docs/submission.md")
+    match = re.search(r"`md5 ([0-9a-f]{32})`", submission)
+    assert match, "в docs/submission.md нет полного md5 сдаваемого файла"
+    checksum = match.group(1)
+
+    for name in ("PLAN.md", "docs/numbers-audit.md"):
+        assert checksum[:8] in _read(name), f"{name} называет md5 другого файла"
