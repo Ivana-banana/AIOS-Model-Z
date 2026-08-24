@@ -146,10 +146,10 @@ bash scripts/run_flow.sh runs/inj-1.6/RUN.DATA 4 --parsing-strictness=low
 python scripts/export_rows.py runs/inj-1.6
 
 # 2. сдаваемый сценарий: уставка каждой скважины опущена до достигнутого
-python scripts/build_matched_case.py runs/matched-100 \
-    --rows runs/inj-1.6/rows.csv --production 1.5 --injection 1.6 --slack 1.0
-bash scripts/run_flow.sh runs/matched-100/RUN.DATA 4 --parsing-strictness=low
-python scripts/export_rows.py runs/matched-100
+python scripts/build_matched_case.py runs/matched-0995 \
+    --rows runs/inj-1.6/rows.csv --production 1.5 --injection 1.6 --slack 0.995
+bash scripts/run_flow.sh runs/matched-0995/RUN.DATA 4 --parsing-strictness=low
+python scripts/export_rows.py runs/matched-0995
 ```
 
 1. **сборка опорного** — `scripts/build_scaled_case.py` масштабирует наши шаги
@@ -161,8 +161,10 @@ python scripts/export_rows.py runs/matched-100
 3. **выгрузка и счёт** — `scripts/export_rows.py` пишет `rows.csv` в 14 колонках
    контракта и печатает ЧДД, санити-чеки и вердикт по балансу воды;
 4. **сборка сдаваемого** — `scripts/build_matched_case.py` берёт из выгрузки долю
-   запрошенного, дошедшую до пласта, и опускает уставку каждой скважины до неё
-   (`--slack 1.0` — просить ровно достигнутое). Множитель никогда не выше
+   запрошенного, дошедшую до пласта, и опускает уставку каждой скважины до неё.
+   `--slack 0.995` просит на полпроцента меньше достигнутого: этой минимальной
+   срезки хватает, чтобы сценарий уложился в наш собственный потолок компенсации
+   по всем годам, и стоит она 19,1 млн руб. (Р-101). Множитель никогда не выше
    общего ×1.6;
 5. **расчёт и выгрузка** — те же две команды. ЧДД считает **только** вендоренный
    расчётчик организаторов; своей формулы ЧДД в проекте нет, и это проверяется
