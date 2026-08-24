@@ -186,9 +186,12 @@ def test_submission_does_not_reopen_resolved_blockers():
 
 def test_explainability_records_the_completed_live_call():
     text = _read("docs/explainability.md")
+    architecture = _read("docs/architecture.md")
 
     assert "Живой вызов\nсостоялся 23.08" in text
     assert "живой вызов\nпланируется один" not in text
+    assert "Живой вызов выполнен 23.08" in architecture
+    assert "Живой вызов API ещё не выполнялся" not in architecture
 
 
 def test_declared_schedule_checksum_is_the_same_in_current_documents():
