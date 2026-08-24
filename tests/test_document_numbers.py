@@ -182,7 +182,7 @@ def test_declared_schedule_checksum_is_the_same_in_current_documents():
     assert match, "в docs/submission.md нет полного md5 сдаваемого файла"
     checksum = match.group(1)
 
-    for name in ("PLAN.md", "docs/numbers-audit.md"):
+    for name in ("PLAN.md", "docs/numbers-audit.md", "docs/submission-day.md"):
         assert checksum[:8] in _read(name), f"{name} называет md5 другого файла"
 
 
