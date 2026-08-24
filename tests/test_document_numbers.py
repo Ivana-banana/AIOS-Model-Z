@@ -161,6 +161,7 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
         "git status --short --branch",
         "python -m pytest -q",
         "python -m ruff check .",
+        "python scripts/check_release_tag.py",
         "python scripts/check_package.py",
         "python scripts/check_submission.py runs/matched-0995/wells_schedule.inc",
     ):

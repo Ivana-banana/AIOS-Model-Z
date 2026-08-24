@@ -28,7 +28,8 @@ REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "r
             "transcribe.py", "build_dataset.py", "train_surrogate.py", "run_all.py",
             "docx_to_text.py", "profiles.py", "pack_npv.py",
             "surrogate_warnings.py", "build_scaled_case.py", "check_deck.py",
-            "forcing_check.py")
+            "forcing_check.py", "check_package.py", "check_release_tag.py",
+            "check_submission.py")
 PYTHON_ENTRYPOINTS = tuple(sorted(path.name for path in SCRIPTS.glob("*.py")))
 
 
