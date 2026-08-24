@@ -3652,6 +3652,25 @@ python scripts/run_cycle.py --confirm runs/srg-on-top --from runs/matched-100   
 Тот же старт, тот же артефакт, но **без подбора режимов** (`--no-tune-rates`) —
 работают только остановки и ограничения планировщика:
 
+```bash
+python scripts/run_cycle.py --from runs/matched-100 --out runs/srg-on-top-limits \
+    --base-schedule runs/matched-100/wells_schedule.inc \
+    --surrogate-model artifacts/surrogate.joblib --no-tune-rates
+bash scripts/run_flow.sh runs/srg-on-top-limits/RUN.DATA 4 --parsing-strictness=low
+python scripts/export_rows.py runs/srg-on-top-limits
+python scripts/run_cycle.py --confirm runs/srg-on-top-limits --from runs/matched-100 \
+    --base-schedule runs/matched-100/wells_schedule.inc \
+    --surrogate-model artifacts/surrogate.joblib --no-tune-rates
+```
+
+**Про имя каталога.** Блок команд выше дописан 24.08 машиной Б: в исходной записи
+у этого прогона стояла команда прогона с поиском, то есть каталог не был назван
+вовсе, и число 12 400,1 воспроизводилось по описанию, а не по имени. Имя
+`runs/srg-on-top-limits` — **наше соглашение, а не запись с диска**: как каталог
+назывался на машине А, репозиторий не знает, и подставлять правдоподобное вместо
+факта здесь нельзя. Команда воспроизводит прогон в любой каталог; если на машине
+А он назывался иначе, имя надо поправить здесь, а не наоборот.
+
 | Прогон | ЧДД (ГГДМ) | К заявке | Прогноз | Ошибка прогноза |
 |---|---:|---:|---:|---:|
 | заявляемое расписание | **13 152,9** | — | — | — |
