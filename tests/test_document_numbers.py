@@ -195,3 +195,14 @@ def test_current_submission_parameters_are_not_mixed_with_matched_100():
     assert "заявляем **+10,8 %**" in compliance
     assert "13 264,6 − 13 133,8 = 130,8 млн руб." in audit
     assert "111,7 млн — переход" in audit and "ещё 19,1 млн" in audit
+
+
+def test_current_demo_handoff_points_at_the_submitted_run():
+    handoff = _read("HANDOFF.md")
+    section = handoff[handoff.index("## Артефакты для демозапуска"):]
+    section = section[:section.index("## Машина В")]
+
+    assert "runs/matched-0995/rows.csv" in section
+    assert "runs/matched-0995/wells_schedule.inc" in section
+    assert "/compare?a=base&b=matched-0995" in section
+    assert "runs/matched-100" not in section
