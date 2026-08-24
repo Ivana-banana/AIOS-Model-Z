@@ -355,7 +355,7 @@ def evidence_from_cycle(result: Any, surrogate_name: str = "") -> Evidence:
         "ЧДД базового сценария, млн руб.": result.base_chdd_m,
         "ЧДД после решений, млн руб.": result.chdd_m,
         "прирост, млн руб.": result.gain_m,
-        "решений об остановке": float(len(result.actions)),
+        "решений по фонду": float(len(result.actions)),
         "скважин с подобранным режимом": float(len(result.rate_choices)),
     }
     if result.allocations:
@@ -365,10 +365,31 @@ def evidence_from_cycle(result: Any, surrogate_name: str = "") -> Evidence:
     if surrogate_name:
         observations.append(f"прогноз получен источником: {surrogate_name}")
     if result.actions:
-        kinds = sorted({action.kind for action in result.actions})
-        observations.append("типы принятых решений: " + ", ".join(kinds))
+        kinds: dict[str, int] = {}
+        for action in result.actions:
+            kinds[action.kind] = kinds.get(action.kind, 0) + 1
+        observations.append(
+            "типы принятых решений: "
+            + ", ".join(f"{kind} — {count}" for kind, count in sorted(kinds.items()))
+        )
+    # Перевод под закачку объясняется отдельно: его выигрыш даёт отклик соседей,
+    # а суррогат его не предсказывает — в обучающих сценариях у переведённой
+    # скважины колонки закачки нет вовсе. Молча положить такое решение в один ряд
+    # с остановками значит выдать за оценённое то, что не оценивалось (Б37).
+    converted = [action for action in result.actions if action.kind == "convert"]
+    if converted:
+        numbers["переводов под закачку"] = float(len(converted))
+        numbers["стоимость переводов, млн руб."] = float(
+            sum(action.cost_m for action in converted)
+        )
 
     caveats = []
+    if converted:
+        caveats.append(
+            "выигрыш перевода под закачку суррогатом не оценивался: отклик соседей "
+            "на новую нагнетательную он не предсказывает — проверяется только "
+            "полным расчётом ГГДМ"
+        )
     if not result.confirmed:
         caveats.append(
             "прирост посчитан по прогнозу суррогата и полным расчётом ГГДМ не подтверждён"

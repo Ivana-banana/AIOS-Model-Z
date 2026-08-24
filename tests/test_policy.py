@@ -219,3 +219,93 @@ def test_a_row_the_methodology_drops_does_not_count_as_a_loss(norms):
         rows.append(row)
 
     assert policy.plan_shutdowns(rows, norms, control_start=CONTROL_START) == []
+
+
+def _watery(well: str, months: int, *, watercut: float, liquid: float = 900.0,
+            start_year: int = 2014):
+    """Скважина, поднимающая почти одну воду и потому убыточная."""
+    rows = []
+    for index in range(months):
+        year = start_year + index // 12
+        month = index % 12 + 1
+        rows.append(make_row(f"{year}-{month:02d}-01", well, wlpr=30.0,
+                             womr=liquid * (1 - watercut) / 30,
+                             liquid=liquid, oil=liquid * (1 - watercut)))
+    return rows
+
+
+def test_a_water_producer_is_offered_for_conversion_not_only_for_shutdown(norms):
+    """Скважина, поднимающая одну воду, — кандидат на перевод под закачку.
+
+    Остановка убирает и воду, и энергию пласта; перевод оставляет объём в
+    системе, но разворачивает его — вода идёт обратно и поддерживает давление у
+    соседей. Методика оценивает событие отдельно: 5,0 млн руб. ВНС без стоимости
+    ЭЦН (Р-30), то есть планка впятеро выше, чем у остановки.
+    """
+    from aios.policy import CONVERT, plan_conversions
+
+    # сорок восемь месяцев не для красоты: накопленный убыток обязан перекрыть
+    # 5,0 млн руб. ВНС, а это впятеро выше планки остановки — на двух годах
+    # такая скважина её не набирает
+    rows = _watery("вода", 48, watercut=0.995)
+
+    actions = plan_conversions(rows, norms, control_start=date(2014, 1, 1))
+
+    assert actions, "кандидат на перевод не найден"
+    assert actions[0].kind == CONVERT
+    assert actions[0].cost_m == norms.conversion_m == 5.0
+    assert "обводнённость" in actions[0].reason
+    assert "полным расчётом" in actions[0].reason, (
+        "предложение обязано говорить, что выигрыш по соседям суррогатом не оценён"
+    )
+
+
+def test_a_well_with_oil_is_not_offered_for_conversion(norms):
+    """С заметной нефтью перевод отнимает добычу, а размен оценить нечем."""
+    from aios.policy import plan_conversions
+
+    rows = _watery("нефтяная", 24, watercut=0.80)
+
+    assert plan_conversions(rows, norms, control_start=date(2014, 1, 1)) == []
+
+
+def test_conversion_is_not_offered_without_headroom_under_the_water_ceiling(norms):
+    """Без запаса под потолком компенсации перевод — обещание, которое срежут."""
+    from aios.policy import plan_conversions
+
+    rows = _watery("вода", 48, watercut=0.995)
+
+    assert plan_conversions(rows, norms, control_start=date(2014, 1, 1),
+                            headroom=False) == []
+
+
+def test_after_conversion_the_well_leaves_the_producing_fund(norms):
+    """Роль меняется: добыча закрыта, появилась запись закачки.
+
+    Это третье условие задачи: планировщик и баланс воды обязаны увидеть
+    скважину в новой роли, а не в старой.
+    """
+    from aios.deck import ProducerControl, ScheduleStep
+    from aios.policy import CONVERT, Action, apply
+
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("вода", "OPEN", "LRAT", 30.0, 50.0),), ())
+             for month in range(1, 7)]
+    action = Action(date=date(2014, 3, 1), well="вода", kind=CONVERT,
+                    reason="обводнённость 99,5 %", cost_m=norms.conversion_m)
+
+    result = apply(steps, [action])
+
+    before = result[0]
+    assert before.producers[0].status == "OPEN" and not before.injectors
+
+    # запись закачки ставится один раз: в Eclipse режим действует до следующего
+    # изменения, и повторять её на каждом шаге не нужно
+    after = result[2]
+    assert [control.status for control in after.producers] == ["SHUT"]
+    assert len(after.injectors) == 1, "скважина обязана появиться как нагнетательная"
+    assert after.injectors[0].well == "вода"
+    assert after.injectors[0].rate == 30.0, "закачивает столько, сколько поднимала"
+    # а добыча остаётся закрытой и дальше: дек переоткрывает её на каждом шаге
+    assert all(control.status == "SHUT"
+               for step in result[2:] for control in step.producers)

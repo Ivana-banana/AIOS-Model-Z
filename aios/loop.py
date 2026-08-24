@@ -22,10 +22,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from aios import economics, optimise, planner
+from aios import balance, economics, optimise, planner
 from aios.deck import ScheduleStep
 from aios.margin import Norms
-from aios.policy import Action, apply, explain, plan_shutdowns
+from aios.policy import Action, apply, explain, plan_conversions, plan_shutdowns
 from aios.schedule import ScheduleProblem, liquid_limit, validate
 from aios.summary import Fluids
 from aios.surrogate import Surrogate
@@ -182,9 +182,21 @@ def run_cycle(surrogate: Surrogate,
             )
         tuned = optimise.apply_choices(base_steps, choices)
 
+    forecast = surrogate.predict(tuned)
     actions = plan_shutdowns(
-        surrogate.predict(tuned), norms, control_start=control_start, lookback=lookback_months
+        forecast, norms, control_start=control_start, lookback=lookback_months
     )
+    # Перевод под закачку — второе решение фонда, и оно предлагается только там,
+    # где у объекта есть запас под собственным потолком компенсации: закачка
+    # добавляется, а она у нас ограничена (Р-61). Без запаса предложение было бы
+    # обещанием, которое планировщик тут же срежет.
+    converted = plan_conversions(
+        forecast, norms, control_start=control_start, lookback=lookback_months,
+        headroom=_water_headroom(forecast, limits, fluids),
+    )
+    # остановка и перевод по одной скважине — одно решение, а не два: переводим
+    shut_wells = {action.well for action in converted}
+    actions = [action for action in actions if action.well not in shut_wells] + converted
     steps = apply(tuned, actions)
 
     # последним слово за планировщиком: скважинные агенты предлагают, глядя каждый
@@ -252,6 +264,24 @@ def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
         confirmed=True,
         rows=rows,
     )
+
+
+def _water_headroom(rows: list[dict[str, Any]],
+                    limits: planner.Limits | None,
+                    fluids: Fluids | None) -> bool:
+    """Есть ли у объекта запас под собственным потолком компенсации.
+
+    Перевод под закачку добавляет воду в пласт, а закачка ограничена нашим же
+    правилом (Р-61): без запаса предлагать перевод — значит обещать то, что
+    планировщик срежет на следующем шаге. Без ограничений запас считается
+    неограниченным: правило выключено, и мешать переводу нечему.
+    """
+    if limits is None or not limits.enforce_water_balance:
+        return True
+    years = balance.by_year(rows, fluids)
+    if not years:
+        return True
+    return max(year.compensation for year in years) < limits.water_tolerance
 
 
 def _npv(rows: list[dict[str, Any]], start_date: date,

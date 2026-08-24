@@ -408,3 +408,35 @@ def test_an_invented_number_survives_the_unit_relaxation():
     )
 
     assert unverified_numbers("дебит вырастет до 61 м3/сут", evidence) == ("61",)
+
+
+def test_a_conversion_is_named_with_its_cost_and_its_unmeasured_gain():
+    """Перевод под закачку обязан прийти в объяснение отдельно от остановок.
+
+    Его выигрыш даёт отклик соседей на новую нагнетательную, а суррогат такого
+    отклика не предсказывает: в обучающих сценариях у переведённой скважины
+    колонки закачки нет вовсе. Положить перевод в один ряд с остановками значит
+    выдать за оценённое то, что не оценивалось (Б37).
+    """
+    from datetime import date as date_type
+
+    from aios.explain import evidence_from_cycle
+    from aios.loop import CycleResult
+    from aios.policy import Action
+
+    result = CycleResult(
+        base_chdd_m=100.0, chdd_m=110.0,
+        actions=(
+            Action(date_type(2014, 3, 1), "вода", "convert", "обводнённость 99,5 %", 5.0),
+            Action(date_type(2014, 5, 1), "убыток", "shut", "убыток 6 мес.", 1.0),
+        ),
+        rate_choices=(), allocations=(), steps=(), warnings=(), problems=(),
+    )
+
+    evidence = evidence_from_cycle(result, "тест")
+
+    assert evidence.numbers["переводов под закачку"] == 1.0
+    assert evidence.numbers["стоимость переводов, млн руб."] == 5.0
+    assert any("convert — 1" in line and "shut — 1" in line
+               for line in evidence.observations)
+    assert any("суррогатом не оценивался" in line for line in evidence.caveats)

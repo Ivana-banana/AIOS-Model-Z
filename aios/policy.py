@@ -25,6 +25,7 @@ from aios.deck import ProducerControl, ScheduleStep
 from aios.margin import Norms, counted_by_methodology, is_active, month_margin
 
 SHUT = "shut"
+CONVERT = "convert"
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,112 @@ def plan_shutdowns(rows: list[dict[str, Any]],
     return actions
 
 
+#: Ниже этой обводнённости перевод под закачку не предлагается.
+#:
+#: Смысл порога не в осторожности, а в физике решения. Перевод оправдан там, где
+#: скважина уже почти не даёт нефти: мы перестаём поднимать её воду (и платить за
+#: подъём) и начинаем закачивать — то есть тот же объём работает на давление, а не
+#: против него. У скважины с заметной нефтью перевод отнимает добычу, и оценить
+#: этот размен нечем: суррогат отклик соседей на новую закачку не предсказывает.
+CONVERSION_WATERCUT = 0.98
+
+
+def plan_conversions(rows: list[dict[str, Any]],
+                     norms: Norms,
+                     *,
+                     control_start: date,
+                     lookback: int = 6,
+                     min_watercut: float = CONVERSION_WATERCUT,
+                     headroom: bool = True) -> list[Action]:
+    """Перевести под закачку скважины, которые давно поднимают одну воду.
+
+    Отличие от остановки — не в экономике, а в том, что происходит с пластом.
+    Остановка убирает и воду, и энергию: скважина перестаёт работать вовсе.
+    Перевод оставляет объём в системе, но разворачивает его — вода идёт обратно
+    в пласт и поддерживает давление у соседей. Методика оценивает это событие
+    отдельно: 5,0 млн руб. ВНС **без** стоимости ЭЦН (Р-30).
+
+    Кандидат обязан пройти четыре условия, и каждое отсекает свой род ошибки:
+
+    1. **убыточна `lookback` месяцев подряд** — тот же причинный проход, что у
+       остановки: решение на дату `t` принимается по данным до `t`;
+    2. **обводнённость не ниже `min_watercut`** — скважина поднимает воду, а не
+       нефть. Иначе перевод отнимает добычу, а выигрыш по соседям оценить нечем;
+    3. **накопленный убыток окупает событие** — 5,0 млн руб. против 1,0 млн у
+       остановки, то есть планка впятеро выше. Дешёвого перевода не бывает;
+    4. **у объекта есть запас под потолком компенсации** (`headroom`). Перевод
+       добавляет закачку, а закачка у нас ограничена собственным правилом: без
+       запаса предложение неисполнимо, и предлагать его — значит обещать то, что
+       планировщик тут же срежет.
+
+    **Чего эта функция не делает и почему это важно.** Она не утверждает, что
+    перевод выгоден: прирост по соседям считает пласт, а его отклик на **новую**
+    нагнетательную наш суррогат не предсказывает — в обучающих сценариях у этой
+    скважины нет колонки закачки вовсе. Поэтому предложение всегда идёт с ценой и
+    с пометкой «проверяется только полным расчётом», а не с обещанием денег.
+    """
+    months = sorted({row["DATA"] for row in rows})
+    by_month: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_month.setdefault(row["DATA"], []).append(row)
+
+    streak: dict[str, int] = {}
+    loss: dict[str, float] = {}
+    converted: set[str] = set()
+    actions: list[Action] = []
+
+    for index, month in enumerate(months):
+        for row in by_month[month]:
+            well = row["well"]
+            if well in converted:
+                continue
+            # нагнетательную переводить некуда, а исключённую методикой строку не
+            # судим — ровно по тем же причинам, что и при остановке
+            if not counted_by_methodology(row) or (float(row["WWIR"]) > 0
+                                                   and float(row["WLPR"]) <= 0):
+                streak[well] = 0
+                loss[well] = 0.0
+                continue
+
+            margin = month_margin(row, norms)
+            if margin < 0 and is_active(row) and _watercut(row) >= min_watercut:
+                streak[well] = streak.get(well, 0) + 1
+                loss[well] = loss.get(well, 0.0) + margin
+            else:
+                streak[well] = 0
+                loss[well] = 0.0
+                continue
+
+            if streak[well] < lookback or -loss[well] < norms.conversion_m:
+                continue
+            if index + 1 >= len(months):
+                continue
+            effective = _as_date(months[index + 1])
+            if effective < control_start:
+                continue
+            if not headroom:
+                continue
+
+            actions.append(
+                Action(
+                    date=effective,
+                    well=well,
+                    kind=CONVERT,
+                    reason=(
+                        f"обводнённость {_watercut(row):.1%}, нефть "
+                        f"{row['WOMT_Diff']:.1f} т/мес, убыток {streak[well]} мес. "
+                        f"подряд на {-loss[well]:.2f} млн руб.; вода уходит обратно "
+                        "в пласт вместо подъёма. Выигрыш по соседям суррогатом не "
+                        "оценивается — только полным расчётом"
+                    ),
+                    cost_m=norms.conversion_m,
+                )
+            )
+            converted.add(well)
+
+    return actions
+
+
 def apply(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
           actions: list[Action],
           *,
@@ -153,12 +260,30 @@ def apply(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     скважина после этого не получает управления вовсе.
     """
     shut_from: dict[str, date] = {}
+    convert_from: dict[str, date] = {}
     for action in actions:
+        if action.kind == CONVERT:
+            current = convert_from.get(action.well)
+            if current is None or action.date < current:
+                convert_from[action.well] = action.date
+            continue
         if action.kind != SHUT:
             raise ValueError(f"неизвестное действие: {action.kind}")
         current = shut_from.get(action.well)
         if current is None or action.date < current:
             shut_from[action.well] = action.date
+
+    # Перевод накладывается первым и своим механизмом: у добывающей скважины
+    # записи `WCONINJE` нет вовсе, поэтому режим не меняется, а **появляется**
+    # (`optimise.convert_to_injection`). Остановка после этого к ней уже не
+    # применяется — переведённая скважина выбыла из добывающего фонда.
+    if convert_from:
+        from aios.optimise import convert_to_injection
+
+        for well, since in sorted(convert_from.items()):
+            steps = convert_to_injection(steps, {well}, since=since)
+        shut_from = {well: since for well, since in shut_from.items()
+                     if well not in convert_from}
 
     result: list[ScheduleStep] = []
     already_shut: set[str] = set()
@@ -203,8 +328,12 @@ def explain(actions: list[Action]) -> str:
         return "Действий нет: убыточных скважин, окупающих остановку, не найдено."
 
     total = sum(action.cost_m for action in actions)
+    kinds: dict[str, int] = {}
+    for action in actions:
+        kinds[action.kind] = kinds.get(action.kind, 0) + 1
+    listed = ", ".join(f"{kind} × {count}" for kind, count in sorted(kinds.items()))
     lines = [
-        f"Действий: {len(actions)}, разовые затраты {total:.1f} млн руб.",
+        f"Действий: {len(actions)} ({listed}), разовые затраты {total:.1f} млн руб.",
         "",
     ]
     lines.extend(f"  {action}" for action in actions)
