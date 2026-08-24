@@ -77,6 +77,13 @@ def test_scripts_reach_the_docker_image():
     assert "COPY scripts" in (ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
 
 
+def test_collect_pairs_example_updates_the_tracked_report():
+    text = (SCRIPTS / "collect_pairs.py").read_text(encoding="utf-8")
+
+    assert "--out docs/data/margin-pairs.csv" in text
+    assert 'default="docs/data/margin-pairs.csv"' in text
+
+
 def test_shell_scripts_are_executable():
     for path in SCRIPTS.glob("*.sh"):
         assert os.access(path, os.X_OK), f"{path.name} не исполняемый — инструкция запуска врёт"

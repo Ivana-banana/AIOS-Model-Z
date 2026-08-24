@@ -1,7 +1,8 @@
 """Пары «прогноз суррогата — полный расчёт» для конформного запаса.
 
     python scripts/collect_pairs.py --model artifacts/surrogate.joblib \
-        --runs runs/base runs/matched-0995 runs/srg-narrow --out data/margin-pairs.csv
+        --runs runs/base runs/matched-0995 runs/srg-narrow \
+        --out docs/data/margin-pairs.csv
 
 Зачем. Односторонний конформный запас (`aios.trust.OptimismMargin`, Р-72) требует
 пар «что обещал суррогат и что дал эталонный расчётчик». Прогонов у нас накоплено
