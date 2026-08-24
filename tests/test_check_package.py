@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -173,3 +174,36 @@ def test_the_audit_refuses_a_schedule_from_another_run(tmp_path):
     assert "из одного прогона" in checks["6"].detail
     assert "runs/matched-0995" in checks["6"].detail
 
+
+def test_the_audit_refuses_changed_bytes_under_the_declared_name(tmp_path):
+    """Правильный путь не заменяет побайтовую идентичность заявленному файлу."""
+    root = tmp_path
+    _unused_schedule, model = _package(root)
+    schedule = root / "runs" / "matched-0995" / "wells_schedule.inc"
+    schedule.parent.mkdir(parents=True)
+    schedule.write_text("DATES\n 1 JAN 2007 /\n/\n", encoding="utf-8")
+    expected = hashlib.md5(schedule.read_bytes(), usedforsecurity=False).hexdigest()
+    (root / "docs" / "submission.md").write_text(
+        "| **ЧДД** | **13 133,8 млн руб.** |\n"
+        "| сдаваемый файл | `runs/matched-0995/wells_schedule.inc` "
+        f"`md5 {expected}` |\n",
+        encoding="utf-8",
+    )
+
+    ready = {check.number: check for check in audit(
+        root, schedule, model,
+        schedule_validator=lambda path: None,
+        model_validator=lambda path: None,
+    )}
+    assert ready["6"].ready
+    assert "совпал с заявкой" in ready["6"].detail
+
+    schedule.write_text("DATES\n 1 FEB 2007 /\n/\n", encoding="utf-8")
+    changed = {check.number: check for check in audit(
+        root, schedule, model,
+        schedule_validator=lambda path: None,
+        model_validator=lambda path: None,
+    )}
+    assert not changed["6"].ready
+    assert "проверяется другой файл" in changed["6"].detail
+    assert expected in changed["6"].detail

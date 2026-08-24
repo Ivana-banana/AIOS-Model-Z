@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -26,6 +27,7 @@ DECLARED_NPV = re.compile(r"\| \*\*ЧДД\*\* \| \*\*([^*]+ млн руб\.)\*\*
 #: одного прогона — пара «файл от одного расчёта, число от другого» и есть тот
 #: механизм, которым расхождение с пересчётом организаторов возникает молча.
 DECLARED_SCHEDULE = re.compile(r"`(runs/[\w.-]+/wells_schedule\.inc)`")
+DECLARED_MD5 = re.compile(r"`md5 ([0-9a-fA-F]{32})`")
 
 
 @dataclass(frozen=True)
@@ -66,8 +68,14 @@ def audit(
     if schedule_path.is_file():
         schedule_error = (schedule_validator or _schedule_problem)(schedule_path)
         scaling_error, scaling = _scaling_problem(schedule_path)
-        schedule_error = schedule_error or scaling_error or _wrong_run(submission,
-                                                                      schedule_path)
+        checksum_error, checksum = _checksum_problem(submission, schedule_path)
+        schedule_error = (
+            schedule_error
+            or scaling_error
+            or _wrong_run(submission, schedule_path)
+            or checksum_error
+        )
+        scaling = f"{scaling}; {checksum}"
     model_error = None
     if model_path.is_file():
         model_error = (model_validator or _model_problem)(model_path)
@@ -214,6 +222,31 @@ def _wrong_run(submission: Path, schedule: Path) -> str | None:
         f"проверяется {schedule.as_posix()}, а заявлен {declared}: число и файл "
         "обязаны быть из одного прогона"
     )
+
+
+def _checksum_problem(submission: Path, schedule: Path) -> tuple[str | None, str]:
+    """Сверить байты файла с отпечатком, рядом с которым заявлен ЧДД."""
+    if not submission.is_file():
+        return None, "md5 в заявке не указан"
+    match = DECLARED_MD5.search(submission.read_text(encoding="utf-8"))
+    if match is None:
+        return None, "md5 в заявке не указан"
+
+    expected = match.group(1).lower()
+    digest = hashlib.md5(usedforsecurity=False)
+    try:
+        with schedule.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        return f"md5 не посчитан: {error}", "md5 не посчитан"
+    actual = digest.hexdigest()
+    if actual != expected:
+        return (
+            f"md5 файла {actual}, а в заявке {expected}: проверяется другой файл",
+            f"md5 {actual}",
+        )
+    return None, f"md5 {actual} совпал с заявкой"
 
 
 def _scaling_problem(path: Path) -> tuple[str | None, str]:
