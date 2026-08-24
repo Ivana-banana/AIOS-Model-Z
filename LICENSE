@@ -1,0 +1,42 @@
+MIT License
+
+Copyright (c) 2026 Ivan Banan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+ЧТО ЭТА ЛИЦЕНЗИЯ ПОКРЫВАЕТ И ЧТО НЕТ
+
+Покрывает: код и документацию, написанные командой, — каталоги `aios/`,
+`scripts/`, `tests/`, `docs/` (кроме `docs/method/`), а также `README.md`,
+`PLAN.md`, `CLAUDE.md`, `GIT.md`, `JOURNAL.md`.
+
+НЕ покрывает и под MIT не переходит:
+
+* `vendor/CHDD_PYTHON/` — эталонный расчётчик ЧДД организаторов, вендорен
+  побайтово и не изменён; условия — их;
+* `materials/` и `docs/method/` — деки Модели Z, методики, техническое задание,
+  расшифровки лекций: материалы заказчика;
+* `vendor/Model_Z_OPM/` — дек в OPM-совместимой конвертации;
+* сторонние библиотеки и OPM Flow — свои лицензии, реестр в
+  `THIRD_PARTY_NOTICES.md`, тексты в `LICENSES/`.
+
+Происхождение каждого чужого материала и то, что по нему не подтверждено, —
+`PROVENANCE_AND_RIGHTS.md`.
