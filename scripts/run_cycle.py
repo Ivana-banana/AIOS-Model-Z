@@ -80,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="только остановка убыточных, без подбора режимов")
     parser.add_argument("--surrogate-model", default=None,
                         help="путь к surrogate.joblib; без параметра используется бейзлайн")
+    parser.add_argument("--base-schedule", default=None,
+                        help="расписание, поверх которого работает цикл; по умолчанию "
+                             "SCHEDULE дека. Нужен, чтобы спросить «даёт ли цикл "
+                             "что-то сверх уже найденного сценария»")
     parser.add_argument("--multipliers", default=None,
                         help="набор множителей поиска через запятую, например "
                              "0.75,1.0,1.25; по умолчанию — набор из aios.optimise")
@@ -125,7 +129,28 @@ def main(argv: list[str] | None = None) -> int:
     assumptions, _pumps = economics.load_norms(config.economics.norms_file)
     norms = Norms.from_assumptions(assumptions)
     schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
-    base_steps = [step for step in schedule.steps if step.date >= config.case.control_start]
+    # Фонд сверяется с деком всегда: расписание со скважиной, которой в модели
+    # нет, симулятор не примет, чей бы файл мы ни взяли за основу.
+    #
+    # А вот **что** оптимизировать, задаётся отдельно. До 24.08 цикл всегда
+    # начинал с исторического расписания дека, и `--from` давал только историю
+    # для обучения суррогата. Из-за этого вопрос «даёт ли цикл что-то сверх уже
+    # найденного сценария» нельзя было даже задать: поверх заявляемого
+    # расписания цикл не запускался ни разу (Б34).
+    if arguments.base_schedule:
+        base_file = Path(arguments.base_schedule)
+        if not base_file.is_file():
+            print(f"нет расписания {base_file}", file=sys.stderr)
+            return 1
+        base_steps = [step for step in parse_schedule(base_file).steps
+                      if step.date >= config.case.control_start]
+        if not base_steps:
+            print(f"в {base_file} нет шагов с {config.case.control_start}", file=sys.stderr)
+            return 1
+        print(f"поверх:    {base_file} ({len(base_steps)} шагов)")
+    else:
+        base_steps = [step for step in schedule.steps
+                      if step.date >= config.case.control_start]
 
     try:
         selected = for_cycle(
@@ -143,6 +168,31 @@ def main(argv: list[str] | None = None) -> int:
         )
     except SurrogateLoadError as error:
         print(error, file=sys.stderr)
+        return 1
+
+    # Обученная модель принимает режим **множителями к опорному расписанию**, и
+    # опорным при обучении был исторический дек: `control_center` в артефакте —
+    # это единицы. Подставить ей другое опорное расписание значит не сдвинуть
+    # точку старта, а изменить смысл входа: тот же файл `runs/srg-narrow` она
+    # оценивает в 12 664,9 как кандидата (множители к деку) и в 11 201,4 как
+    # опорное (все множители 1,0) — разница 1 463,5 млн руб. на одном и том же
+    # расписании (замер 24.08).
+    #
+    # Поэтому вопрос «даёт ли цикл что-то сверх уже найденного сценария»
+    # решается не подменой опорного, а стартом поиска из вектора множителей
+    # этого сценария — в той же системе координат, в которой модель училась.
+    # Пока такого ключа нет, честный ответ — отказ.
+    if arguments.base_schedule and selected.joint_rate_search:
+        print(
+            f"«{selected.name}» принимает режим множителями к опорному расписанию "
+            "дека, поэтому подстановка другого опорного меняет смысл её входа, а не "
+            "точку старта: то же расписание она оценит как «всё как в обучении».\n"
+            "  --base-schedule работает с тривиальным бейзлайном (он считает по "
+            "абсолютным дебитам);\n"
+            "  для обученной модели нужен старт поиска из множителей сценария — "
+            "такого ключа пока нет, см. docs/experiments.md.",
+            file=sys.stderr,
+        )
         return 1
     print(f"суррогат: {selected.name}")
     result = loop.run_cycle(
