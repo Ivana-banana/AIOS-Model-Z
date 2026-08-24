@@ -184,6 +184,14 @@ def test_submission_does_not_reopen_resolved_blockers():
     assert "Открытые вопросы организаторам** — четыре" not in submission
 
 
+def test_submission_includes_the_required_surrogate_artifact():
+    submission = _read("docs/submission.md")
+
+    assert "`artifacts/surrogate.joblib`, `aios/neural.py`" in submission
+    assert "допущенный `artifacts/surrogate.joblib`" in submission
+    assert "обученные модели `artifacts/` | воспроизводятся" not in submission
+
+
 def test_explainability_records_the_completed_live_call():
     text = _read("docs/explainability.md")
     architecture = _read("docs/architecture.md")
