@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
 
     families = arguments.family or []
     start = config.economics.start_date.isoformat()
-    rows_out: list[tuple[str, float, float, str]] = []
+    rows_out: list[tuple[str, float, float, str, float | None]] = []
     for index, name in enumerate(arguments.runs):
         run_dir = Path(name)
         family = families[index] if index < len(families) else "manual"
