@@ -957,3 +957,52 @@ def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
 
     (tmp_path / "cycle.json").write_text("не json", encoding="utf-8")
     assert run_cycle.written_identity(tmp_path) is None, "битый файл не должен ронять прогон"
+
+
+def test_base_schedule_is_refused_for_a_model_that_thinks_in_multipliers(tmp_path,
+                                                                        monkeypatch,
+                                                                        capsys):
+    """Подставить обученной модели другое опорное расписание — не сдвиг старта.
+
+    Она принимает режим множителями к опорному расписанию дека, и опорным при
+    обучении был исторический дек. Замер 24.08: тот же файл `runs/srg-narrow`
+    модель оценивает в 12 664,9 как кандидата и в 11 201,4 как опорное — разница
+    1 463,5 млн руб. на одном и том же расписании. Молча принять такой запуск
+    значит показать число, которое ничего не описывает.
+    """
+    from conftest import make_row
+    from test_dataset import _tiny_project
+
+    from scripts import run_cycle
+
+    config = _tiny_project(tmp_path)
+    monkeypatch.setattr(run_cycle.pvt, "fluids_by_well",
+                        lambda *a, **k: type("F", (), {"note": "тест", "by_well": {}})())
+    monkeypatch.setattr(run_cycle.summary, "monthly_rows",
+                        lambda *a, **k: [make_row("2007-01-01", "1", wlpr=30.0,
+                                                  womr=20.0, liquid=900.0, oil=600.0)])
+
+    class Chosen:
+        name = "MLP по сценариям DoE"
+        joint_rate_search = True
+        model = object()
+
+    monkeypatch.setattr(run_cycle, "for_cycle", lambda **kwargs: Chosen())
+    source = tmp_path / "runs" / "RUN"
+    source.mkdir(parents=True)
+    source.with_suffix(".UNSMRY").write_bytes(b"")
+    other = tmp_path / "candidate.inc"
+    other.write_text(
+        "DATES\n 01 JAN 2007 /\n/\n\nWCONPROD\n"
+        " '1' 'OPEN' 'LRAT' 1* 1* 1* 45.0 1* 50 1* 1* /\n/\n",
+        encoding="utf-8",
+    )
+
+    code = run_cycle.main(["--from", str(source.parent), "--out", str(tmp_path / "out"),
+                            "--surrogate-model", str(tmp_path / "s.joblib"),
+                            "--base-schedule", str(other), "--config", str(config)])
+
+    assert code == 1
+    printed = capsys.readouterr().err
+    assert "множителями к опорному расписанию" in printed
+    assert "тривиальным бейзлайном" in printed, "отказ обязан называть, где ключ работает"
