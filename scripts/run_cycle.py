@@ -31,6 +31,7 @@ from aios import config as config_module  # noqa: E402
 from aios import (  # noqa: E402
     economics,
     loop,
+    optimise,
     pvt,  # noqa: E402
     summary,
 )
@@ -137,20 +138,34 @@ def main(argv: list[str] | None = None) -> int:
     # для обучения суррогата. Из-за этого вопрос «даёт ли цикл что-то сверх уже
     # найденного сценария» нельзя было даже задать: поверх заявляемого
     # расписания цикл не запускался ни разу (Б34).
+    base_steps = [step for step in schedule.steps
+                  if step.date >= config.case.control_start]
+
+    # Расписание, с которого цикл стартует. Опорное при этом **не** подменяется:
+    # обученная модель принимает режим множителями к опорному расписанию дека, и
+    # подстановка другого опорного меняла бы смысл её входа, а не точку старта
+    # (замер 24.08: один и тот же файл — 12 664,9 как кандидат и 11 201,4 как
+    # опорное). Поэтому сценарий выражается множителями к деку, и поиск
+    # стартует из них — в тех же координатах, в которых модель училась.
+    start_multipliers = None
     if arguments.base_schedule:
         base_file = Path(arguments.base_schedule)
         if not base_file.is_file():
             print(f"нет расписания {base_file}", file=sys.stderr)
             return 1
-        base_steps = [step for step in parse_schedule(base_file).steps
-                      if step.date >= config.case.control_start]
-        if not base_steps:
+        candidate = [step for step in parse_schedule(base_file).steps
+                     if step.date >= config.case.control_start]
+        if not candidate:
             print(f"в {base_file} нет шагов с {config.case.control_start}", file=sys.stderr)
             return 1
-        print(f"поверх:    {base_file} ({len(base_steps)} шагов)")
-    else:
-        base_steps = [step for step in schedule.steps
-                      if step.date >= config.case.control_start]
+        start_multipliers = optimise.multipliers_of(base_steps, candidate)
+        if not start_multipliers:
+            print(f"{base_file} не выражается множителями к расписанию дека: "
+                  "общих открытых записей нет", file=sys.stderr)
+            return 1
+        moved = sum(1 for value in start_multipliers.values() if abs(value - 1.0) > 1e-9)
+        print(f"старт:     {base_file} — {len(start_multipliers)} управлений, "
+              f"из них отличаются от дека {moved}")
 
     try:
         selected = for_cycle(
@@ -170,30 +185,6 @@ def main(argv: list[str] | None = None) -> int:
         print(error, file=sys.stderr)
         return 1
 
-    # Обученная модель принимает режим **множителями к опорному расписанию**, и
-    # опорным при обучении был исторический дек: `control_center` в артефакте —
-    # это единицы. Подставить ей другое опорное расписание значит не сдвинуть
-    # точку старта, а изменить смысл входа: тот же файл `runs/srg-narrow` она
-    # оценивает в 12 664,9 как кандидата (множители к деку) и в 11 201,4 как
-    # опорное (все множители 1,0) — разница 1 463,5 млн руб. на одном и том же
-    # расписании (замер 24.08).
-    #
-    # Поэтому вопрос «даёт ли цикл что-то сверх уже найденного сценария»
-    # решается не подменой опорного, а стартом поиска из вектора множителей
-    # этого сценария — в той же системе координат, в которой модель училась.
-    # Пока такого ключа нет, честный ответ — отказ.
-    if arguments.base_schedule and selected.joint_rate_search:
-        print(
-            f"«{selected.name}» принимает режим множителями к опорному расписанию "
-            "дека, поэтому подстановка другого опорного меняет смысл её входа, а не "
-            "точку старта: то же расписание она оценит как «всё как в обучении».\n"
-            "  --base-schedule работает с тривиальным бейзлайном (он считает по "
-            "абсолютным дебитам);\n"
-            "  для обученной модели нужен старт поиска из множителей сценария — "
-            "такого ключа пока нет, см. docs/experiments.md.",
-            file=sys.stderr,
-        )
-        return 1
     print(f"суррогат: {selected.name}")
     result = loop.run_cycle(
         selected.model,
@@ -207,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         joint_rate_search=selected.joint_rate_search,
         limits=config.limits,
         multipliers=multipliers,
+        start_multipliers=start_multipliers,
         norms_file=config.economics.norms_file,
         # см. пояснение выше: цикл считает прогноз одной плотностью, а
         # подеквенные идут в выгрузку, из которой берётся заявляемое число

@@ -825,3 +825,68 @@ def test_the_scaling_report_accepts_a_multiplier_per_well():
     assert report.records == 1, "скважина с множителем 1.0 в отчёт не входит"
     assert report.literal == 1
     assert report.share == 1.0
+
+
+def test_multipliers_of_expresses_a_ready_scenario_in_the_models_coordinates():
+    """Готовый сценарий переводится в множители к опорному расписанию.
+
+    Это единственный способ спросить «даёт ли поиск что-то сверх уже найденного»,
+    не подменяя опорное расписание: модель принимает режим множителями к нему, и
+    подстановка другого опорного меняет смысл входа, а не точку старта (замер
+    24.08: один файл — 12 664,9 как кандидат и 11 201,4 как опорное).
+    """
+    from aios.optimise import multipliers_of
+
+    reference = [ScheduleStep(date(2007, 1, 1), (
+        ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),
+        ProducerControl("2", "OPEN", "LRAT", 20.0, 50.0),
+        ProducerControl("3", "SHUT", "LRAT", None, 50.0),
+    ), (InjectorControl("9", "WATER", "OPEN", "RATE", 100.0, 300.0),))]
+    candidate = [ScheduleStep(date(2007, 1, 1), (
+        ProducerControl("1", "OPEN", "LRAT", 45.0, 50.0),
+        ProducerControl("2", "SHUT", "LRAT", None, 50.0),
+        ProducerControl("3", "OPEN", "LRAT", 10.0, 50.0),
+    ), (InjectorControl("9", "WATER", "OPEN", "RATE", 160.0, 300.0),))]
+
+    got = multipliers_of(reference, candidate)
+
+    assert got[("production", "1")] == pytest.approx(1.5)
+    assert got[("production", "2")] == pytest.approx(0.0), "остановка — это множитель ноль"
+    assert got[("injection", "9")] == pytest.approx(1.6)
+    # у скважины, закрытой в опорном расписании, множителя не существует:
+    # делить на ноль нечем, и выдумывать значение нельзя
+    assert ("production", "3") not in got
+
+
+def test_the_joint_search_can_start_from_a_given_scenario():
+    """Поиск стартует из заданной карты множителей, а не всегда из единиц.
+
+    Без этого вопрос «что цикл добавит поверх заявляемого сценария» задать
+    нельзя: точка отсчёта у поиска была одна — опорное расписание.
+    """
+    from aios.optimise import choose_joint_rates
+
+    steps = [ScheduleStep(date(2007, month, 1),
+                          (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),), ())
+             for month in range(1, 7)]
+
+    class Flat:
+        """Прогноз, безразличный к режиму: предмет теста — точка старта."""
+
+        def predict(self, steps):
+            return [make_row(step.date.isoformat(), "1", wlpr=30.0, womr=5.0,
+                             liquid=900.0, oil=150.0) for step in steps]
+
+        def in_training_range(self, steps):
+            return []
+
+    choices = choose_joint_rates(Flat(), steps, start_date=date(2007, 1, 1),
+                                 multipliers=(0.75, 1.0), start={("production", "1"): 0.75})
+
+    assert choices and choices[0].well == "1"
+    # стартовали из 0.75 и, раз прогноз безразличен, там же и остались
+    assert choices[0].multiplier == pytest.approx(0.75)
+
+    with pytest.raises(ValueError, match="которых нет в расписании"):
+        choose_joint_rates(Flat(), steps, start_date=date(2007, 1, 1),
+                           start={("production", "нет такой"): 0.5})

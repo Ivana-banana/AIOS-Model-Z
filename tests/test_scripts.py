@@ -959,16 +959,17 @@ def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
     assert run_cycle.written_identity(tmp_path) is None, "битый файл не должен ронять прогон"
 
 
-def test_base_schedule_is_refused_for_a_model_that_thinks_in_multipliers(tmp_path,
-                                                                        monkeypatch,
-                                                                        capsys):
-    """Подставить обученной модели другое опорное расписание — не сдвиг старта.
+def test_base_schedule_starts_the_search_from_the_scenario_not_from_the_deck(tmp_path,
+                                                                            monkeypatch,
+                                                                            capsys):
+    """`--base-schedule` выражает сценарий множителями, а опорное не подменяет.
 
-    Она принимает режим множителями к опорному расписанию дека, и опорным при
-    обучении был исторический дек. Замер 24.08: тот же файл `runs/srg-narrow`
-    модель оценивает в 12 664,9 как кандидата и в 11 201,4 как опорное — разница
-    1 463,5 млн руб. на одном и том же расписании. Молча принять такой запуск
-    значит показать число, которое ничего не описывает.
+    Обученная модель принимает режим множителями к опорному расписанию дека, и
+    подстановка другого опорного меняла бы смысл её входа, а не точку старта:
+    замер 24.08 — один и тот же файл `runs/srg-narrow` оценивался в 12 664,9 как
+    кандидат и в 11 201,4 как опорное, разница 1 463,5 млн руб. Поэтому сценарий
+    переводится в множители к деку, и поиск стартует из них; на Модели Z это
+    воспроизвело прогноз сценария с точностью 0,017 % (12 664,9 → 12 662,8).
     """
     from conftest import make_row
     from test_dataset import _tiny_project
@@ -981,28 +982,27 @@ def test_base_schedule_is_refused_for_a_model_that_thinks_in_multipliers(tmp_pat
     monkeypatch.setattr(run_cycle.summary, "monthly_rows",
                         lambda *a, **k: [make_row("2007-01-01", "1", wlpr=30.0,
                                                   womr=20.0, liquid=900.0, oil=600.0)])
+    seen = {}
 
-    class Chosen:
-        name = "MLP по сценариям DoE"
-        joint_rate_search = True
-        model = object()
+    def remember(*args, **kwargs):
+        seen.update(kwargs)
+        raise SystemExit(0)
 
-    monkeypatch.setattr(run_cycle, "for_cycle", lambda **kwargs: Chosen())
+    monkeypatch.setattr(run_cycle.loop, "run_cycle", remember)
     source = tmp_path / "runs" / "RUN"
     source.mkdir(parents=True)
     source.with_suffix(".UNSMRY").write_bytes(b"")
     other = tmp_path / "candidate.inc"
+    # дек крошечного проекта держит скважину «1» на 30 м3/сут, здесь она на 45
     other.write_text(
         "DATES\n 01 JAN 2007 /\n/\n\nWCONPROD\n"
         " '1' 'OPEN' 'LRAT' 1* 1* 1* 45.0 1* 50 1* 1* /\n/\n",
         encoding="utf-8",
     )
 
-    code = run_cycle.main(["--from", str(source.parent), "--out", str(tmp_path / "out"),
-                            "--surrogate-model", str(tmp_path / "s.joblib"),
-                            "--base-schedule", str(other), "--config", str(config)])
+    with pytest.raises(SystemExit):
+        run_cycle.main(["--from", str(source.parent), "--out", str(tmp_path / "out"),
+                        "--base-schedule", str(other), "--config", str(config)])
 
-    assert code == 1
-    printed = capsys.readouterr().err
-    assert "множителями к опорному расписанию" in printed
-    assert "тривиальным бейзлайном" in printed, "отказ обязан называть, где ключ работает"
+    assert seen["start_multipliers"] == {("production", "1"): 1.5}
+    assert "старт:" in capsys.readouterr().out
