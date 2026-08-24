@@ -184,6 +184,13 @@ def test_submission_does_not_reopen_resolved_blockers():
     assert "Открытые вопросы организаторам** — четыре" not in submission
 
 
+def test_explainability_records_the_completed_live_call():
+    text = _read("docs/explainability.md")
+
+    assert "Живой вызов\nсостоялся 23.08" in text
+    assert "живой вызов\nпланируется один" not in text
+
+
 def test_declared_schedule_checksum_is_the_same_in_current_documents():
     """Хэш старого кандидата не должен пережить смену сдаваемого файла."""
     import re
