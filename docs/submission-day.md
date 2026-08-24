@@ -10,6 +10,7 @@
 | `git status --short --branch` | только `## main...origin/main`, без других строк |
 | `python -m pytest -q` | `0 failed, 0 errors`; допустимы только `passed` и `skipped` |
 | `python -m ruff check .` | `All checks passed!` |
+| `python scripts/check_release_tag.py` | `[ГОТОВО]`, тег совпадает с `docs/submission.md` |
 | `python scripts/check_package.py` | все 10 строк `[ГОТОВО]`, последняя строка `пакет готов` |
 | `python scripts/check_submission.py runs/matched-0995/wells_schedule.inc` | последняя строка `файл пригоден к отправке` |
 
