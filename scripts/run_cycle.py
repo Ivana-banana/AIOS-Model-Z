@@ -18,6 +18,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -38,6 +40,34 @@ from aios.margin import Norms  # noqa: E402
 from aios.model import SurrogateLoadError, for_cycle  # noqa: E402
 from aios.run import build_case  # noqa: E402
 
+
+def surrogate_identity(path: str | None, name: str) -> dict[str, str]:
+    """Чем именно считался прогноз: имя модели и отпечаток файла артефакта.
+
+    Пишется рядом с кейсом и проверяется при подтверждении. Без этого
+    `--confirm` молча берёт **другой** суррогат — тот, что назван в его
+    собственной команде, — и печатает «прогноз обещал» от одной модели рядом с
+    фактом, полученным расписанием другой. Найдено 24.08 на первом же кандидате:
+    кейс собран обученным артефактом, подтверждение шло тривиальным бейзлайном.
+    """
+    identity = {"surrogate": name}
+    if path:
+        artefact = Path(path)
+        identity["model"] = str(artefact)
+        if artefact.is_file():
+            identity["sha256"] = hashlib.sha256(artefact.read_bytes()).hexdigest()
+    return identity
+
+
+def written_identity(case_dir: Path) -> dict[str, str] | None:
+    """Что записано рядом с уже собранным кейсом. `None` — кейс собран до Р-100."""
+    marker = case_dir / "cycle.json"
+    if not marker.is_file():
+        return None
+    try:
+        return json.loads(marker.read_text(encoding="utf-8")).get("surrogate_identity")
+    except (OSError, ValueError):
+        return None
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -135,6 +165,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.confirm:
         confirmed_dir = Path(arguments.confirm)
+        written = written_identity(confirmed_dir)
+        current = surrogate_identity(arguments.surrogate_model, selected.name)
+        if written is not None and written != current:
+            print("кейс собран другим суррогатом, чем идёт подтверждение:",
+                  file=sys.stderr)
+            print(f"  в кейсе:        {written}", file=sys.stderr)
+            print(f"  в этой команде: {current}", file=sys.stderr)
+            print("прогноз одной модели рядом с фактом другой — та же ловушка, "
+                  "что пара «файл от одного прогона, число от другого». "
+                  "Передайте тот же --surrogate-model, которым кейс собирался.",
+                  file=sys.stderr)
+            return 1
         rows = summary.monthly_rows(confirmed_dir / case_name, fluids=config.fluids, well_fluids=deck_fluids.by_well)
         if not rows:
             print(f"нет выгрузки в {confirmed_dir}", file=sys.stderr)
@@ -205,8 +247,20 @@ def main(argv: list[str] | None = None) -> int:
         wells=schedule.wells,
         case_name=case_name,
     )
+    marker = Path(arguments.out) / "cycle.json"
+    marker.write_text(
+        json.dumps({
+            "surrogate_identity": surrogate_identity(arguments.surrogate_model, selected.name),
+            "multipliers": list(multipliers) if multipliers else None,
+            "tune_rates": not arguments.no_tune_rates,
+            "forecast_chdd_m": result.chdd_m,
+            "forecast_gain_m": result.gain_m,
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     print(f"кейс собран: {case.data_file}")
     print(f"расписание:  {case.schedule_file}")
+    print(f"чем считался прогноз: {marker}")
     print()
     print("дальше — полный расчёт, без него прирост остаётся прогнозом:")
     # путь печатается относительным, когда кейс внутри репозитория, и абсолютным,

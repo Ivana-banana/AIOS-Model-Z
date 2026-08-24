@@ -920,3 +920,40 @@ def test_run_cycle_passes_the_multiplier_set_and_refuses_one_without_unity(tmp_p
 
     assert seen["multipliers"] == (0.75, 1.0, 1.25)
 
+
+
+def test_the_cycle_records_which_surrogate_built_the_case(tmp_path):
+    """Кейс обязан помнить, чем считался его прогноз.
+
+    Найдено 24.08 на первом же кандидате поиска: кейс собран обученным
+    артефактом, а подтверждение шло тривиальным бейзлайном — и печатало
+    «прогноз обещал» от одной модели рядом с фактом, полученным расписанием
+    другой. Та же ловушка, что пара «файл от одного прогона, число от другого».
+    """
+    from scripts import run_cycle
+
+    artefact = tmp_path / "surrogate.joblib"
+    artefact.write_bytes("веса".encode())
+
+    plain = run_cycle.surrogate_identity(None, "тривиальный бейзлайн")
+    trained = run_cycle.surrogate_identity(str(artefact), "MLP")
+
+    assert plain == {"surrogate": "тривиальный бейзлайн"}
+    assert trained["surrogate"] == "MLP"
+    assert trained["model"] == str(artefact)
+    assert len(trained["sha256"]) == 64, "отпечаток артефакта обязан быть записан"
+    assert plain != trained
+
+
+def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
+    """Кейс без `cycle.json` собран до Р-100 — это не повод отказывать."""
+    from scripts import run_cycle
+
+    assert run_cycle.written_identity(tmp_path) is None
+
+    (tmp_path / "cycle.json").write_text('{"surrogate_identity": {"surrogate": "MLP"}}',
+                                         encoding="utf-8")
+    assert run_cycle.written_identity(tmp_path) == {"surrogate": "MLP"}
+
+    (tmp_path / "cycle.json").write_text("не json", encoding="utf-8")
+    assert run_cycle.written_identity(tmp_path) is None, "битый файл не должен ронять прогон"
