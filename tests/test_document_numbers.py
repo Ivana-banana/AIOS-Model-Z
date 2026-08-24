@@ -206,3 +206,13 @@ def test_current_demo_handoff_points_at_the_submitted_run():
     assert "runs/matched-0995/wells_schedule.inc" in section
     assert "/compare?a=base&b=matched-0995" in section
     assert "runs/matched-100" not in section
+
+
+def test_handoff_opens_with_the_current_submission_before_historical_snapshots():
+    opening = "\n".join(_read("HANDOFF.md").splitlines()[:50])
+
+    assert "## Текущий срез заявки" in opening
+    assert "13 133,8 млн руб." in opening
+    assert "runs/matched-0995/wells_schedule.inc" in opening
+    assert "41d813345e95f9d484c792ee6312a270" in opening
+    assert "submit-2026-08-24.1" in opening
