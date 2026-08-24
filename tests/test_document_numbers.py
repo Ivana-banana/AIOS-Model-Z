@@ -176,6 +176,14 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     assert "вернуть в текущий `main`" in sheet
 
 
+def test_submission_does_not_reopen_resolved_blockers():
+    submission = _read("docs/submission.md")
+
+    assert "В-03 и В-04" in submission
+    assert "пп. 3, 4 и 6 уже закрыты" in submission
+    assert "Открытые вопросы организаторам** — четыре" not in submission
+
+
 def test_declared_schedule_checksum_is_the_same_in_current_documents():
     """Хэш старого кандидата не должен пережить смену сдаваемого файла."""
     import re
