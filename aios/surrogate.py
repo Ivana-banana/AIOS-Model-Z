@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import calendar
 import statistics
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Protocol
@@ -93,6 +94,67 @@ class Surrogate(Protocol):
         целенаправленно тянет управление туда, где суррогат ошибается в нашу
         пользу.
         """
+
+
+def warning_kind(warning: str) -> str:
+    """Причина пометки без имён и дат — чтобы считать причины, а не строки.
+
+    Список обязан покрывать всё, что порождает система: неопознанная причина
+    сваливается в «прочее», и самая многочисленная группа перестаёт быть видна.
+    До 20.08 сюда не попадали пометки диапазона — а их на форсированном сценарии
+    двадцать одна тысяча из двадцати одной.
+
+    Режим скважины и режим объекта считаются раздельно: «одна скважина вышла за
+    диапазон» и «весь фонд вышел» — разные новости, и вторая тяжелее.
+
+    Живёт здесь, а не в скрипте, потому что сворачивать одинаково должны и
+    командная строка, и страница цикла: 24.08 страница печатала 7 990 пометок
+    подряд и весила 1 948 КБ (Б32, Б33).
+    """
+    if "вне обучающего диапазона" in warning:
+        head = warning.split(":", 1)[-1].strip()
+        return ("суммарный режим объекта вне диапазона" if head.startswith("суммарн")
+                else "режим скважины вне диапазона")
+    if "скважин без модели" in warning:
+        return "скважины без модели: прогноза по ним нет вовсе"
+    for marker in ("отсутствует в обучающих прогонах", "нет в обучающем датасете",
+                   "без опорного режима", "вне обучающего горизонта",
+                   "нет в опорном расписании", "физические проверки",
+                   "область применимости не записана"):
+        if marker in warning:
+            return marker
+    return "прочее"
+
+
+@dataclass(frozen=True)
+class WarningGroup:
+    """Пометки одной причины: сколько их и на что они похожи."""
+
+    kind: str
+    count: int
+    example: str
+
+
+def fold_warnings(warnings: Sequence[str]) -> list[WarningGroup]:
+    """Свернуть пометки по причинам, сохранив по одному примеру на причину.
+
+    Список пометок — не отчёт, а сырьё: одна и та же причина повторяется по
+    скважино-месяцам, и на форсированном сценарии её видно двадцать одну тысячу
+    раз. Свёрнутый вид отвечает на вопрос, который человек и задаёт: **чего
+    модель не знает**, а не сколько строк она об этом написала.
+
+    Порядок — по убыванию количества: самая многочисленная причина первой.
+    """
+    counts: dict[str, int] = {}
+    examples: dict[str, str] = {}
+    for warning in warnings:
+        kind = warning_kind(warning)
+        counts[kind] = counts.get(kind, 0) + 1
+        examples.setdefault(kind, warning)
+    return [
+        WarningGroup(kind=kind, count=count, example=examples[kind])
+        for kind, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
 
 
 @dataclass(frozen=True)

@@ -35,6 +35,7 @@ import joblib  # noqa: E402
 
 from aios import config as config_module  # noqa: E402
 from aios import doe  # noqa: E402
+from aios import surrogate as surrogate_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 from aios.neural import NeuralBundle, NeuralSurrogate  # noqa: E402
@@ -92,31 +93,10 @@ def _report(title: str, warnings: list[str]) -> None:
     print()
 
 
-def _kind(warning: str) -> str:
-    """Причина пометки без имён и дат — чтобы считать причины, а не строки.
-
-    Список обязан покрывать всё, что порождает система: неопознанная причина
-    сваливается в «прочее», и самая многочисленная группа перестаёт быть видна.
-    До 20.08 сюда не попадали пометки диапазона — а их на форсированном
-    сценарии двадцать одна тысяча из двадцати одной. Свойство закреплено тестом
-    `test_every_warning_kind_is_recognised_not_lumped_into_other`.
-
-    Режим скважины и режим объекта считаются раздельно: «одна скважина вышла за
-    диапазон» и «весь фонд вышел» — разные новости, и вторая тяжелее.
-    """
-    if "вне обучающего диапазона" in warning:
-        head = warning.split(":", 1)[-1].strip()
-        return ("суммарный режим объекта вне диапазона" if head.startswith("суммарн")
-                else "режим скважины вне диапазона")
-    if "скважин без модели" in warning:
-        return "скважины без модели: прогноза по ним нет вовсе"
-    for marker in ("отсутствует в обучающих прогонах", "нет в обучающем датасете",
-                   "без опорного режима", "вне обучающего горизонта",
-                   "нет в опорном расписании", "физические проверки",
-                   "область применимости не записана"):
-        if marker in warning:
-            return marker
-    return "прочее"
+#: Классификатор причин переехал в `aios.surrogate`: сворачивать одинаково
+#: должны и командная строка, и страница цикла (Б33). Имя оставлено — на нём
+#: стоит тест, проверяющий, что ни одна настоящая пометка не попадает в «прочее».
+_kind = surrogate_module.warning_kind
 
 
 if __name__ == "__main__":
