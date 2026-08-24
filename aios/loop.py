@@ -207,6 +207,13 @@ def run_cycle(surrogate: Surrogate,
             steps, surrogate.predict(steps), norms, limits, fluids
         )
 
+    # Скважины, которыми управлять не разрешено, возвращаются к опорному режиму.
+    # Это единственная из трёх форм ограничения по фонду, которую нельзя сделать
+    # в планировщике: чтобы вернуть скважину к исходному режиму, нужно само
+    # опорное расписание, а планировщик получает уже изменённые шаги (Б40).
+    if limits is not None and limits.controllable_wells is not None:
+        steps = _restore_uncontrolled(origin, steps, limits.controllable_wells)
+
     rows = surrogate.predict(steps)
     result = _npv(rows, start_date, norms_file)
 
@@ -264,6 +271,39 @@ def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
         confirmed=True,
         rows=rows,
     )
+
+
+def _restore_uncontrolled(origin: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                          steps: list[ScheduleStep],
+                          allowed: frozenset[str]) -> list[ScheduleStep]:
+    """Вернуть неразрешённым скважинам режим опорного расписания.
+
+    «Разрешено управлять этими» означает, что остальные остаются как были, а не
+    «меняются осторожно»: кейс может прямо запретить трогать часть фонда, и
+    тогда наше расписание обязано совпасть с исходным на этих скважинах
+    побайтово, а не приблизительно.
+    """
+    by_date = {step.date: step for step in origin}
+    result: list[ScheduleStep] = []
+    for step in steps:
+        reference = by_date.get(step.date)
+        if reference is None:
+            result.append(step)
+            continue
+        original_producers = {control.well: control for control in reference.producers}
+        original_injectors = {control.well: control for control in reference.injectors}
+        producers = tuple(
+            control if control.well in allowed
+            else original_producers.get(control.well, control)
+            for control in step.producers
+        )
+        injectors = tuple(
+            control if control.well in allowed
+            else original_injectors.get(control.well, control)
+            for control in step.injectors
+        )
+        result.append(ScheduleStep(step.date, producers, injectors))
+    return result
 
 
 def _water_headroom(rows: list[dict[str, Any]],

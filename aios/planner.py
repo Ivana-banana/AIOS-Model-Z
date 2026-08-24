@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from dataclasses import dataclass
 from typing import Any
 
@@ -89,6 +90,74 @@ class Limits:
     Для `produced_water` 1.0 означает «закачиваем ровно столько, сколько подняли»;
     для `compensation` это потолок компенсации — 1.3 держит нас не выше
     исторической компенсации объекта (1,291).
+    """
+
+    #: --- ручки под валидационный кейс (Р-110) ---------------------------------
+    #:
+    #: Все пять появились до кейса намеренно. Организаторы сказали, что ограничения
+    #: придут «по давлениям, по фонду, по закачке» (`docs/method/qa-organisers.md`,
+    #: 0:44:14 и 0:55:38), а времени на кейс отведено строго: дописывать
+    #: недостающую ручку под таймером дороже, чем держать неиспользованную.
+    #:
+    #: Умолчание каждой — «ограничения нет», и это не формальность: любая из них,
+    #: включённая по умолчанию, изменила бы заявляемое число.
+
+    min_producer_bhp_atm: float | None = None
+    """Нижний предел забойного давления добывающей, атм. None — берётся из дека.
+
+    В деке Модели Z стоит 50 атм, и 84,4 % месяцев добычи идут ровно на нём. Кейс
+    «по давлениям» назовёт своё число, а подменять ради этого дек нельзя — он
+    материал организаторов.
+    """
+
+    max_injector_bhp_atm: float | None = None
+    """Верхний предел давления нагнетания, атм. None — берётся из дека (300)."""
+
+    max_well_injection_m3_per_day: float | None = None
+    """Потолок приёмистости **одной** скважины. None — предела нет.
+
+    Существующий предел — суммарный по объекту; «ограничение по закачке» может
+    прийти поскважинным, и тогда суммарный его не выражает: сто скважин по
+    десять кубов и десять по сто дают один и тот же объект и разные скважины.
+    """
+
+    max_well_liquid_m3_per_day: float | None = None
+    """Потолок отбора одной добывающей, м³/сут. None — предела нет."""
+
+    well_caps_m3_per_day: dict[str, float] | None = None
+    """Карта «скважина → потолок», перекрывающая потолок по типу.
+
+    Нужна, когда ограничение приходит адресным списком, а не одним числом на
+    фонд: у скважины может быть свой паспорт насоса или своя договорённость.
+    """
+
+    controllable_wells: frozenset[str] | None = None
+    """Скважины, которыми **разрешено** управлять. None — разрешены все.
+
+    Остальные остаются в том режиме, который задан историей: мы не трогаем их
+    вовсе, а не «трогаем осторожно».
+    """
+
+    forced_shut_wells: frozenset[str] | None = None
+    """Скважины, которые обязаны быть остановлены. None — таких нет."""
+
+    max_active_wells: int | None = None
+    """Максимум действующих скважин на шаге. None — предела нет."""
+
+    max_field_injection_m3_per_year: float | None = None
+    """Годовой объём закачки по объекту, м³. None — предела нет.
+
+    Отраслевая норма нормирует именно годовой объём, а не суточный расход
+    (`docs/manus/vrr-water-balance.md`), поэтому кейс может прийти в этих
+    единицах — и суточный предел его не выражает: закачка неравномерна по
+    месяцам.
+    """
+
+    max_events_per_year: int | None = None
+    """Максимум платных мероприятий за год: остановки, пуски, переводы. None — нет.
+
+    Методика оценивает их поштучно (1,0 млн руб. за остановку и за пуск, 5,0 за
+    ВНС), поэтому ограничить их число — естественная форма ограничения по фонду.
     """
 
 
@@ -157,6 +226,282 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         )
         decisions.extend(injection)
 
+    # Ручки под валидационный кейс идут последними и в этом порядке намеренно:
+    # сначала объектные пределы (выше), потом скважинные, потом состав фонда,
+    # потом годовой объём. Обратный порядок дал бы срезку по объекту поверх уже
+    # срезанных скважин и «двойную» экономию, которой в пласте нет.
+    result, per_well = _fit_wells_to_caps(result, limits)
+    decisions.extend(per_well)
+
+    result, pressures = _fit_pressures(result, limits)
+    decisions.extend(pressures)
+
+    result, fund = _fit_fund(result, forecast, norms, limits)
+    decisions.extend(fund)
+
+    if limits.max_field_injection_m3_per_year is not None:
+        result, yearly = _fit_injection_to_annual_volume(
+            result, limits.max_field_injection_m3_per_year
+        )
+        decisions.extend(yearly)
+
+    return result, decisions
+
+
+def _fit_fund(steps: list[ScheduleStep],
+              forecast: list[dict[str, Any]],
+              norms: Norms | None,
+              limits: Limits) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Ограничения по составу фонда — три формы, все названы организаторами.
+
+    1. **Обязательные остановки** (`forced_shut_wells`): скважина закрывается
+       независимо от того, что предложил цикл. Форма самая жёсткая и самая
+       вероятная: «эти скважины в ремонте, ими не управлять».
+    2. **Максимум действующих** (`max_active_wells`): если открытых больше
+       предела, закрываются худшие по удельной марже — тем же правилом, каким
+       планировщик режет отбор при нехватке мощности. Без нормативов правило
+       решать нечем, и это отказ, а не молчаливое «закроем первых попавшихся».
+    3. **Разрешённые к управлению** (`controllable_wells`) применяются **не
+       здесь**: чтобы вернуть скважину к историческому режиму, нужно само
+       историческое расписание, а планировщик его не видит — он получает уже
+       изменённые шаги. Эта форма живёт в цикле (`aios.loop`), где опорные шаги
+       есть, и там же покрыта тестом.
+    """
+    forced = limits.forced_shut_wells or frozenset()
+    if not forced and limits.max_active_wells is None:
+        return steps, []
+    if limits.max_active_wells is not None and norms is None:
+        raise ValueError(
+            "с ограничением по числу действующих скважин нужны нормативы: закрывать "
+            "надо худшие по марже, а без неё выбирать не из чего"
+        )
+
+    # ранжирование то же, что при нехватке мощности по жидкости: удельная маржа
+    # на кубометр. Своего правила здесь заводить нельзя — две разные очереди «кого
+    # резать первым» разъехались бы молча
+    margins = _margin_per_liquid(forecast, norms, Fluids()) if norms else {}
+    decisions: list[Allocation] = []
+    reported: set[str] = set()
+    result: list[ScheduleStep] = []
+
+    for step in steps:
+        producers = list(step.producers)
+        injectors = list(step.injectors)
+
+        def shut(well: str, resource: str, reason: str, before: float) -> None:
+            if well in reported:
+                return
+            reported.add(well)
+            decisions.append(Allocation(well=well, resource=resource,
+                                        before=before, after=0.0, reason=reason))
+
+        if forced:
+            for index, control in enumerate(producers):
+                if control.well in forced and control.status == "OPEN":
+                    shut(control.well, "обязательная остановка",
+                         "скважина названа в конфигурации как обязательно остановленная",
+                         control.liquid_rate or 0.0)
+                    producers[index] = ProducerControl(control.well, "SHUT", control.mode,
+                                                       None, control.bhp)
+            for index, control in enumerate(injectors):
+                if control.well in forced and control.status == "OPEN":
+                    shut(control.well, "обязательная остановка",
+                         "скважина названа в конфигурации как обязательно остановленная",
+                         control.rate or 0.0)
+                    injectors[index] = InjectorControl(control.well, control.fluid, "SHUT",
+                                                       control.mode, None, control.bhp)
+
+        limit = limits.max_active_wells
+        if limit is not None:
+            active = [control.well for control in producers if control.status == "OPEN"]
+            active += [control.well for control in injectors if control.status == "OPEN"]
+            if len(active) > limit:
+                # закрываем худших по удельной марже: то же правило, что и при
+                # нехватке мощности по жидкости — иначе выбор был бы произвольным
+                worst = sorted(set(active), key=lambda well: margins.get(well, 0.0))
+                closing = set(worst[: len(active) - limit])
+                for index, control in enumerate(producers):
+                    if control.well in closing and control.status == "OPEN":
+                        shut(control.well, "предел числа действующих скважин",
+                             f"действующих {len(active)} > предела {limit}; "
+                             f"маржа {margins.get(control.well, 0.0):.4g} млн — "
+                             "наименьшая в фонде",
+                             control.liquid_rate or 0.0)
+                        producers[index] = ProducerControl(control.well, "SHUT",
+                                                           control.mode, None, control.bhp)
+                for index, control in enumerate(injectors):
+                    if control.well in closing and control.status == "OPEN":
+                        shut(control.well, "предел числа действующих скважин",
+                             f"действующих {len(active)} > предела {limit}",
+                             control.rate or 0.0)
+                        injectors[index] = InjectorControl(control.well, control.fluid,
+                                                           "SHUT", control.mode, None,
+                                                           control.bhp)
+
+        result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
+    return result, decisions
+
+
+def _fit_wells_to_caps(steps: list[ScheduleStep],
+                       limits: Limits) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Потолок на **одну** скважину: по типу и адресной картой.
+
+    Суммарный предел по объекту такого ограничения не выражает: сто скважин по
+    десять кубов и десять по сто дают один и тот же объект и совершенно разные
+    скважины. Адресная карта перекрывает потолок по типу — у скважины может быть
+    свой паспорт насоса.
+    """
+    caps = limits.well_caps_m3_per_day or {}
+    if not caps and limits.max_well_injection_m3_per_day is None \
+            and limits.max_well_liquid_m3_per_day is None:
+        return steps, []
+
+    decisions: list[Allocation] = []
+    reported: set[str] = set()
+    result: list[ScheduleStep] = []
+
+    def cap_for(well: str, default: float | None) -> float | None:
+        return caps.get(well, default)
+
+    for step in steps:
+        producers = []
+        for control in step.producers:
+            cap = cap_for(control.well, limits.max_well_liquid_m3_per_day)
+            rate = control.liquid_rate
+            if (control.status != "OPEN" or cap is None or rate is None or rate <= cap):
+                producers.append(control)
+                continue
+            if control.well not in reported:
+                reported.add(control.well)
+                decisions.append(Allocation(
+                    well=control.well, resource="потолок скважины по жидкости",
+                    before=rate, after=cap,
+                    reason=f"отбор {rate:,.10g} > потолка скважины {cap:,.10g} м³/сут",
+                ))
+            producers.append(ProducerControl(control.well, control.status, control.mode,
+                                             cap, control.bhp))
+        injectors = []
+        for control in step.injectors:
+            cap = cap_for(control.well, limits.max_well_injection_m3_per_day)
+            rate = control.rate
+            if (control.status != "OPEN" or cap is None or rate is None or rate <= cap):
+                injectors.append(control)
+                continue
+            if control.well not in reported:
+                reported.add(control.well)
+                decisions.append(Allocation(
+                    well=control.well, resource="потолок скважины по закачке",
+                    before=rate, after=cap,
+                    reason=f"закачка {rate:,.10g} > потолка скважины {cap:,.10g} м³/сут",
+                ))
+            injectors.append(InjectorControl(control.well, control.fluid, control.status,
+                                             control.mode, cap, control.bhp))
+        result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
+    return result, decisions
+
+
+def _fit_pressures(steps: list[ScheduleStep],
+                   limits: Limits) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Пределы давления из конфигурации, перекрывающие дек.
+
+    В деке Модели Z стоят 50 атм снизу у добывающих и 300 сверху у
+    нагнетательных. Кейс «по давлениям» назовёт свои числа, а подменять ради
+    этого дек нельзя — он материал организаторов. Поэтому предел приходит
+    конфигурацией, и в решении прямо сказано, что он взят оттуда: иначе на защите
+    не отличить «так в деке» от «так мы задали».
+    """
+    if limits.min_producer_bhp_atm is None and limits.max_injector_bhp_atm is None:
+        return steps, []
+
+    decisions: list[Allocation] = []
+    reported: set[str] = set()
+    result: list[ScheduleStep] = []
+
+    for step in steps:
+        producers = []
+        for control in step.producers:
+            floor = limits.min_producer_bhp_atm
+            if floor is None or control.bhp is None or control.bhp >= floor:
+                producers.append(control)
+                continue
+            if control.well not in reported:
+                reported.add(control.well)
+                decisions.append(Allocation(
+                    well=control.well, resource="забойное давление, предел из конфига",
+                    before=control.bhp, after=floor,
+                    reason=(f"забойное {control.bhp:,.10g} ниже предела "
+                            f"{floor:,.10g} атм, заданного конфигурацией"),
+                ))
+            producers.append(ProducerControl(control.well, control.status, control.mode,
+                                             control.liquid_rate, floor))
+        injectors = []
+        for control in step.injectors:
+            ceiling = limits.max_injector_bhp_atm
+            if ceiling is None or control.bhp is None or control.bhp <= ceiling:
+                injectors.append(control)
+                continue
+            if control.well not in reported:
+                reported.add(control.well)
+                decisions.append(Allocation(
+                    well=control.well, resource="давление нагнетания, предел из конфига",
+                    before=control.bhp, after=ceiling,
+                    reason=(f"давление нагнетания {control.bhp:,.10g} выше предела "
+                            f"{ceiling:,.10g} атм, заданного конфигурацией"),
+                ))
+            injectors.append(InjectorControl(control.well, control.fluid, control.status,
+                                             control.mode, control.rate, ceiling))
+        result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
+    return result, decisions
+
+
+def _fit_injection_to_annual_volume(
+    steps: list[ScheduleStep], limit_m3: float
+) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Годовой объём закачки по объекту, а не суточный расход.
+
+    Отраслевая норма нормирует именно годовой объём
+    (`docs/manus/vrr-water-balance.md`), и суточный предел его не выражает:
+    закачка неравномерна по месяцам, и год может выйти за норму, ни разу не
+    превысив суточного потолка. Срезается каждый нарушивший год отдельно и
+    пропорционально — приоритета между скважинами у нас нет по той же причине,
+    что и в балансе воды.
+    """
+    by_year: dict[int, float] = {}
+    for step in steps:
+        for control in step.injectors:
+            if control.status == "OPEN" and control.rate:
+                by_year[step.date.year] = by_year.get(step.date.year, 0.0) + \
+                    control.rate * monthrange(step.date.year, step.date.month)[1]
+
+    over = {year: total for year, total in by_year.items() if total > limit_m3}
+    if not over:
+        return steps, []
+
+    decisions: list[Allocation] = []
+    reported: set[int] = set()
+    result: list[ScheduleStep] = []
+    for step in steps:
+        factor = limit_m3 / over[step.date.year] if step.date.year in over else 1.0
+        if factor >= 1.0:
+            result.append(step)
+            continue
+        injectors = []
+        for control in step.injectors:
+            if control.status != "OPEN" or not control.rate:
+                injectors.append(control)
+                continue
+            reduced = control.rate * factor
+            if step.date.year not in reported:
+                reported.add(step.date.year)
+                decisions.append(Allocation(
+                    well=control.well, resource=f"годовой объём закачки, {step.date.year}",
+                    before=control.rate, after=reduced,
+                    reason=(f"за {step.date.year} закачка {over[step.date.year]:,.0f} > "
+                            f"нормы {limit_m3:,.0f} м³"),
+                ))
+            injectors.append(InjectorControl(control.well, control.fluid, control.status,
+                                             control.mode, reduced, control.bhp))
+        result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
     return result, decisions
 
 

@@ -493,3 +493,190 @@ def test_the_matched_case_names_the_missing_export_instead_of_a_traceback(tmp_pa
     printed = capsys.readouterr().err
     assert "нет выгрузки" in printed
     assert "export_rows.py" in printed, "отказ обязан называть, чем выгрузка получается"
+
+# --- Б40: упреждающие ручки под ограничения кейса ---------------------------
+#
+# Организаторы сказали, что ограничения придут «по давлениям, по фонду, по
+# закачке» (`docs/method/qa-organisers.md`). Каждая ручка проверяется тем же
+# методом, что и вся Б28: подставили число — увидели, что срезано ровно на нём.
+# И отдельно проверяется, что без ключа поведение не меняется: иначе новая ручка
+# сдвинула бы заявляемое число.
+
+
+def _plan(producers=((30.0, 50.0),), injectors=((200.0, 300.0),), months=3):
+    """Расписание из нескольких шагов: «(расход, давление)» на скважину."""
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+
+    steps = []
+    for index in range(months):
+        steps.append(ScheduleStep(
+            date(2014, index + 1, 1),
+            tuple(ProducerControl(f"P{n}", "OPEN", "LRAT", rate, bhp)
+                  for n, (rate, bhp) in enumerate(producers, start=1)),
+            tuple(InjectorControl(f"I{n}", "WATER", "OPEN", "RATE", rate, bhp)
+                  for n, (rate, bhp) in enumerate(injectors, start=1)),
+        ))
+    return steps
+
+
+def _forecast(wells=("P1",), months=3, liquid=900.0, oil=450.0):
+    return [make_row(f"2014-{month:02d}-01", well, wlpr=30.0, womr=oil / 30,
+                     liquid=liquid, oil=oil)
+            for month in range(1, months + 1) for well in wells]
+
+
+def _limits(**kwargs):
+    from aios.planner import Limits
+
+    base = {"enforce_water_balance": False}
+    base.update(kwargs)
+    return Limits(**base)
+
+
+def test_pressure_limits_come_from_the_config_and_say_so():
+    """Кейс «по давлениям» назовёт свои числа, а дек подменять нельзя.
+
+    В деке Модели Z стоят 50 атм снизу у добывающих и 300 сверху у
+    нагнетательных, и 84,4 % месяцев добычи идут ровно на нижнем. Предел из
+    конфигурации перекрывает дек, и решение прямо говорит, что число взято
+    оттуда: иначе на защите не отличить «так в деке» от «так мы задали».
+    """
+    from aios import planner
+
+    steps = _plan(producers=((30.0, 50.0),), injectors=((200.0, 300.0),))
+
+    fitted, decisions = planner.enforce(
+        steps, _forecast(), Norms.from_file(),
+        _limits(min_producer_bhp_atm=80.0, max_injector_bhp_atm=250.0),
+    )
+
+    assert fitted[0].producers[0].bhp == 80.0
+    assert fitted[0].injectors[0].bhp == 250.0
+    assert any("предел из конфига" in d.resource and "конфигурацией" in d.reason
+               for d in decisions)
+
+    # без ключей — ни одного решения и ни одного изменения
+    untouched, none = planner.enforce(steps, _forecast(), Norms.from_file(), _limits())
+    assert none == [] and untouched[0].producers[0].bhp == 50.0
+
+
+def test_a_per_well_cap_cuts_the_well_the_field_limit_would_not():
+    """Поскважинный потолок — не то же самое, что суммарный по объекту.
+
+    Сто скважин по десять кубов и десять по сто дают один и тот же объект и
+    совершенно разные скважины; «ограничение по закачке» может прийти именно в
+    этой форме.
+    """
+    from aios import planner
+
+    steps = _plan(producers=((30.0, 50.0), (10.0, 50.0)),
+                  injectors=((200.0, 300.0), (50.0, 300.0)))
+
+    fitted, decisions = planner.enforce(
+        steps, _forecast(("P1", "P2")), Norms.from_file(),
+        _limits(max_well_liquid_m3_per_day=20.0, max_well_injection_m3_per_day=120.0),
+    )
+
+    assert [c.liquid_rate for c in fitted[0].producers] == [20.0, 10.0]
+    assert [c.rate for c in fitted[0].injectors] == [120.0, 50.0]
+    assert {d.well for d in decisions} == {"P1", "I1"}
+
+
+def test_an_addressed_cap_overrides_the_cap_by_kind():
+    """Адресная карта сильнее потолка по типу: у скважины свой паспорт насоса."""
+    from aios import planner
+
+    steps = _plan(producers=((30.0, 50.0), (30.0, 50.0)), injectors=())
+
+    fitted, _decisions = planner.enforce(
+        steps, _forecast(("P1", "P2")), Norms.from_file(),
+        _limits(max_well_liquid_m3_per_day=25.0, well_caps_m3_per_day={"P2": 5.0}),
+    )
+
+    assert [c.liquid_rate for c in fitted[0].producers] == [25.0, 5.0]
+
+
+def test_forced_shut_wells_are_closed_whatever_the_cycle_proposed():
+    """Самая жёсткая форма ограничения по фонду: «эти скважины не трогать»."""
+    from aios import planner
+
+    steps = _plan(producers=((30.0, 50.0), (30.0, 50.0)), injectors=((200.0, 300.0),))
+
+    fitted, decisions = planner.enforce(
+        steps, _forecast(("P1", "P2")), Norms.from_file(),
+        _limits(forced_shut_wells=frozenset({"P2", "I1"})),
+    )
+
+    assert [c.status for c in fitted[0].producers] == ["OPEN", "SHUT"]
+    assert [c.status for c in fitted[0].injectors] == ["SHUT"]
+    assert {d.well for d in decisions} == {"P2", "I1"}
+    assert all("обязательн" in d.resource for d in decisions)
+
+
+def test_the_active_fund_limit_closes_the_worst_by_margin():
+    """Предел числа действующих закрывает худших по марже, а не первых попавшихся.
+
+    Правило то же, что при нехватке мощности по жидкости: две разные очереди
+    «кого резать первым» разъехались бы молча.
+    """
+    from aios import planner
+
+    steps = _plan(producers=((30.0, 50.0), (30.0, 50.0)), injectors=())
+    # P2 поднимает ту же жидкость почти без нефти — она и есть худшая
+    forecast = (_forecast(("P1",), liquid=900.0, oil=450.0)
+                + _forecast(("P2",), liquid=900.0, oil=5.0))
+
+    fitted, decisions = planner.enforce(
+        steps, forecast, Norms.from_file(), _limits(max_active_wells=1),
+    )
+
+    assert [c.status for c in fitted[0].producers] == ["OPEN", "SHUT"]
+    assert decisions[0].well == "P2"
+    assert "предела 1" in decisions[0].reason
+
+
+def test_the_active_fund_limit_needs_norms_to_choose():
+    """Без нормативов выбирать не из чего — это отказ, а не случайный выбор."""
+    from aios import planner
+
+    with pytest.raises(ValueError, match="нужны нормативы"):
+        planner.enforce(_plan(), _forecast(), None, _limits(max_active_wells=1))
+
+
+def test_the_annual_injection_volume_is_not_the_daily_rate():
+    """Годовой объём — отдельная форма: суточный предел его не выражает.
+
+    Закачка неравномерна по месяцам, и год может выйти за норму, ни разу не
+    превысив суточного потолка. Отраслевая норма нормирует именно объём.
+    """
+    from aios import planner
+
+    steps = _plan(injectors=((200.0, 300.0),), months=12)
+    asked = sum(200.0 * 30 for _ in range(12))
+
+    fitted, decisions = planner.enforce(
+        steps, _forecast(), Norms.from_file(),
+        _limits(max_field_injection_m3_per_year=asked / 2),
+    )
+
+    got = sum(c.rate * 30 for step in fitted for c in step.injectors)
+    assert got < asked
+    assert decisions and "годовой объём" in decisions[0].resource
+    assert "2014" in decisions[0].resource
+
+
+def test_uncontrollable_wells_keep_the_reference_regime():
+    """«Разрешено управлять этими» означает, что остальные остаются как были.
+
+    Форма живёт в цикле, а не в планировщике: чтобы вернуть скважину к
+    исходному режиму, нужно опорное расписание, а планировщик получает уже
+    изменённые шаги.
+    """
+    from aios.loop import _restore_uncontrolled
+
+    origin = _plan(producers=((30.0, 50.0), (30.0, 50.0)), injectors=())
+    changed = _plan(producers=((45.0, 50.0), (45.0, 50.0)), injectors=())
+
+    restored = _restore_uncontrolled(origin, changed, frozenset({"P1"}))
+
+    assert [c.liquid_rate for c in restored[0].producers] == [45.0, 30.0]

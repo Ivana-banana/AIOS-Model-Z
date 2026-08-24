@@ -122,6 +122,27 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
                 _value(limits, "water_balance_rule", "limits", source)
             ),
             water_tolerance=_positive(limits, "water_tolerance", "limits", source),
+            # Ручки под валидационный кейс (Р-110). У всех умолчание «ключа нет —
+            # ограничения нет»: это единственные ключи в конфигурации, которые
+            # можно не писать, и так сделано намеренно. Кейс придёт со своим
+            # набором ограничений, и требовать все восемь от каждого конфига
+            # значило бы ломать чужой файл ради настройки, которой в нём нет.
+            min_producer_bhp_atm=_optional_positive(limits, "min_producer_bhp_atm",
+                                                    "limits", source),
+            max_injector_bhp_atm=_optional_positive(limits, "max_injector_bhp_atm",
+                                                    "limits", source),
+            max_well_injection_m3_per_day=_optional_positive(
+                limits, "max_well_injection_m3_per_day", "limits", source),
+            max_well_liquid_m3_per_day=_optional_positive(
+                limits, "max_well_liquid_m3_per_day", "limits", source),
+            well_caps_m3_per_day=_well_caps(limits, source),
+            controllable_wells=_well_set(limits, "controllable_wells", source),
+            forced_shut_wells=_well_set(limits, "forced_shut_wells", source),
+            max_active_wells=_optional_count(limits, "max_active_wells", "limits", source),
+            max_field_injection_m3_per_year=_optional_positive(
+                limits, "max_field_injection_m3_per_year", "limits", source),
+            max_events_per_year=_optional_count(limits, "max_events_per_year",
+                                                "limits", source),
         ),
         policy=PolicyConfig(
             lookback_months=_at_least_one(policy, "lookback_months", "policy", source),
@@ -132,6 +153,74 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
         ),
         source=source,
     )
+
+
+def _optional_positive(section: dict, key: str, name: str, source: Path) -> float | None:
+    """Необязательная величина: ключа нет или ноль — ограничения нет.
+
+    Отличается от `_non_negative` тем, что отсутствие ключа законно. Так сделано
+    только для ручек валидационного кейса: конфиг организаторов не обязан их
+    содержать, а требовать — значит отвергать исправный файл.
+    """
+    if key not in section:
+        return None
+    value = float(section[key])
+    if value < 0:
+        raise ValueError(
+            f"В {source} значение {key} в секции [{name}] не может быть отрицательным "
+            f"(получено {value:g}); «ограничения нет» записывается нулём или пропуском"
+        )
+    return value or None
+
+
+def _optional_count(section: dict, key: str, name: str, source: Path) -> int | None:
+    """То же для счётчика: скважин, мероприятий."""
+    if key not in section:
+        return None
+    value = int(section[key])
+    if value < 0:
+        raise ValueError(
+            f"В {source} значение {key} в секции [{name}] не может быть отрицательным "
+            f"(получено {value})"
+        )
+    return value or None
+
+
+def _well_set(section: dict, key: str, source: Path) -> frozenset[str] | None:
+    """Список скважин из конфигурации. Пустой список — ограничения нет.
+
+    Имена приводятся к строкам: в TOML номер скважины легко написать числом, и
+    тогда `102` не совпало бы с `"102"` из дека — молча и на всём фонде.
+    """
+    if key not in section:
+        return None
+    values = section[key]
+    if not isinstance(values, list):
+        raise ValueError(f"В {source} значение {key} в секции [limits] должно быть списком")
+    names = frozenset(str(value) for value in values)
+    return names or None
+
+
+def _well_caps(section: dict, source: Path) -> dict[str, float] | None:
+    """Карта «скважина → потолок, м³/сут». Пустая таблица — ограничения нет."""
+    key = "well_caps_m3_per_day"
+    if key not in section:
+        return None
+    table = section[key]
+    if not isinstance(table, dict):
+        raise ValueError(
+            f"В {source} значение {key} в секции [limits] должно быть таблицей "
+            "вида {скважина = потолок}"
+        )
+    caps: dict[str, float] = {}
+    for well, cap in table.items():
+        value = float(cap)
+        if value < 0:
+            raise ValueError(
+                f"В {source} потолок скважины {well} отрицателен ({value:g})"
+            )
+        caps[str(well)] = value
+    return caps or None
 
 
 def _positive(section: dict, key: str, name: str, source: Path) -> float:
