@@ -20,13 +20,13 @@ def test_submission_pairs_declared_npv_with_same_run_baseline_and_uplift():
 
     assert "13 133,8 млн руб." in submission
     assert "11 851,8 млн руб." in submission
-    assert "+1 282,0 млн руб. (+10,8 %)" in submission
+    assert "+1 281,9 млн руб. (+10,8 %)" in submission
 
 
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
-    assert "Прирост заявляемого сценария | +1 282,0 млн руб. (+10,8 %)" in defence
+    assert "Прирост заявляемого сценария | +1 281,9 млн руб. (+10,8 %)" in defence
     assert "Прирост самого доходного сценария | +1 789,5 млн руб. (+15,1 %)" in defence
 
 
@@ -42,7 +42,7 @@ def test_the_jury_answers_carry_the_same_declared_triple():
 
     assert "13 133,8" in answers
     assert "11 851,8" in answers
-    assert "+1 282,0 млн руб. (+10,8 %)" in answers
+    assert "+1 281,9 млн руб. (+10,8 %)" in answers
 
 
 def test_the_jury_answers_keep_the_section_of_open_questions():
