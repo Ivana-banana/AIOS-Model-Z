@@ -147,7 +147,7 @@ def test_the_audit_refuses_a_schedule_from_another_run(tmp_path):
     """Число и файл обязаны быть из одного прогона — проверка это и проверяет.
 
     24.08 прогон пакета на машине Б показал: `--schedule` принимал любой файл, и
-    проверка отвечала «ГОТОВО … + 13 152,9 млн руб.» на **историческом** базовом
+    проверка отвечала «ГОТОВО … + 13 133,8 млн руб.» на **историческом** базовом
     расписании. То есть благословляла пару «файл одного прогона, число другого»
     — ровно тот механизм, которым расхождение с пересчётом организаторов
     возникает молча.
@@ -155,8 +155,8 @@ def test_the_audit_refuses_a_schedule_from_another_run(tmp_path):
     root = tmp_path
     _package(root)
     (root / "docs" / "submission.md").write_text(
-        "| **ЧДД** | **13 152,9 млн руб.** |\n"
-        "| сдаваемый файл | `runs/matched-100/wells_schedule.inc` |\n",
+        "| **ЧДД** | **13 133,8 млн руб.** |\n"
+        "| сдаваемый файл | `runs/matched-0995/wells_schedule.inc` |\n",
         encoding="utf-8",
     )
     other = root / "runs" / "base" / "wells_schedule.inc"
@@ -171,5 +171,5 @@ def test_the_audit_refuses_a_schedule_from_another_run(tmp_path):
 
     assert not checks["6"].ready
     assert "из одного прогона" in checks["6"].detail
-    assert "runs/matched-100" in checks["6"].detail
+    assert "runs/matched-0995" in checks["6"].detail
 

@@ -12,21 +12,21 @@ def _read(name: str) -> str:
 def test_declared_npv_is_the_same_in_all_current_documents():
     for name in ("docs/submission.md", "docs/report.md", "docs/defence-final.md",
                  "docs/presentation.md", "docs/defence-qa.md"):
-        assert "13 152,9" in _read(name), f"{name} потерял заявляемый ЧДД"
+        assert "13 133,8" in _read(name), f"{name} потерял заявляемый ЧДД"
 
 
 def test_submission_pairs_declared_npv_with_same_run_baseline_and_uplift():
     submission = _read("docs/submission.md")
 
-    assert "13 152,9 млн руб." in submission
+    assert "13 133,8 млн руб." in submission
     assert "11 851,8 млн руб." in submission
-    assert "+1 301,1 млн руб. (+11,0 %)" in submission
+    assert "+1 282,0 млн руб. (+10,8 %)" in submission
 
 
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
-    assert "Прирост заявляемого сценария | +1 301,1 млн руб. (+11,0 %)" in defence
+    assert "Прирост заявляемого сценария | +1 282,0 млн руб. (+10,8 %)" in defence
     assert "Прирост самого доходного сценария | +1 789,5 млн руб. (+15,1 %)" in defence
 
 
@@ -40,9 +40,9 @@ def test_the_jury_answers_carry_the_same_declared_triple():
     """
     answers = _read("docs/defence-qa.md")
 
-    assert "13 152,9" in answers
+    assert "13 133,8" in answers
     assert "11 851,8" in answers
-    assert "+1 301,1 млн руб. (+11,0 %)" in answers
+    assert "+1 282,0 млн руб. (+10,8 %)" in answers
 
 
 def test_the_jury_answers_keep_the_section_of_open_questions():
@@ -68,7 +68,7 @@ def test_the_presentation_keeps_the_slide_we_agreed_not_to_cut():
     presentation = _read("docs/presentation.md")
 
     assert "## Слайд 7. Что мы не заявляем" in presentation
-    assert "13 152,9" in presentation, "презентация потеряла заявляемый ЧДД"
+    assert "13 133,8" in presentation, "презентация потеряла заявляемый ЧДД"
     assert "27 процентов" in presentation, "нет оговорки про сторонний водоисточник"
     assert "втрое" in presentation, (
         "со слайда пропала главная оговорка про суррогат: он переоценивает отклик "
@@ -84,8 +84,8 @@ def test_the_declared_pair_names_the_run_it_came_from():
     """
     submission = _read("docs/submission.md")
 
-    assert "runs/matched-100/wells_schedule.inc" in submission
-    assert "13 152,9 млн руб." in submission
+    assert "runs/matched-0995/wells_schedule.inc" in submission
+    assert "13 133,8 млн руб." in submission
 
 
 def test_the_previous_candidate_survives_only_as_history():
@@ -105,7 +105,7 @@ def test_the_previous_candidate_survives_only_as_history():
 def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
     """Сменился сценарий — сменился и файл, и об этом забывают чаще, чем о числе.
 
-    23.08 (Б30) заявка перешла с `runs/inj-1.6` на `runs/matched-100`, числа во
+    23.08 (Б30) заявка перешла с `runs/inj-1.6` на `runs/matched-0995`, числа во
     всех документах машина А поменяла, а путь к сдаваемому расписанию остался
     прежним в трёх местах: умолчание предполётной проверки, пример в `README.md`
     и шаг демозапуска в презентации. Предполётная проверка при этом молча

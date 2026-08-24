@@ -8,8 +8,8 @@
 заявленное значение ЧДД, которое организаторы независимо перепроверяют одним
 расчётом на полной гидродинамической модели.
 
-**Что заявляется сейчас: 13 152,9 млн руб.** при базовом сценарии 11 851,8 —
-прирост +1 301,1 млн руб. (+11,0 %). Файл `runs/matched-100/wells_schedule.inc`,
+**Что заявляется сейчас: 13 133,8 млн руб.** при базовом сценарии 11 851,8 —
+прирост +1 282,0 млн руб. (+10,8 %). Файл `runs/matched-0995/wells_schedule.inc`,
 прогон 24.08 на четырёх процессах MPI. Число получено эталонным расчётчиком
 организаторов из того же прогона, что и файл, и воспроизводится шестью командами
 — они и все оговорки к числу собраны в `docs/submission.md`.
@@ -226,7 +226,7 @@ python scripts/run_all.py --flow-args=--parsing-strictness=low
 
 ```bash
 python scripts/check_package.py \
-  --schedule runs/matched-100/wells_schedule.inc \
+  --schedule runs/matched-0995/wells_schedule.inc \
   --model artifacts/surrogate.joblib
 ```
 

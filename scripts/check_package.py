@@ -1,7 +1,7 @@
 """Проверить девять обязательных частей пакета допуска AIOS.
 
     python scripts/check_package.py
-    python scripts/check_package.py --schedule runs/matched-100/wells_schedule.inc \
+    python scripts/check_package.py --schedule runs/matched-0995/wells_schedule.inc \
         --model artifacts/surrogate.joblib
 
 Команда ничего не собирает и не исправляет. Её задача — не дать таблице в
@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--schedule", type=Path,
-                        default=Path("runs/matched-100/wells_schedule.inc"))
+                        default=Path("runs/matched-0995/wells_schedule.inc"))
     parser.add_argument("--model", type=Path, default=Path("artifacts/surrogate.joblib"))
     arguments = parser.parse_args(argv)
 
