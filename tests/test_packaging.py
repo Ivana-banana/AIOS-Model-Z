@@ -165,3 +165,30 @@ def test_the_image_carries_the_licence_texts_but_not_our_rights_register():
     # проверяются именно инструкции COPY: упоминание файла в комментарии рядом —
     # это объяснение, почему его тут нет, и оно как раз уместно
     assert "PROVENANCE_AND_RIGHTS.md" not in copied
+
+
+def test_the_licence_boundary_names_every_top_level_entry():
+    """Каждый каталог и файл верхнего уровня отнесён к покрытым или к исключённым.
+
+    Первая редакция `LICENSE` перечисляла покрытое и исключённое выборочно, и
+    треть репозитория не попадала никуда: 17 файлов в корне, `docker/`,
+    `LICENSES/`, `manus-answered/`. Хуже того, `docs/screenshots/` — снимки
+    постов организаторов — формально уходили под нашу MIT, потому что лежат
+    внутри покрытого `docs/`. Нашла машина Б в Б39, граница закрыта (Р-109).
+
+    Тест держит именно это свойство: не текст формулировок, а то, что ни одна
+    запись верхнего уровня не осталась без ответа «наше или чужое».
+    """
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    licence = (root / "LICENSE").read_text(encoding="utf-8")
+    listed = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True,
+                            text=True, encoding="utf-8", check=True).stdout.splitlines()
+
+    top = {name.strip('"').split("/")[0] for name in listed if name.strip()}
+    # архивы и служебные точечные файлы называются в лицензии явным списком
+    missing = [name for name in sorted(top) if name not in licence]
+
+    assert not missing, (
+        "в LICENSE не отнесены ни к покрытым, ни к исключённым: " + ", ".join(missing))
