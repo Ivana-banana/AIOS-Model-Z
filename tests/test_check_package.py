@@ -112,6 +112,32 @@ def test_existing_model_must_pass_the_quality_gate(tmp_path):
     assert checks["9"].detail == "MLP не прошёл порог"
 
 
+def test_another_quality_model_cannot_replace_the_declared_artifact(tmp_path):
+    schedule, _model = _package(tmp_path)
+    declared = tmp_path / "artifacts" / "surrogate.joblib"
+    declared.parent.mkdir()
+    declared.write_bytes(b"declared model")
+    other = tmp_path / "result" / "other.joblib"
+    other.write_bytes(b"other quality model")
+    submission = tmp_path / "docs" / "submission.md"
+    submission.write_text(
+        submission.read_text(encoding="utf-8")
+        + "| модель | `artifacts/surrogate.joblib` |\n",
+        encoding="utf-8",
+    )
+
+    checks = {item.number: item for item in audit(
+        tmp_path,
+        schedule,
+        other,
+        model_validator=lambda _: None,
+        schedule_validator=lambda _: None,
+    )}
+
+    assert not checks["9"].ready
+    assert "в пакет входит artifacts/surrogate.joblib" in checks["9"].detail
+
+
 def test_existing_schedule_must_pass_the_schedule_gate(tmp_path):
     schedule, model = _package(tmp_path)
 

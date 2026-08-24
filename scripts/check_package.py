@@ -28,6 +28,7 @@ DECLARED_NPV = re.compile(r"\| \*\*ЧДД\*\* \| \*\*([^*]+ млн руб\.)\*\*
 #: механизм, которым расхождение с пересчётом организаторов возникает молча.
 DECLARED_SCHEDULE = re.compile(r"`(runs/[\w.-]+/wells_schedule\.inc)`")
 DECLARED_MD5 = re.compile(r"`md5 ([0-9a-fA-F]{32})`")
+DECLARED_MODEL = re.compile(r"`(artifacts/[\w.-]+\.joblib)`")
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,9 @@ def audit(
         scaling = f"{scaling}; {checksum}"
     model_error = None
     if model_path.is_file():
-        model_error = (model_validator or _model_problem)(model_path)
+        model_error = (model_validator or _model_problem)(model_path) or _wrong_model(
+            submission, model_path
+        )
     ui = (root / "aios" / "web" / "app.py", root / "aios" / "explain.py")
     templates = _files(root / "aios" / "web" / "templates", "*.html")
     licenses = (
@@ -222,6 +225,19 @@ def _wrong_run(submission: Path, schedule: Path) -> str | None:
         f"проверяется {schedule.as_posix()}, а заявлен {declared}: число и файл "
         "обязаны быть из одного прогона"
     )
+
+
+def _wrong_model(submission: Path, model: Path) -> str | None:
+    """Не принять другую качественную модель вместо артефакта из пакета."""
+    if not submission.is_file():
+        return None
+    match = DECLARED_MODEL.search(submission.read_text(encoding="utf-8"))
+    if match is None:
+        return None
+    declared = match.group(1)
+    if model.as_posix().endswith(declared):
+        return None
+    return f"проверяется {model.as_posix()}, а в пакет входит {declared}"
 
 
 def _checksum_problem(submission: Path, schedule: Path) -> tuple[str | None, str]:
