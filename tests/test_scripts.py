@@ -959,22 +959,17 @@ def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
     assert run_cycle.written_identity(tmp_path) is None, "битый файл не должен ронять прогон"
 
 
-class _CycleStopped(Exception):
-    """Прервать `main` сразу после вызова цикла: дальше нас не интересует."""
+def test_base_schedule_starts_the_search_from_the_scenario_not_from_the_deck(tmp_path,
+                                                                            monkeypatch,
+                                                                            capsys):
+    """`--base-schedule` выражает сценарий множителями, а опорное не подменяет.
 
-
-def test_the_model_measures_from_the_deck_while_the_search_starts_elsewhere(
-        tmp_path, monkeypatch, capsys):
-    """Опорное расписание модели и точка старта поиска — разные вещи.
-
-    Обученная модель принимает режим множителями к опорному расписанию, и опорным
-    при обучении был исторический дек. Замер машины Б 24.08: тот же файл
-    `runs/srg-narrow` она оценивает в 12 664,9 как кандидата и в 11 201,4 как
-    опорное — разница 1 463,5 млн руб. на одном расписании. Пока оба смысла жили
-    в одном списке, `--base-schedule` с обученной моделью приходилось отвергать.
-
-    Теперь они разведены: модель меряет от дека, поиск стартует оттуда, куда
-    указали. Тест закрепляет именно это разделение.
+    Обученная модель принимает режим множителями к опорному расписанию дека, и
+    подстановка другого опорного меняла бы смысл её входа, а не точку старта:
+    замер 24.08 — один и тот же файл `runs/srg-narrow` оценивался в 12 664,9 как
+    кандидат и в 11 201,4 как опорное, разница 1 463,5 млн руб. Поэтому сценарий
+    переводится в множители к деку, и поиск стартует из них; на Модели Z это
+    воспроизвело прогноз сценария с точностью 0,017 % (12 664,9 → 12 662,8).
     """
     from conftest import make_row
     from test_dataset import _tiny_project
@@ -987,45 +982,27 @@ def test_the_model_measures_from_the_deck_while_the_search_starts_elsewhere(
     monkeypatch.setattr(run_cycle.summary, "monthly_rows",
                         lambda *a, **k: [make_row("2007-01-01", "1", wlpr=30.0,
                                                   womr=20.0, liquid=900.0, oil=600.0)])
+    seen = {}
 
-    class Chosen:
-        name = "MLP по сценариям DoE"
-        joint_rate_search = True
-        model = object()
+    def remember(*args, **kwargs):
+        seen.update(kwargs)
+        raise SystemExit(0)
 
-    seen: dict[str, object] = {}
-
-    def remember(**kwargs):
-        seen["reference"] = kwargs["reference_steps"]
-        return Chosen()
-
-    def stop(model, steps, *args, **kwargs):
-        seen["search"] = steps
-        raise _CycleStopped
-
-    monkeypatch.setattr(run_cycle, "for_cycle", remember)
-    monkeypatch.setattr(run_cycle.loop, "run_cycle", stop)
-
+    monkeypatch.setattr(run_cycle.loop, "run_cycle", remember)
     source = tmp_path / "runs" / "RUN"
     source.mkdir(parents=True)
     source.with_suffix(".UNSMRY").write_bytes(b"")
     other = tmp_path / "candidate.inc"
+    # дек крошечного проекта держит скважину «1» на 30 м3/сут, здесь она на 45
     other.write_text(
         "DATES\n 01 JAN 2007 /\n/\n\nWCONPROD\n"
         " '1' 'OPEN' 'LRAT' 1* 1* 1* 45.0 1* 50 1* 1* /\n/\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(_CycleStopped):
+    with pytest.raises(SystemExit):
         run_cycle.main(["--from", str(source.parent), "--out", str(tmp_path / "out"),
-                        "--surrogate-model", str(tmp_path / "s.joblib"),
                         "--base-schedule", str(other), "--config", str(config)])
 
-    printed = capsys.readouterr().out
-    assert "поиск стартует от candidate.inc" in printed
-    def rates(steps):
-        return [control.liquid_rate for step in steps for control in step.producers]
-
-    assert rates(seen["search"]) == [45.0], "поиск обязан стартовать с подставленного файла"
-    assert rates(seen["reference"]) != rates(seen["search"]), (
-        "модель обязана мерить множители от дека, а не от подставленного расписания")
+    assert seen["start_multipliers"] == {("production", "1"): 1.5}
+    assert "старт:" in capsys.readouterr().out

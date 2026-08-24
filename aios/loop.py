@@ -126,6 +126,7 @@ def run_cycle(surrogate: Surrogate,
               limits: planner.Limits | None = None,
               fluids: Fluids | None = None,
               multipliers: tuple[float, ...] | None = None,
+              start_multipliers: dict[tuple[str, str], float] | None = None,
               norms_file: Path = economics.NORMS_FILE) -> CycleResult:
     """Пройти цикл один раз: спрогнозировать, продиагностировать, решить, оценить.
 
@@ -144,11 +145,16 @@ def run_cycle(surrogate: Surrogate,
       принимается по данным до `t`. Она ловит скважины, которые становятся
       убыточными по ходу горизонта даже на лучшем из режимов.
     """
-    base_rows = surrogate.predict(base_steps)
+    # Точка отсчёта — то расписание, с которого цикл стартует. Если задан старт
+    # из готового сценария, сравнивать надо с ним, а не с опорным: иначе
+    # «прирост» смешает эффект самого сценария с тем, что добавил цикл (Б34).
+    origin = (base_steps if start_multipliers is None
+              else optimise.apply_start(base_steps, start_multipliers))
+    base_rows = surrogate.predict(origin)
     base = _npv(base_rows, start_date, norms_file)
 
     choices: list[optimise.RateChoice] | list[optimise.JointRateChoice] = []
-    tuned = list(base_steps)
+    tuned = list(origin)
     if tune_rates:
         if joint_rate_search:
             choices = optimise.choose_joint_rates(
@@ -158,6 +164,10 @@ def run_cycle(surrogate: Surrogate,
                 # ближе к обучающим сценариям, широкий уводит из области
                 # доверия — и то и другое надо уметь померить (Б31)
                 **({} if multipliers is None else {"multipliers": multipliers}),
+                # старт поиска из уже найденного сценария: опорное расписание при
+                # этом не подменяется — модель продолжает получать вход в тех же
+                # координатах, в которых училась
+                **({} if start_multipliers is None else {"start": start_multipliers}),
                 # второй контур шлюза доверия (`Р-72`) — область лежит в самом
                 # артефакте суррогата, а не собирается здесь заново: иначе ничто
                 # не мешает применить область одной модели к прогнозу другой.

@@ -252,6 +252,7 @@ def choose_joint_rates(
     penalty: float = TRUST_PENALTY,
     weight: float = TRUST_WEIGHT,
     norms_file: Path = economics.NORMS_FILE,
+    start: dict[tuple[str, str], float] | None = None,
 ) -> list[JointRateChoice]:
     """Координатный поиск для суррогата с межскважинными связями.
 
@@ -320,7 +321,28 @@ def choose_joint_rates(
             *(("production", well) for well in producer_wells),
         )
     ]
-    selected = dict.fromkeys(controls, 1.0)
+    # Точка старта поиска. По умолчанию — «как в опорном расписании», то есть
+    # единицы. Заданная извне карта позволяет спросить то, что иначе спросить
+    # нельзя: **даёт ли поиск что-то сверх уже найденного сценария**. Ключ карты
+    # — пара «вид управления, скважина», без периода: множитель готового
+    # расписания к опорному от нашего деления горизонта не зависит.
+    #
+    # Опорное расписание при этом остаётся прежним, и это принципиально:
+    # обученная модель принимает режим множителями к нему, и подмена опорного
+    # меняет смысл её входа, а не точку старта (замер 24.08: одно и то же
+    # расписание — 12 664,9 как кандидат и 11 201,4 как опорное).
+    if start:
+        unknown = sorted(set(start) - {(kind, well) for kind, well, _ in controls})
+        if unknown:
+            raise ValueError(
+                "в стартовой карте есть управления, которых нет в расписании: "
+                + ", ".join(f"{kind}:{well}" for kind, well in unknown[:10])
+            )
+        if any(value < 0 for value in start.values()):
+            raise ValueError("множители не бывают отрицательными")
+    selected = {
+        control: (start or {}).get((control[0], control[1]), 1.0) for control in controls
+    }
     current_steps = _scale_individually(base_steps, selected)
     current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids,
                              region, margin, penalty, weight, norms_file)
@@ -754,6 +776,67 @@ def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
                         f"рассматривалась: {len(withheld)} из {len(choices)}")
     lines.extend(f"  {choice}" for choice in sorted(changed, key=lambda item: -item.gain_m))
     return "\n".join(lines)
+
+
+def apply_start(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                start: dict[tuple[str, str], float]) -> list[ScheduleStep]:
+    """Применить стартовую карту множителей ко всему горизонту.
+
+    То же, что делает поиск в своей первой точке, но доступно и без поиска:
+    цикл с выключенным подбором режимов обязан стартовать с того же расписания,
+    иначе «прирост» считался бы от другого начала.
+    """
+    return _scale_individually(
+        steps, {(kind, well, None): value for (kind, well), value in start.items()}
+    )
+
+
+def multipliers_of(reference: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   candidate: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   ) -> dict[tuple[str, str], float]:
+    """Каким множителем к опорному расписанию выражается готовый сценарий.
+
+    Нужна, чтобы стартовать поиск из уже найденного сценария, не подменяя
+    опорное расписание: множители считаются один раз, а модель продолжает
+    получать вход в тех же координатах, в которых училась.
+
+    Считается по суммам расходов открытых записей за общий горизонт, а не
+    помесячно: одно число на управление — это ровно то, чем `scale` и оперирует.
+    Скважина, которой в опорном расписании нет или у которой там ноль, в карту
+    не попадает — множителя к нулю не существует, и выдумывать его нельзя.
+    """
+    totals: dict[tuple[str, str], list[float]] = {}
+
+    def add(kind: str, well: str, reference_rate: float, candidate_rate: float) -> None:
+        entry = totals.setdefault((kind, well), [0.0, 0.0])
+        entry[0] += reference_rate
+        entry[1] += candidate_rate
+
+    by_date = {step.date: step for step in candidate}
+    for step in reference:
+        other = by_date.get(step.date)
+        if other is None:
+            continue
+        theirs_producers = {control.well: control for control in other.producers}
+        for control in step.producers:
+            mine = theirs_producers.get(control.well)
+            if mine is None or control.status != "OPEN":
+                continue
+            add("production", control.well, control.liquid_rate or 0.0,
+                (mine.liquid_rate or 0.0) if mine.status == "OPEN" else 0.0)
+        theirs_injectors = {control.well: control for control in other.injectors}
+        for control in step.injectors:
+            mine = theirs_injectors.get(control.well)
+            if mine is None or control.status != "OPEN":
+                continue
+            add("injection", control.well, control.rate or 0.0,
+                (mine.rate or 0.0) if mine.status == "OPEN" else 0.0)
+
+    return {
+        key: value[1] / value[0]
+        for key, value in sorted(totals.items())
+        if value[0] > 0
+    }
 
 
 def _scale_individually(
