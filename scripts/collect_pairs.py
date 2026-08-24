@@ -24,6 +24,7 @@ import csv
 import sys
 from pathlib import Path
 
+import joblib
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,6 +36,7 @@ from aios import economics, pvt, summary, trust  # noqa: E402  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 from aios.model import SurrogateLoadError, for_cycle  # noqa: E402
+from aios.neural import NeuralSurrogate  # noqa: E402
 
 
 def actual_npv(run_dir: Path, start_date: str, norms_file: Path) -> float | None:
@@ -63,6 +65,27 @@ def predicted_npv(model, run_dir: Path, control_start, start_date: str,
                                  start_date=start_date, norms_file=norms_file,
                                  name=f"{run_dir.name}-прогноз").chdd_m
 
+
+def distance_of(model, region, run_dir: Path, control_start) -> float | None:
+    """Расстояние расписания до области доверия — тем же кодом, что и шлюз.
+
+    Считается здесь, а не отдельной командой, потому что вопрос «растёт ли ошибка
+    с расстоянием» проверяется только парой «остаток и расстояние» на одной
+    строке. На трёх точках связь заметила машина Б (Б34); здесь их 23.
+
+    Область лежит в артефакте (`NeuralBundle.trust_region`), а не в самой модели —
+    поэтому передаётся отдельно, как это делает и `scripts/trust_gate.py`.
+    """
+    if region is None or not isinstance(model, NeuralSurrogate):
+        return None
+    schedule_file = run_dir / "wells_schedule.inc"
+    if not schedule_file.is_file():
+        return None
+    steps = [step for step in parse_schedule(schedule_file).steps
+             if step.date >= control_start]
+    if not steps:
+        return None
+    return float(region.distance(model.control_profile(steps)).value)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -103,6 +126,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"суррогат не загрузился: {error}", file=sys.stderr)
         return 1
     print(f"суррогат: {selected.name}")
+    region = getattr(joblib.load(arguments.model), "trust_region", None)
+    if region is None:
+        print("области доверия в артефакте нет — расстояния не будет")
 
     families = arguments.family or []
     start = config.economics.start_date.isoformat()
@@ -116,9 +142,11 @@ def main(argv: list[str] | None = None) -> int:
         if actual is None or predicted is None:
             print(f"{run_dir.name:24} пропущен: нет выгрузки или расписания")
             continue
-        rows_out.append((run_dir.name, predicted, actual, family))
+        distance = distance_of(selected.model, region, run_dir, config.case.control_start)
+        rows_out.append((run_dir.name, predicted, actual, family, distance))
+        shown = f"{distance:6.1f}" if distance is not None else "     —"
         print(f"{run_dir.name:24} прогноз {predicted:10.1f}  факт {actual:10.1f}  "
-              f"остаток {predicted - actual:+9.1f}  [{family}]")
+              f"остаток {predicted - actual:+9.1f}  расстояние {shown}  [{family}]")
 
     if not rows_out:
         print("ни одной пары не собрано", file=sys.stderr)
@@ -128,8 +156,9 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        for name, predicted, actual, family in rows_out:
-            writer.writerow([f"{predicted:.6f}", f"{actual:.6f}", name, family])
+        for name, predicted, actual, family, distance in rows_out:
+            writer.writerow([f"{predicted:.6f}", f"{actual:.6f}", name, family,
+                             "" if distance is None else f"{distance:.4f}"])
     print()
     print(f"пар собрано: {len(rows_out)} → {out}")
 
@@ -140,7 +169,22 @@ def main(argv: list[str] | None = None) -> int:
         verdict = (f"{margin.value:+.1f} млн руб." if margin.calibrated
                    else f"не калиброван — {margin.reason}")
         print(f"  {family:8} пар {len(chosen):2}: {verdict}")
+
+    ranked = [row for row in rows_out if row[4] is not None]
+    if len(ranked) >= 3:
+        ranked.sort(key=lambda row: row[4])
+        print()
+        print("остаток против расстояния до области доверия (по возрастанию расстояния):")
+        for name, predicted, actual, family, distance in ranked:
+            print(f"  {distance:6.2f}  {predicted - actual:+9.1f}  "
+                  f"{100.0 * (predicted - actual) / actual:+6.2f} %  {name} [{family}]")
+        outside = [row for row in ranked if row[4] > ranked[0][4]]
+        rising = sum(1 for one, two in zip(ranked, ranked[1:], strict=False)
+                     if (two[1] - two[2]) >= (one[1] - one[2]))
+        print(f"  пар, где остаток не убывает с расстоянием: {rising} из {len(ranked) - 1}"
+              f" (проверено на {len(outside) + 1} точках)")
     return 0
+
 
 
 if __name__ == "__main__":
