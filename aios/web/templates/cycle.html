@@ -250,8 +250,22 @@
 {% if result.warnings %}
 <section>
   <h2>Границы применимости суррогата</h2>
+  {# пометки сворачиваются по причинам, а не печатаются подряд: на тривиальном
+     бейзлайне их 7 990, и страница весила 1 948 КБ против 36 КБ у обученной
+     модели (Б32, Б33). Свёрнутый вид отвечает на вопрос, который человек и
+     задаёт — чего модель не знает, — а не сколько строк она об этом написала #}
+  <p class="muted">
+    Пометок {{ result.warnings|length }}, причин {{ warning_groups|length }}.
+    Одна и та же причина повторяется по скважино-месяцам, поэтому показаны
+    причины и по одному примеру на каждую.
+  </p>
   <div class="warn">
-    {% for warning in result.warnings %}<p>{{ warning }}</p>{% endfor %}
+    {% for group in warning_groups %}
+    <p>
+      <strong>{{ group.count }}</strong> · {{ group.kind }}<br>
+      <span class="muted">например: {{ group.example }}</span>
+    </p>
+    {% endfor %}
   </div>
 </section>
 {% endif %}

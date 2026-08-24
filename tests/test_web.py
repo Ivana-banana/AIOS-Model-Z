@@ -234,7 +234,9 @@ def test_cycle_runs_and_reports_a_forecast(client):
     response = client.get("/run/base/cycle")
 
     assert response.status_code == 200
-    assert "ЧДД базового сценария" in response.text
+    # проверяется подпись плитки, а не текст отчёта ниже: до 24.08 та же строка
+    # находилась в «Отчёте целиком», и тест проходил, ничего не проверяя
+    assert "ЧДД базового расписания (прогноз модели)" in response.text
     assert "прогноз" in response.text
     assert "не подтверждено" in response.text or "не подтверждён" in response.text
     assert "тривиальный бейзлайн" in response.text
@@ -334,7 +336,9 @@ def test_the_explanation_never_breaks_the_page(project, monkeypatch):
     response = TestClient(create_app(project)).get("/run/base/cycle")
 
     assert response.status_code == 200
-    assert "ЧДД базового сценария" in response.text
+    # проверяется подпись плитки, а не текст отчёта ниже: до 24.08 та же строка
+    # находилась в «Отчёте целиком», и тест проходил, ничего не проверяя
+    assert "ЧДД базового расписания (прогноз модели)" in response.text
     assert "Почему система решила так" not in response.text
 
 
@@ -827,3 +831,69 @@ def test_a_calibrated_trust_gate_shows_the_margin_and_still_names_the_scope(proj
     assert "421.7" in text
     assert "не калибрована" not in text
     assert "не гарантия для адаптивно выбранного кандидата" in text
+
+
+def test_the_hour_long_search_is_refused_instead_of_hanging_the_request(project,
+                                                                       monkeypatch):
+    """Веб-запрос не имеет права считать час — он обязан отказать и назвать команду.
+
+    Ссылка «обученным суррогатом» ведёт на `model=neural&mode=full`, то есть на
+    совместный подбор режимов: 24.08 тот же расчёт из командной строки шёл
+    **1 ч 20 мин** (`docs/experiments.md`). На защите это зависший браузер
+    посреди доклада, а не «медленная страница».
+
+    Подменять режим на «только остановки» нельзя — пользователь просил одно,
+    система сделала бы другое и не сказала (тот же класс, что Р-100).
+    """
+    from aios.web import app as app_module
+
+    class Chosen:
+        name = "обученный суррогат"
+        joint_rate_search = True
+        model = object()
+
+    monkeypatch.setattr(app_module, "for_cycle", lambda **kwargs: Chosen())
+
+    response = TestClient(create_app(project)).get(
+        "/run/base/cycle?model=neural&mode=full"
+    )
+
+    assert response.status_code == 409
+    assert "больше часа" in response.text
+    assert "run_cycle.py" in response.text, "отказ обязан называть команду"
+    assert "остановка убыточных" in response.text, "и рабочую замену на странице"
+
+
+def test_the_cycle_page_folds_warnings_instead_of_printing_all_of_them(client,
+                                                                      monkeypatch):
+    """Страница показывает причины, а не по строке на скважино-месяц.
+
+    Замер 24.08 (Б32): на тривиальном бейзлайне цикл даёт 7 990 пометок, и
+    страница весила **1 948 КБ** против 36 КБ у обученной модели. Свёртка по
+    причинам (`aios.surrogate.fold_warnings`) — тот же приём, которым уже
+    сворачивались списки в командной строке.
+    """
+    from aios.loop import CycleResult
+    from aios.web import app as app_module
+
+    warnings = tuple(
+        f"скв. {index}: режим 1.9 вне обучающего диапазона 0.5…1.5"
+        for index in range(4000)
+    ) + tuple(
+        f"скв. {index}: прогноз нарушает физические проверки, строк 3"
+        for index in range(1000)
+    )
+    monkeypatch.setattr(app_module.loop, "run_cycle", lambda *a, **k: CycleResult(
+        base_chdd_m=100.0, chdd_m=120.0, actions=(), rate_choices=(), allocations=(),
+        steps=(), warnings=warnings, problems=(),
+    ))
+
+    response = client.get("/run/base/cycle")
+    text = response.text
+
+    assert "Пометок 5000" in text and "причин 2" in text
+    assert "например:" in text, "у каждой причины обязан остаться пример"
+    # в блоке границ применимости — ровно по одному примеру на причину; текстовый
+    # «Отчёт целиком» ниже печатает свои первые десять строк и в счёт не идёт
+    assert text.count("например:") == 2
+    assert len(text.encode("utf-8")) < 100_000, "страница обязана весить десятки килобайт"

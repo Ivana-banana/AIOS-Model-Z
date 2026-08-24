@@ -35,6 +35,7 @@ from aios.deck import ScheduleStep, parse_schedule
 from aios.margin import Norms, screen
 from aios.model import SurrogateLoadError, for_cycle
 from aios.run import build_case
+from aios.surrogate import fold_warnings
 from aios.web.charts import Series, bar_chart, line_chart
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
@@ -460,6 +461,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "result": cycle.result,
                 "settings": configuration,
                 "surrogate_name": cycle.surrogate_name,
+                "warning_groups": fold_warnings(cycle.result.warnings),
                 "explanation": explanation,
                 "options": options,
                 "case_dir": _case_directory(run.name, options),
@@ -581,6 +583,26 @@ def create_app(root: Path | None = None) -> FastAPI:
             )
         except SurrogateLoadError as error:
             raise HTTPException(409, str(error)) from error
+
+        # Совместный поиск режимов на обученной модели считает полный ЧДД фонда
+        # на каждый рассматриваемый множитель: 24.08 на машине Б это заняло
+        # 1 ч 20 мин из командной строки. В веб-запросе такой расчёт означает
+        # зависший браузер посреди доклада, поэтому он отвергается заранее и
+        # называет команду, которой запускается (Б33).
+        #
+        # Молча подменить режим на «только остановки» нельзя: пользователь
+        # просил одно, система сделала бы другое и не сказала — тот же класс,
+        # что подстановка другого суррогата в подтверждение (Р-100).
+        if options.tune_rates and selected.joint_rate_search:
+            raise HTTPException(
+                409,
+                "совместный подбор режимов на обученной модели идёт больше часа — "
+                "столько веб-запрос не живёт. Запустите его командой:\n"
+                f"  python scripts/run_cycle.py --from runs/{run.name} "
+                "--out runs/<куда> --surrogate-model artifacts/surrogate.joblib\n"
+                "а на странице оставьте «только остановка убыточных» — она идёт "
+                "секунды и показывает тот же слой решений.",
+            )
 
         result = loop.run_cycle(
             selected.model,
