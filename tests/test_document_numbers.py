@@ -11,7 +11,8 @@ def _read(name: str) -> str:
 
 def test_declared_npv_is_the_same_in_all_current_documents():
     for name in ("docs/submission.md", "docs/report.md", "docs/defence-final.md",
-                 "docs/presentation.md", "docs/defence-qa.md"):
+                 "docs/presentation.md", "docs/defence-qa.md",
+                 "docs/submission-day.md"):
         assert "13 133,8" in _read(name), f"{name} потерял заявляемый ЧДД"
 
 
@@ -129,6 +130,7 @@ def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
     name = path.rsplit("/", 2)[-2]
     assert name in _read("docs/presentation.md"), "шаг демозапуска ведёт не туда"
     assert name in _read("docs/demo.md"), "сценарий показа ведёт не туда"
+    assert path in _read("docs/submission-day.md"), "паспорт отправки ведёт не туда"
 
     # И главное: инструкция обязана **собирать** тот прогон, который заявлен.
     # 24.08 заявка сменилась на `runs/matched-0995`, а раздел 3 продолжал строить
@@ -144,3 +146,21 @@ def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
         "не тот файл, который мы сдаём"
     )
 
+
+def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
+    """Паспорт не должен стать уверенной инструкцией без стоп-условий."""
+    sheet = _read("docs/submission-day.md")
+
+    for command in (
+        "git status --short --branch",
+        "python -m pytest -q",
+        "python -m ruff check .",
+        "python scripts/check_package.py",
+        "python scripts/check_submission.py runs/matched-0995/wells_schedule.inc",
+    ):
+        assert command in sheet
+    assert "submit-2026-08-24.1" in sheet
+    assert "11 851,8" in sheet
+    assert "+1 281,9 млн руб. (+10,8 %)" in sheet
+    assert "подменяет секцию SCHEDULE целиком; история включена" in sheet
+    assert "В-03 не получен" in sheet
