@@ -22,6 +22,7 @@ def test_submission_pairs_declared_npv_with_same_run_baseline_and_uplift():
     assert "13 133,8 млн руб." in submission
     assert "11 851,8 млн руб." in submission
     assert "+1 281,9 млн руб. (+10,8 %)" in submission
+    assert "| **по достигнутому — заявляем** | **13 133,8** | **+10,8 %** | **20,0 %** |" in submission
 
 
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
@@ -44,6 +45,9 @@ def test_the_jury_answers_carry_the_same_declared_triple():
     assert "13 133,8" in answers
     assert "11 851,8" in answers
     assert "+1 281,9 млн руб. (+10,8 %)" in answers
+    assert "прогон 24.08, каталог `runs/matched-0995`" in answers
+    assert "13 264,6 − 13 133,8 = **130,8 млн руб.**" in answers
+    assert "**20,0 %**" in answers
 
 
 def test_the_jury_answers_keep_the_section_of_open_questions():
@@ -70,6 +74,8 @@ def test_the_presentation_keeps_the_slide_we_agreed_not_to_cut():
 
     assert "## Слайд 7. Что мы не заявляем" in presentation
     assert "13 133,8" in presentation, "презентация потеряла заявляемый ЧДД"
+    assert "`runs/matched-0995`, прогон 24.08" in presentation
+    assert "это 10,8 процента" in presentation
     assert "27 процентов" in presentation, "нет оговорки про сторонний водоисточник"
     assert "втрое" in presentation, (
         "со слайда пропала главная оговорка про суррогат: он переоценивает отклик "
@@ -178,3 +184,14 @@ def test_declared_schedule_checksum_is_the_same_in_current_documents():
 
     for name in ("PLAN.md", "docs/numbers-audit.md"):
         assert checksum[:8] in _read(name), f"{name} называет md5 другого файла"
+
+
+def test_current_submission_parameters_are_not_mixed_with_matched_100():
+    defence = _read("docs/defence-final.md")
+    compliance = _read("docs/tz-compliance.md")
+    audit = _read("docs/numbers-audit.md")
+
+    assert "(`runs/matched-0995`), прогон **24.08**" in defence
+    assert "заявляем **+10,8 %**" in compliance
+    assert "13 264,6 − 13 133,8 = 130,8 млн руб." in audit
+    assert "111,7 млн — переход" in audit and "ещё 19,1 млн" in audit
