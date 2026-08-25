@@ -38,7 +38,7 @@ SOFTWARE.
   `JOURNAL.md`, `HANDOFF.md`, `BLOCKED.md`, `MODIFICATIONS.md`,
   `PROVENANCE_AND_RIGHTS.md`, `THIRD_PARTY_NOTICES.md`;
 * конфигурация и зависимости: `config.toml`, `config-doe-wide.toml`,
-  `config-nobalance.toml`, `pyproject.toml`, `requirements.txt`,
+  `config-nobalance.toml`, `config-limits-check.toml`, `pyproject.toml`, `requirements.txt`,
   `requirements-dev.txt`, `requirements.lock`, `.gitignore`, `.gitattributes`,
   `.dockerignore`.
 
