@@ -1,6 +1,8 @@
 """Критические числа заявки не расходятся между сдаточными документами."""
 
 import csv
+import math
+import statistics
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -64,6 +66,18 @@ def test_declared_conformal_margin_is_recomputed_from_search_pairs():
         residual <= 0 if distance <= threshold else residual > 0
         for distance, residual in residuals_by_distance
     )
+    distances = [distance for distance, _ in residuals_by_distance]
+    residuals = [residual for _, residual in residuals_by_distance]
+    mean_distance = statistics.fmean(distances)
+    mean_residual = statistics.fmean(residuals)
+    pearson = sum(
+        (distance - mean_distance) * (residual - mean_residual)
+        for distance, residual in residuals_by_distance
+    ) / math.sqrt(
+        sum((distance - mean_distance) ** 2 for distance in distances)
+        * sum((residual - mean_residual) ** 2 for residual in residuals)
+    )
+    assert round(pearson, 3) == 0.844
 
     for name in (
         "docs/architecture.md",
@@ -74,6 +88,8 @@ def test_declared_conformal_margin_is_recomputed_from_search_pairs():
         "docs/surrogate.md",
     ):
         assert "927,8" in _read(name), f"{name} потерял калиброванный запас"
+    assert "Пирсон 0,844" in _read("docs/defence-qa.md")
+    assert "по Пирсону 0,844" in _read("docs/explained.md")
 
 
 def test_mixed_margin_corpus_size_matches_its_current_description():
