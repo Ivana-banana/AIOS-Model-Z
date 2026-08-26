@@ -284,6 +284,25 @@ def test_the_gate_judges_a_candidate_by_the_region_inside_the_artifact(tmp_path,
     # запас у артефакта не калиброван — и это обязано быть названо причиной
     assert "полный расчёт" in printed
 
+    pairs = tmp_path / "pairs.csv"
+    pairs.write_text(
+        "".join(f"{100 + gap},100\n" for gap in range(1, 10)),
+        encoding="utf-8",
+    )
+    code = trust_gate.main([
+        "--model", str(model),
+        "--schedule", str(schedule),
+        "--config", str(config),
+        "--pairs", str(pairs),
+    ])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert "конформный запас: 9.0" in printed
+    assert "причин идти на полный расчёт: 1" in printed
+    assert "мера доверия не калибрована" not in printed
+    assert "совместный режим далёк" in printed
+
 
 def test_the_gate_refuses_half_of_the_candidate_mode(tmp_path, capsys):
     """Один ключ из двух — отказ строкой, а не молчаливая сборка области."""

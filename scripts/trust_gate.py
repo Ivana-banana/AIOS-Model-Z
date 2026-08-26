@@ -10,9 +10,8 @@
         --dataset data/dataset-periods.csv --out artifacts/trust-gate.json
 
 Пары для конформной калибровки берутся отдельным файлом: строки
-`прогноз_суррогата,значение_полного_расчёта` в млн руб. Полных расчётов у нас
-единицы, поэтому обычный ответ — «не калибровано», и это правильный ответ, а не
-недоработка.
+`прогноз_суррогата,значение_полного_расчёта` в млн руб. Если файла нет или пар
+недостаточно, ответ «не калибровано» является правильным, а не нулевым риском.
 """
 
 from __future__ import annotations
@@ -115,7 +114,9 @@ def load_pairs(path: Path | None) -> list[tuple[float, float]]:
         return [(float(row[0]), float(row[1])) for row in csv.reader(handle) if row]
 
 
-def judge(model: Path, schedule: Path, config_path: Path) -> int:
+def judge(model: Path, schedule: Path, config_path: Path, *,
+          pairs_path: Path | None = None,
+          alpha: float = trust.DEFAULT_ALPHA) -> int:
     """Вердикт по одному кандидату — по области, лежащей в самом артефакте.
 
     Область доверия обучается вместе с суррогатом и едет внутри него (Р-72),
@@ -154,9 +155,8 @@ def judge(model: Path, schedule: Path, config_path: Path) -> int:
 
     region = bundle.trust_region
     distance = region.distance(surrogate.control_profile(steps)) if region else None
-    # запаса у артефакта нет: он считается по парам «прогноз — полный расчёт»,
-    # а их у нас единицы. «Не калибровано» — правильный ответ, а не недоработка
-    reasons = trust.routed_to_full_run(distance, None)
+    margin = trust.OptimismMargin.fit(load_pairs(pairs_path), alpha=alpha)
+    reasons = trust.routed_to_full_run(distance, margin)
 
     print(f"кандидат:  {schedule}")
     print(f"модель:    {model} ({bundle.report.kind})")
@@ -169,6 +169,8 @@ def judge(model: Path, schedule: Path, config_path: Path) -> int:
               f"{'ВНЕ области' if distance.outside else 'внутри области'}")
         for neighbour in distance.neighbours[:3]:
             print(f"  ближайший обучающий сценарий {neighbour.scenario}: {neighbour.distance:.3f}")
+    print(f"конформный запас: {margin.value if margin.calibrated else 'не калиброван'}"
+          f"{'' if margin.calibrated else ' — ' + margin.reason}")
     print()
     print(f"причин идти на полный расчёт: {len(reasons)}")
     for reason in reasons:
@@ -202,7 +204,8 @@ def main(argv: list[str] | None = None) -> int:
             print("режиму кандидата нужны оба ключа: --model и --schedule",
                   file=sys.stderr)
             return 1
-        return judge(args.model, args.schedule, args.config)
+        return judge(args.model, args.schedule, args.config,
+                     pairs_path=args.pairs, alpha=args.alpha)
 
     if not args.dataset:
         print("нечего делать: задайте --dataset (собрать область заново) либо "
