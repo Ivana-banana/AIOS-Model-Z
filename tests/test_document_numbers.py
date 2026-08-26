@@ -136,9 +136,11 @@ def test_current_documents_record_the_completed_surrogate_cycle():
         name: _read(name)
         for name in (
             "PLAN.md",
+            "docs/defence-qa.md",
             "docs/report.md",
             "docs/surrogate.md",
             "docs/presentation.md",
+            "docs/tz-compliance.md",
         )
     }
 
@@ -150,6 +152,8 @@ def test_current_documents_record_the_completed_surrogate_cycle():
     assert "**через полный цикл этот артефакт не проводился**" not in current["docs/report.md"]
     assert "цикл не проводился и полным расчётом не подтверждён" not in current["docs/surrogate.md"]
     assert "но через полный цикл не проводился" not in current["docs/presentation.md"]
+    assert "Новый артефакт через цикл **не проводился**" not in current["docs/defence-qa.md"]
+    assert "новый артефакт через цикл не проводился" not in current["docs/tz-compliance.md"]
 
 
 def test_letter_maps_field_injection_and_external_water_to_separate_limits():
