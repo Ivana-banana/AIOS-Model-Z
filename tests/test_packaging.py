@@ -134,6 +134,15 @@ def test_gpl_text_is_the_real_thing_not_a_placeholder():
     assert "Corresponding Source" in text, "текст обрезан: §6 обязателен"
 
 
+def test_report_does_not_reopen_closed_licence_work():
+    report = (ROOT / "docs" / "report.md").read_text(encoding="utf-8")
+
+    assert "Наш код с 24.08 объявлен под MIT" in report
+    assert "Транзитивные Python-зависимости зафиксированы" in report
+    assert "Лицензия нашего собственного кода не объявлена" not in report
+    assert "Транзитивные зависимости не зафиксированы" not in report
+
+
 def test_every_pinned_runtime_package_has_its_licence_text():
     """Лицензия — свойство версии, а не названия пакета.
 
