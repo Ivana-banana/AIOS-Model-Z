@@ -234,3 +234,10 @@ def test_the_licence_boundary_names_every_top_level_entry():
 
     assert not missing, (
         "в LICENSE не отнесены ни к покрытым, ни к исключённым: " + ", ".join(missing))
+
+
+def test_readme_does_not_expand_mit_beyond_the_licence_boundary():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "`docs/screenshots/`, `manus-answered/`" in readme
+    assert "`docs/` (кроме\n`docs/method/`)" not in readme
