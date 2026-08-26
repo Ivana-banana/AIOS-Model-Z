@@ -46,6 +46,16 @@ def test_beginner_explanation_keeps_pressure_share_and_cost_distinct():
     assert "Цена — 0,7 % ЧДД" not in explained
 
 
+def test_report_keeps_live_explanation_metrics_and_resolved_water_status():
+    report = _read("docs/report.md")
+
+    assert "ASR **0,750** против 1,000 у шаблона" in report
+    assert "только на одном принятом пакете" in report
+    assert "Качество объяснений измерено на шаблонах, а не на модели" not in report
+    assert "Формулировка баланса воды разрешена через компенсацию" in report
+    assert "Мощность ППД и формулировка баланса воды** ждут" not in report
+
+
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
