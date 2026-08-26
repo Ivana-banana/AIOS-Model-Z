@@ -159,6 +159,24 @@ def test_current_documents_record_the_completed_surrogate_cycle():
     assert "новый артефакт через цикл не проводился" not in current["docs/tz-compliance.md"]
 
 
+def test_cycle_uplift_is_not_mixed_between_different_starting_points():
+    cycle_share = 460.8 / 1_281.9 * 100
+
+    assert round(cycle_share, 1) == 35.9
+    for name in (
+        "docs/defence-qa.md",
+        "docs/explained.md",
+        "docs/presentation.md",
+    ):
+        text = _read(name)
+        assert "774,9" not in text, f"{name} смешал ЧДД кандидата и прирост цикла"
+        assert "60,4 %" not in text, f"{name} считает долю от несопоставимой базы"
+
+    explained = _read("docs/explained.md")
+    assert "**+460,8 млн руб.** к историческому сценарию" in explained
+    assert "+460,8, или 35,9 % от прироста правила" in explained
+
+
 def test_letter_maps_field_injection_and_external_water_to_separate_limits():
     letter = _read("docs/letter-to-organisers.md")
 
