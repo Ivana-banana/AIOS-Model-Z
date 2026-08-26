@@ -188,6 +188,9 @@ def test_current_documents_record_the_completed_surrogate_cycle():
         assert "+2 042,7" in text, f"{name} потерял прогноз srg-search"
         assert "3,4" in text and "4,4" in text, f"{name} перепутал кратность ошибки"
 
+    assert "их отклик переоценён в 3,4 и 4,4 раза" in current["PLAN.md"]
+    assert "прогнозы переоценили отклик в 3,4 и 4,4 раза" in current["docs/presentation.md"]
+
 
 def test_cycle_uplift_is_not_mixed_between_different_starting_points():
     cycle_share = 460.8 / 1_281.9 * 100
