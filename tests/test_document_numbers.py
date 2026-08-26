@@ -76,6 +76,23 @@ def test_declared_conformal_margin_is_recomputed_from_search_pairs():
         assert "927,8" in _read(name), f"{name} потерял калиброванный запас"
 
 
+def test_mixed_margin_corpus_size_matches_its_current_description():
+    with (ROOT / "docs/data/margin-pairs.csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
+        rows = list(csv.reader(handle))
+
+    assert len(rows) == 24
+    assert sum(row[3] == "manual" for row in rows) == 21
+    assert sum(row[3] == "search" for row in rows) == 3
+
+    for name in ("docs/report.md", "docs/surrogate.md"):
+        text = _read(name)
+        assert "24" in text
+        assert "21 ручн" in text
+        assert "3 поисков" in text
+
+
 def test_beginner_explanation_keeps_pressure_share_and_cost_distinct():
     explained = _read("docs/explained.md")
     comparable_cost_percent = (13_264.6 - 13_133.8) / 13_264.6 * 100
