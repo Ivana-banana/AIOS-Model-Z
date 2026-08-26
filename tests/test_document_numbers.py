@@ -151,6 +151,9 @@ def test_report_does_not_reopen_conformal_calibration():
 
 
 def test_current_documents_record_the_completed_surrogate_cycle():
+    assert round(1_467.2 / 436.5, 1) == 3.4
+    assert round(2_042.7 / 460.8, 1) == 4.4
+
     current = {
         name: _read(name)
         for name in (
@@ -173,6 +176,17 @@ def test_current_documents_record_the_completed_surrogate_cycle():
     assert "но через полный цикл не проводился" not in current["docs/presentation.md"]
     assert "Новый артефакт через цикл **не проводился**" not in current["docs/defence-qa.md"]
     assert "новый артефакт через цикл не проводился" not in current["docs/tz-compliance.md"]
+
+    for name in (
+        "docs/defence-qa.md",
+        "docs/report.md",
+        "docs/surrogate.md",
+        "docs/tz-compliance.md",
+    ):
+        text = current[name]
+        assert "+1 467,2" in text, f"{name} потерял прогноз srg-narrow"
+        assert "+2 042,7" in text, f"{name} потерял прогноз srg-search"
+        assert "3,4" in text and "4,4" in text, f"{name} перепутал кратность ошибки"
 
 
 def test_cycle_uplift_is_not_mixed_between_different_starting_points():
