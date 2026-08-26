@@ -315,6 +315,16 @@ def test_the_gate_refuses_half_of_the_candidate_mode(tmp_path, capsys):
     assert "оба ключа" in capsys.readouterr().err
 
 
+def test_the_surrogate_passport_documents_calibrated_candidate_mode():
+    passport = (ROOT / "docs/surrogate.md").read_text(encoding="utf-8")
+
+    assert "python scripts/trust_gate.py" in passport
+    assert "--model artifacts/surrogate.joblib" in passport
+    assert "--schedule runs/matched-0995/wells_schedule.inc" in passport
+    assert "--pairs docs/data/margin-pairs-search.csv" in passport
+    assert "финальный результат всё равно считается\nГГДМ" in passport
+
+
 
 def test_the_margin_is_negative_when_the_model_never_overpromises():
     """Калибровка по сценариям, которых никто не оптимизировал, защиты не даёт.
