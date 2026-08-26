@@ -131,6 +131,27 @@ def test_report_does_not_reopen_conformal_calibration():
     assert "Знак определяется не\n   расстоянием" not in report
 
 
+def test_current_documents_record_the_completed_surrogate_cycle():
+    current = {
+        name: _read(name)
+        for name in (
+            "PLAN.md",
+            "docs/report.md",
+            "docs/surrogate.md",
+            "docs/presentation.md",
+        )
+    }
+
+    for name, text in current.items():
+        assert "+436,5" in text, f"{name} потерял первый подтверждённый цикл"
+        assert "+460,8" in text, f"{name} потерял второй подтверждённый цикл"
+
+    assert "через полный цикл артефакт не проводился" not in current["PLAN.md"]
+    assert "**через полный цикл этот артефакт не проводился**" not in current["docs/report.md"]
+    assert "цикл не проводился и полным расчётом не подтверждён" not in current["docs/surrogate.md"]
+    assert "но через полный цикл не проводился" not in current["docs/presentation.md"]
+
+
 def test_letter_maps_field_injection_and_external_water_to_separate_limits():
     letter = _read("docs/letter-to-organisers.md")
 
