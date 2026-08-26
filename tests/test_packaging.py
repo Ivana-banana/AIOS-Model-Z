@@ -143,6 +143,14 @@ def test_report_does_not_reopen_closed_licence_work():
     assert "Транзитивные зависимости не зафиксированы" not in report
 
 
+def test_submission_names_our_licence_and_only_current_open_risks():
+    submission = (ROOT / "docs" / "submission.md").read_text(encoding="utf-8")
+
+    assert "| `LICENSE` | MIT на наш код" in submission
+    assert "лицензия нашего собственного\nкода не объявлена" not in submission
+    assert "состав финального образа ещё не снят" in submission
+
+
 def test_every_pinned_runtime_package_has_its_licence_text():
     """Лицензия — свойство версии, а не названия пакета.
 
@@ -170,6 +178,7 @@ def test_the_image_carries_the_licence_texts_but_not_our_rights_register():
     copied = "\n".join(re.findall(r"^COPY .*", text, re.M))
 
     assert "COPY LICENSES" in copied
+    assert "COPY LICENSE " in copied
     assert "THIRD_PARTY_NOTICES.md" in copied
     # проверяются именно инструкции COPY: упоминание файла в комментарии рядом —
     # это объяснение, почему его тут нет, и оно как раз уместно

@@ -68,7 +68,7 @@ COPY vendor/CHDD_PYTHON /opt/aios/vendor/CHDD_PYTHON
 # с программой. `PROVENANCE_AND_RIGHTS.md` сюда намеренно не кладётся — это наш
 # внутренний реестр прав, а не документ получателя.
 COPY LICENSES /opt/aios/LICENSES
-COPY THIRD_PARTY_NOTICES.md MODIFICATIONS.md /opt/aios/
+COPY LICENSE THIRD_PARTY_NOTICES.md MODIFICATIONS.md /opt/aios/
 RUN chmod +x /opt/aios/scripts/*.sh
 
 ENV PYTHONPATH=/opt/aios
