@@ -59,6 +59,15 @@ def test_report_keeps_live_explanation_metrics_and_resolved_water_status():
     assert "| ASR (невзвешенный) | 1.000 | 20 из 20 |" not in report
 
 
+def test_letter_maps_field_injection_and_external_water_to_separate_limits():
+    letter = _read("docs/letter-to-organisers.md")
+
+    assert "`max_field_injection_m3_per_day`" in letter
+    assert "`max_external_water_m3_per_day`" in letter
+    assert "Предел общей закачки" in letter
+    assert "доступный сторонний водоисточник" in letter
+
+
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
