@@ -34,6 +34,18 @@ def test_audit_uses_the_actual_uplift_percentage():
     assert "10,98 % от базы" not in audit
 
 
+def test_beginner_explanation_keeps_pressure_share_and_cost_distinct():
+    explained = _read("docs/explained.md")
+    comparable_cost_percent = (13_264.6 - 13_133.8) / 13_264.6 * 100
+
+    assert round(comparable_cost_percent, 1) == 1.0
+    assert "44,0 % управляемых месяцев закачки" in explained
+    assert "15 нагнетательных из 41" in explained
+    assert "18 нагнетательных из 41" not in explained
+    assert "**1,0 % ЧДД**" in explained
+    assert "Цена — 0,7 % ЧДД" not in explained
+
+
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
