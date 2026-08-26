@@ -100,6 +100,7 @@ def audit(
         root / "PROVENANCE_AND_RIGHTS.md",
         root / "LICENSES" / "README.md",
     )
+    licence_error = _missing(licenses) or _docker_licence_problem(docker[0])
 
     return [
         Check("1", "исходный код", bool(source and scripts),
@@ -134,9 +135,9 @@ def audit(
                   else f"{model_path} + код + описание; {model_checksum}" if model_path.is_file()
                   else f"нет обученного артефакта {model_path}"
               )),
-        Check("L", "лицензии и происхождение", _all_files(licenses),
-              _missing(licenses)
-              or "LICENSE, реестр, уведомления, модификации и тексты лицензий"),
+        Check("L", "лицензии и происхождение", licence_error == "",
+              licence_error
+              or "LICENSE и сторонние лицензии входят в репозиторий и образ"),
     ]
 
 
@@ -164,6 +165,21 @@ def _readme_has_launch(path: Path) -> bool:
         return False
     text = path.read_text(encoding="utf-8")
     return "## Установка" in text and "## Сквозной прогон" in text
+
+
+def _docker_licence_problem(path: Path) -> str:
+    """Лицензии должны доехать до получателя образа вместе с кодом."""
+    if not path.is_file():
+        return f"нет {path}"
+    copies = "\n".join(re.findall(r"^COPY .*", path.read_text(encoding="utf-8"), re.M))
+    required = ("COPY LICENSE ", "COPY LICENSES ", "THIRD_PARTY_NOTICES.md",
+                "MODIFICATIONS.md")
+    missing = [item.strip() for item in required if item not in copies]
+    if missing:
+        return "Docker-образ не получает: " + ", ".join(missing)
+    if "PROVENANCE_AND_RIGHTS.md" in copies:
+        return "внутренний PROVENANCE_AND_RIGHTS.md не должен входить в образ"
+    return ""
 
 
 def _config_problem(path: Path) -> str | None:

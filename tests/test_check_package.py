@@ -24,7 +24,11 @@ def _package(root: Path) -> tuple[Path, Path]:
         "docs/submission.md": "| **ЧДД** | **13 271,8 млн руб.** |\n",
         "README.md": "## Установка\n## Сквозной прогон\n",
         "config.toml": "[doe]\nseed = 20260817\n",
-        "docker/Dockerfile": "",
+        "docker/Dockerfile": (
+            "COPY LICENSE /opt/aios/\n"
+            "COPY LICENSES /opt/aios/LICENSES\n"
+            "COPY THIRD_PARTY_NOTICES.md MODIFICATIONS.md /opt/aios/\n"
+        ),
         "requirements.lock": "",
         "GIT.md": "",
         # с 24.08 пакет обязан нести собственную лицензию (Р-107)
@@ -298,3 +302,24 @@ def test_the_package_is_incomplete_without_our_own_license(tmp_path):
     )}
     assert not checks["L"].ready
     assert "LICENSE" in checks["L"].detail
+
+
+def test_the_package_is_incomplete_when_the_image_omits_our_license(tmp_path):
+    schedule, model = _package(tmp_path)
+    dockerfile = tmp_path / "docker" / "Dockerfile"
+    dockerfile.write_text(
+        dockerfile.read_text(encoding="utf-8").replace("COPY LICENSE /opt/aios/\n", ""),
+        encoding="utf-8",
+    )
+
+    checks = {check.number: check for check in audit(
+        tmp_path,
+        schedule,
+        model,
+        schedule_validator=lambda path: None,
+        model_validator=lambda path: None,
+    )}
+
+    assert not checks["L"].ready
+    assert "Docker-образ не получает" in checks["L"].detail
+    assert "COPY LICENSE" in checks["L"].detail
