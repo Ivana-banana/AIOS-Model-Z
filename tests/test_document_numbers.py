@@ -1,5 +1,6 @@
 """Критические числа заявки не расходятся между сдаточными документами."""
 
+import csv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,6 +33,37 @@ def test_audit_uses_the_actual_uplift_percentage():
     assert round(exact_percent, 2) == 10.82
     assert "10,82 % от базы" in audit
     assert "10,98 % от базы" not in audit
+
+
+def test_declared_conformal_margin_is_recomputed_from_search_pairs():
+    from aios.trust import OptimismMargin
+
+    with (ROOT / "docs/data/margin-pairs-search.csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
+        rows = list(csv.reader(handle))
+
+    assert len(rows) == 9
+    assert all(len(row) == 5 and row[3] == "search" for row in rows)
+    assert len({row[2] for row in rows}) == len(rows)
+
+    margin = OptimismMargin.fit(
+        [(float(row[0]), float(row[1])) for row in rows], alpha=0.1
+    )
+    assert margin.calibrated
+    assert margin.samples == 9
+    assert margin.index == 9
+    assert round(margin.value, 1) == 927.8
+
+    for name in (
+        "docs/architecture.md",
+        "docs/defence-qa.md",
+        "docs/explained.md",
+        "docs/presentation.md",
+        "docs/report.md",
+        "docs/surrogate.md",
+    ):
+        assert "927,8" in _read(name), f"{name} потерял калиброванный запас"
 
 
 def test_beginner_explanation_keeps_pressure_share_and_cost_distinct():
