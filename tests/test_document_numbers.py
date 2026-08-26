@@ -116,6 +116,9 @@ def test_report_keeps_live_explanation_metrics_and_resolved_water_status():
     assert "| ASR (невзвешенный) | 1.000 | 28 из 28 |" in report
     assert "| ASR (взвешенный) | 1.000 | 52 из 52 |" in report
     assert "| ASR (невзвешенный) | 1.000 | 20 из 20 |" not in report
+    assert "~~`requirements.lock` с хэшами~~ — **закрыто 22.08**" in report
+    assert "**Открыта проверка\n   финального образа**" in report
+    assert "`requirements.lock` с хэшами и SBOM образа" not in report
 
 
 def test_report_does_not_reopen_conformal_calibration():
