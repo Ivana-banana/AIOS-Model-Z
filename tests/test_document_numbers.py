@@ -54,6 +54,9 @@ def test_report_keeps_live_explanation_metrics_and_resolved_water_status():
     assert "Качество объяснений измерено на шаблонах, а не на модели" not in report
     assert "Формулировка баланса воды разрешена через компенсацию" in report
     assert "Мощность ППД и формулировка баланса воды** ждут" not in report
+    assert "| ASR (невзвешенный) | 1.000 | 28 из 28 |" in report
+    assert "| ASR (взвешенный) | 1.000 | 52 из 52 |" in report
+    assert "| ASR (невзвешенный) | 1.000 | 20 из 20 |" not in report
 
 
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
