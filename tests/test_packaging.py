@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,29 @@ def test_build_context_excludes_heavy_material():
     ignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     for pattern in ("vendor/Model_Z_OPM/", "*.webm", "runs/", "Lib/"):
         assert pattern in ignore, f"не исключено из контекста сборки: {pattern}"
+
+
+def test_every_local_copy_source_exists_and_is_tracked():
+    """Локальный файл не попадёт в чистый Docker-контекст только потому, что он есть здесь."""
+    import subprocess
+
+    for line in DOCKERFILE.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("COPY "):
+            continue
+        tokens = shlex.split(line)
+        sources = [token for token in tokens[1:-1] if not token.startswith("--")]
+        for source in sources:
+            path = ROOT / source
+            assert path.exists(), f"источник COPY отсутствует: {source}"
+            listed = subprocess.run(
+                ["git", "ls-files", source],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+            )
+            assert listed.stdout.strip(), f"источник COPY не отслеживается Git: {source}"
 
 
 @pytest.mark.parametrize("path", [DOCKERFILE, ROOT / ".dockerignore", REQUIREMENTS])
