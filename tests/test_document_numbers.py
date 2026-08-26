@@ -300,6 +300,10 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     """Паспорт не должен стать уверенной инструкцией без стоп-условий."""
     sheet = _read("docs/submission-day.md")
 
+    assert "## 0. Проверить, какой кейс запрошен" in sheet
+    assert "пакет, посчитанный на **Модели Z**" in sheet
+    assert "валидационный кейс по п. 4.3 ТЗ" in sheet
+    assert "**не\nотправляйте** указанные ниже `matched-0995`, ЧДД и тег" in sheet
     for command in (
         "git status --short --branch",
         "python -m pytest -q",
