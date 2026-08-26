@@ -214,6 +214,8 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     assert "+1 281,9 млн руб. (+10,8 %)" in sheet
     assert "подменяет секцию SCHEDULE целиком; история включена" in sheet
     assert "В-03 не получен" in sheet
+    assert "всем 103 скважинам с режимом после 01.01.2007" in sheet
+    assert "не получен (В-04)" in sheet
     assert "docs/submission-day.md" in _read("README.md")
     assert "все шесть проверок" in _read("README.md")
     assert "в **отдельной чистой копии** `submit-2026-08-24.1`" in sheet
