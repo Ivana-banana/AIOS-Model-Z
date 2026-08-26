@@ -25,6 +25,15 @@ def test_submission_pairs_declared_npv_with_same_run_baseline_and_uplift():
     assert "| **по достигнутому — заявляем** | **13 133,8** | **+10,8 %** | **20,0 %** |" in submission
 
 
+def test_audit_uses_the_actual_uplift_percentage():
+    audit = _read("docs/numbers-audit.md")
+    exact_percent = (13_133.757 - 11_851.811) / 11_851.811 * 100
+
+    assert round(exact_percent, 2) == 10.82
+    assert "10,82 % от базы" in audit
+    assert "10,98 % от базы" not in audit
+
+
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
