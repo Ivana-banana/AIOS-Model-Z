@@ -55,6 +55,16 @@ def test_declared_conformal_margin_is_recomputed_from_search_pairs():
     assert margin.index == 9
     assert round(margin.value, 1) == 927.8
 
+    threshold = 21.622
+    residuals_by_distance = [
+        (float(row[4]), float(row[0]) - float(row[1])) for row in rows
+    ]
+    assert sum(distance <= threshold for distance, _ in residuals_by_distance) == 2
+    assert all(
+        residual <= 0 if distance <= threshold else residual > 0
+        for distance, residual in residuals_by_distance
+    )
+
     for name in (
         "docs/architecture.md",
         "docs/defence-qa.md",
@@ -99,6 +109,9 @@ def test_report_does_not_reopen_conformal_calibration():
     assert "двадцать четыре пары распадаются на 21 ручную и 3 кандидата" not in report
     assert "девять пар семейства «поиск», у нас две" not in report
     assert "по-прежнему пишет\n`calibrated: false`" not in report
+    assert "две точки с расстоянием 16,11 и 20,29 занижают" in report
+    assert "все семь\n   точек дальше порога `τ = 21,622` завышают" in report
+    assert "Знак определяется не\n   расстоянием" not in report
 
 
 def test_letter_maps_field_injection_and_external_water_to_separate_limits():
