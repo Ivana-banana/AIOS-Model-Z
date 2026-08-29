@@ -335,6 +335,34 @@ def test_the_gate_refuses_a_pairs_file_that_is_not_there(tmp_path, capsys):
     assert "нет файла калибровочных пар" in capsys.readouterr().err
 
 
+def test_the_gate_names_the_row_it_cannot_read_in_the_pairs_file(tmp_path, capsys):
+    """Шапка в файле пар — сообщение с номером строки, а не голый traceback.
+
+    `collect_pairs.py` шапку не пишет, поэтому собранные им файлы читались
+    всегда. Но `--pairs` задокументирован в паспорте суррогата как ключ для рук,
+    а файл, прошедший через таблицу, шапку получает: `float("predicted")` ронял
+    команду `ValueError` и `IndexError`, ни словом не назвав ни файл, ни строку.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    header = tmp_path / "с-шапкой.csv"
+    header.write_text("predicted,actual\n101,100\n", encoding="utf-8")
+    assert trust_gate.main(["--dataset", str(tmp_path / "нет.csv"),
+                            "--pairs", str(header)]) == 1
+    printed = capsys.readouterr().err
+    assert "строка 1" in printed
+    assert "predicted" in printed
+
+    short = tmp_path / "без-второго.csv"
+    short.write_text("101,100\n102\n", encoding="utf-8")
+    assert trust_gate.main(["--dataset", str(tmp_path / "нет.csv"),
+                            "--pairs", str(short)]) == 1
+    assert "строка 2" in capsys.readouterr().err
+
+
 def test_the_surrogate_passport_documents_calibrated_candidate_mode():
     passport = (ROOT / "docs/surrogate.md").read_text(encoding="utf-8")
 

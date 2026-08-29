@@ -108,14 +108,31 @@ def coordinatewise(one: dict[str, float],
 
 
 def load_pairs(path: Path | None) -> list[tuple[float, float]]:
+    """Пары «прогноз, полный расчёт» из CSV, который пишет `collect_pairs.py`.
+
+    Нечитаемая строка называется по номеру и содержимому, а не роняет команду
+    голым `ValueError`: свой файл `collect_pairs.py` пишет без шапки, но ключ
+    `--pairs` задокументирован как ручной, а таблица шапку добавляет.
+    """
     if path is None or not path.exists():
         return []
+    pairs: list[tuple[float, float]] = []
     with path.open(newline="", encoding="utf-8") as handle:
-        return [(float(row[0]), float(row[1])) for row in csv.reader(handle) if row]
+        for number, row in enumerate(csv.reader(handle), start=1):
+            if not row:
+                continue
+            try:
+                pairs.append((float(row[0]), float(row[1])))
+            except (IndexError, ValueError) as error:
+                raise ValueError(
+                    f"{path}, строка {number}: ожидались два числа "
+                    f"«прогноз, полный расчёт», получено {row} — {error}"
+                ) from error
+    return pairs
 
 
 def judge(model: Path, schedule: Path, config_path: Path, *,
-          pairs_path: Path | None = None,
+          pairs: list[tuple[float, float]] | None = None,
           alpha: float = trust.DEFAULT_ALPHA) -> int:
     """Вердикт по одному кандидату — по области, лежащей в самом артефакте.
 
@@ -155,7 +172,7 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
 
     region = bundle.trust_region
     distance = region.distance(surrogate.control_profile(steps)) if region else None
-    margin = trust.OptimismMargin.fit(load_pairs(pairs_path), alpha=alpha)
+    margin = trust.OptimismMargin.fit(pairs or [], alpha=alpha)
     reasons = trust.routed_to_full_run(distance, margin)
 
     print(f"кандидат:  {schedule}")
@@ -205,6 +222,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.pairs is not None and not args.pairs.is_file():
         print(f"нет файла калибровочных пар: {args.pairs}", file=sys.stderr)
         return 1
+    try:
+        pairs = load_pairs(args.pairs)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
 
     if args.model or args.schedule:
         if not (args.model and args.schedule):
@@ -212,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 1
         return judge(args.model, args.schedule, args.config,
-                     pairs_path=args.pairs, alpha=args.alpha)
+                     pairs=pairs, alpha=args.alpha)
 
     if not args.dataset:
         print("нечего делать: задайте --dataset (собрать область заново) либо "
@@ -222,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
 
     profiles = load_profiles(args.dataset)
     region = trust.TrustRegion.fit(profiles, k=args.k, quantile=args.quantile)
-    margin = trust.OptimismMargin.fit(load_pairs(args.pairs), alpha=args.alpha)
+    margin = trust.OptimismMargin.fit(pairs, alpha=args.alpha)
 
     print(f"сценариев {len(profiles)}, признаков {len(region.features)}, "
           f"замороженных {len(region.frozen)}")
