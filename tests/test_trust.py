@@ -278,7 +278,8 @@ def test_the_gate_judges_a_candidate_by_the_region_inside_the_artifact(tmp_path,
                             "--config", str(config)])
     printed = capsys.readouterr().out
 
-    assert code == 0, printed
+    # код возврата несёт вердикт: причины есть — 2, а не «команда отработала»
+    assert code == 2, printed
     assert "расстояние:" in printed
     assert "порог" in printed
     # запас у артефакта не калиброван — и это обязано быть названо причиной
@@ -297,7 +298,7 @@ def test_the_gate_judges_a_candidate_by_the_region_inside_the_artifact(tmp_path,
     ])
     printed = capsys.readouterr().out
 
-    assert code == 0, printed
+    assert code == 2, printed
     # число печатается так же, как его приводят отчёт и паспорт: 927,8, а не
     # 927.8179970000001 — иначе команда, которой это число подтверждают, его же
     # и не показывает
@@ -438,6 +439,71 @@ def test_a_candidate_does_not_calibrate_itself(tmp_path, capsys):
     kept, note = trust_gate.without_run(rows, "matched-0995")
     assert len(kept) == 9
     assert note == ""
+
+
+def test_a_clean_candidate_is_told_apart_from_a_failed_command(tmp_path, capsys):
+    """Код возврата различает три исхода, а не два.
+
+    `judge` возвращал 0 всегда. Пока причина находилась при любом запуске, это
+    ничего не стоило; после калибровки (f8bb225) «причин идти на полный расчёт:
+    0» стало достижимым, и чистый вердикт перестал отличаться от вердикта «на
+    полный расчёт» ничем, кроме русского текста на stdout. Шлюз стоит шагом
+    покандидатного протокола (`HANDOFF.md`), то есть его читает не только человек.
+
+    Соглашение: 0 — причин нет, 2 — есть, 1 — команда не выполнилась вовсе.
+    Отдельный код у вердикта нужен потому, что 1 уже занят отказом запуска, а
+    смешивать «шлюз сказал нет» с «шлюз не запустился» нельзя: это разные
+    действия оператора.
+    """
+    import sys
+
+    import joblib
+    import pandas as pd
+    from test_dataset import _tiny_project
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    from aios.neural import NeuralBundle, TargetMetric, TrainingReport
+    from aios.surrogate import NumericRange, TrainingEnvelope
+
+    metrics = {target: TargetMetric(3.0, 1.0) for target in ("WLPT_Diff", "WOMT_Diff",
+                                                             "WWIT_Diff", "THP", "BHP")}
+    # кандидат не двигает ни одного признака области, то есть попадает ровно в её
+    # центр: расстояние до ближайшего обучающего сценария нулевое
+    region = trust.TrustRegion.fit(
+        {"s1": {"prod:1": 0.8, "prod:1:swing": 0.8},
+         "s2": {"prod:1": 1.0, "prod:1:swing": 1.0},
+         "s3": {"prod:1": 1.2, "prod:1:swing": 1.2}},
+        k=1,
+    )
+    bundle = NeuralBundle(
+        ("prod:1",), {}, pd.Timestamp("2007-01-01"), 12,
+        TrainingEnvelope({"prod:1": NumericRange(0.5, 1.5)},
+                         NumericRange(0.5, 1.5), NumericRange(0.0, 0.0)),
+        TrainingReport(("a",), ("b",), 1, 2, metrics),
+        trust_region=region,
+    )
+    model = tmp_path / "surrogate.joblib"
+    joblib.dump(bundle, model)
+    config = _tiny_project(tmp_path)
+    schedule = tmp_path / "wells_schedule.inc"
+    schedule.write_text(
+        "DATES\n 01 JAN 2007 /\n/\n\nWCONPROD\n '1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /\n/\n",
+        encoding="utf-8",
+    )
+    pairs = tmp_path / "pairs.csv"
+    pairs.write_text(
+        "".join(f"{100 + gap},100,прогон-{gap},search\n" for gap in range(1, 10)),
+        encoding="utf-8",
+    )
+
+    code = trust_gate.main(["--model", str(model), "--schedule", str(schedule),
+                            "--config", str(config), "--pairs", str(pairs)])
+    printed = capsys.readouterr().out
+    assert "внутри области" in printed, printed
+    assert "причин идти на полный расчёт: 0" in printed, printed
+    assert code == 0, printed
 
 
 def test_the_surrogate_passport_documents_calibrated_candidate_mode():
