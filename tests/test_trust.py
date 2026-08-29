@@ -537,7 +537,11 @@ def test_the_surrogate_passport_documents_calibrated_candidate_mode():
     assert "--model artifacts/surrogate.joblib" in passport
     assert "--schedule runs/matched-0995/wells_schedule.inc" in passport
     assert "--pairs docs/data/margin-pairs-search.csv" in passport
-    assert "финальный результат всё равно считается\nГГДМ" in passport
+    # утверждение проверяется по смыслу, а не по вёрстке: перенос строки в
+    # абзаце ничего не заявляет, а сторож, падающий от переформатирования,
+    # учит править документы так, чтобы он молчал
+    assert ("финальный результат всё равно считается ГГДМ"
+            in " ".join(passport.split()))
 
 
 
