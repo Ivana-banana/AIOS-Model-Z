@@ -171,6 +171,43 @@ def test_safe_value_penalises_distance_and_optimism():
     assert trust.safe_value(1000.0, far, margin) < 1000.0 - margin.value
 
 
+def test_the_margin_shifts_the_scale_while_the_distance_reorders():
+    """Конформный запас порядок кандидатов не меняет — его меняет только штраф.
+
+    Это не мелочь оформления, а граница пользы Р-106. `safe_value` вычитает
+    `λ·B_J` из **каждого** кандидата одинаково: запас — одно число на всю
+    выборку, а не свойство режима. Значит, в любом сравнении «этот лучше того»
+    он сокращается, и `aios.loop` не передаёт его в поиск не по забывчивости.
+    Отсюда же следует, чего от калиброванных 927,8 ждать нельзя: они не сдвинут
+    ни одного выбора внутри цикла.
+
+    Работает запас в двух других местах, и оба — не про порядок: вердикт шлюза
+    (`routed_to_full_run` требует полного расчёта, пока запаса нет) и величина,
+    которую показывают человеку. Порядок же меняет второе слагаемое — штраф за
+    удаление от обучающих сценариев, потому что оно у каждого кандидата своё.
+
+    Тест стоит здесь, чтобы «подключить запас к поиску» не выглядело улучшением:
+    оно ничего не изменит, а в отчёте появится цифрой, которой не было.
+    """
+    margin = trust.OptimismMargin.fit([(100.0 + gap, 100.0) for gap in range(1, 10)],
+                                      alpha=0.1)
+    assert margin.calibrated
+
+    near = trust.Distance(value=1.0, threshold=5.0, neighbours=())
+    far = trust.Distance(value=30.0, threshold=5.0, neighbours=())
+
+    # два кандидата на одном расстоянии: разница между ними от запаса не зависит
+    plain = [trust.safe_value(value, near, None) for value in (13000.0, 12500.0)]
+    safe = [trust.safe_value(value, near, margin) for value in (13000.0, 12500.0)]
+    assert plain[0] - plain[1] == pytest.approx(safe[0] - safe[1])
+    assert safe[0] - plain[0] == pytest.approx(-margin.value)
+
+    # а вот расстояние порядок переставляет: штраф растёт квадратом отрыва от
+    # порога и у каждого кандидата свой, поэтому меньший прогноз рядом с
+    # обучающими сценариями обгоняет больший, найденный далеко от них
+    assert trust.safe_value(13000.0, far, margin) < trust.safe_value(12500.0, near, margin)
+
+
 def test_an_uncalibrated_margin_is_not_silently_treated_as_zero_risk():
     """Не вычитаем выдуманное — но и не молчим: кандидат уходит на полный расчёт."""
     margin = trust.OptimismMargin.fit([(100.0, 90.0)], alpha=0.1)
