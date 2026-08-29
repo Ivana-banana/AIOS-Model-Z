@@ -392,6 +392,22 @@ def _tiny_pack_config(tmp_path) -> Path:
     return _tiny_project(tmp_path)
 
 
+def test_surrogate_warnings_names_a_missing_model(tmp_path, capsys):
+    """Промах мимо артефакта — строка и код 1, а не traceback из joblib.
+
+    Детектор диапазона стоит вторым шагом покандидатного протокола рядом со
+    шлюзом доверия (`HANDOFF.md`), а артефакт живёт в `artifacts/`, который в
+    git не ведётся: на чистом клоне промах мимо него — обычный первый запуск.
+    Шлюз это уже говорит словами, детектор ронял `FileNotFoundError` из недр
+    `joblib.numpy_pickle`.
+    """
+    from scripts import surrogate_warnings
+
+    code = surrogate_warnings.main(["--model", str(tmp_path / "нет.joblib")])
+    assert code == 1
+    assert "нет обученного суррогата" in capsys.readouterr().err
+
+
 def test_surrogate_warnings_counts_reasons_not_just_lines(tmp_path, capsys):
     """Пометки надо считать по причинам, а не по строкам.
 

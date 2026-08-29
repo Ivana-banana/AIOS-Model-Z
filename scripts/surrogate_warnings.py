@@ -51,6 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     config = config_module.load(arguments.config)
+    if not arguments.model.is_file():
+        # артефакт лежит в `artifacts/`, а этот каталог в git не ведётся: промах
+        # мимо него на чистом клоне — обычный первый запуск, а не случайность
+        print(f"нет обученного суррогата: {arguments.model}", file=sys.stderr)
+        return 1
     bundle = joblib.load(arguments.model)
     if not isinstance(bundle, NeuralBundle):
         print(f"это не обученный суррогат: {type(bundle).__name__}", file=sys.stderr)
