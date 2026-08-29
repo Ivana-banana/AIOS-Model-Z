@@ -235,6 +235,11 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
     from aios.neural import NeuralBundle, NeuralSurrogate
 
     config = config_module.load(config_path)
+    if not model.is_file():
+        # артефакт лежит в `artifacts/`, а этот каталог в git не ведётся: промах
+        # мимо него на чистом клоне — обычный первый запуск, а не случайность
+        print(f"нет обученного суррогата: {model}", file=sys.stderr)
+        return 1
     bundle = joblib.load(model)
     if not isinstance(bundle, NeuralBundle):
         print(f"это не обученный суррогат: {type(bundle).__name__}", file=sys.stderr)

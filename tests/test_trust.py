@@ -506,6 +506,30 @@ def test_a_clean_candidate_is_told_apart_from_a_failed_command(tmp_path, capsys)
     assert code == 0, printed
 
 
+def test_the_gate_names_a_missing_model_instead_of_falling(tmp_path, capsys):
+    """Промах мимо артефакта — строка и код 1, а не traceback из joblib.
+
+    `judge` проверял, что расписание на месте, а модель грузил сразу: путь с
+    опечаткой давал `FileNotFoundError` из недр `joblib.numpy_pickle`. Артефакт
+    суррогата лежит в `artifacts/`, который в git не ведётся, — то есть на
+    чистом клоне промах мимо него не случайность, а обычный первый запуск.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+    from test_dataset import _tiny_project
+
+    config = _tiny_project(tmp_path)
+    schedule = tmp_path / "wells_schedule.inc"
+    schedule.write_text("DATES\n 01 JAN 2007 /\n/\n", encoding="utf-8")
+
+    code = trust_gate.main(["--model", str(tmp_path / "нет.joblib"),
+                            "--schedule", str(schedule), "--config", str(config)])
+    assert code == 1
+    assert "нет обученного суррогата" in capsys.readouterr().err
+
+
 def test_the_surrogate_passport_documents_calibrated_candidate_mode():
     passport = (ROOT / "docs/surrogate.md").read_text(encoding="utf-8")
 
