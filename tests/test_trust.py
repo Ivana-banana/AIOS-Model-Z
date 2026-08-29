@@ -366,6 +366,47 @@ def test_the_gate_names_the_row_it_cannot_read_in_the_pairs_file(tmp_path, capsy
     assert "строка 2" in capsys.readouterr().err
 
 
+def test_the_gate_calibrates_only_on_the_family_it_judges(tmp_path, capsys):
+    """Смешанный файл пар не имеет права молча разблокировать шлюз.
+
+    Р-106: на ручных сценариях суррогат занижает ЧДД всегда, на кандидатах
+    поиска завышает — запас по смешанной выборке выходит меньше и разрешает
+    больше. При этом `collect_pairs.py` пишет `docs/data/margin-pairs.csv`
+    **по умолчанию**, то есть смешанный файл получается сам собой, а колонку
+    `family` рядом с числами `load_pairs` выбрасывал. Замер на наших же файлах:
+    24 смешанные пары дают 376,6, девять поисковых — 927,8.
+
+    Файл без колонки семейства не выбрасывается: сказать про него нечего, и это
+    говорится вслух, а не решается за оператора.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    mixed = tmp_path / "смешанные.csv"
+    mixed.write_text(
+        "".join(f"{100 + gap:.6f},100.000000,прогон-{gap},manual,1.0\n"
+                for gap in range(1, 22))
+        + "".join(f"{200 + gap:.6f},100.000000,поиск-{gap},search,2.0\n"
+                  for gap in range(1, 4)),
+        encoding="utf-8",
+    )
+    rows = trust_gate.load_pairs(mixed)
+    assert len(rows) == 24
+
+    kept, note = trust_gate.by_family(rows, "search")
+    assert [pair[0] for pair in kept] == [201.0, 202.0, 203.0]
+    assert "manual 21" in note and "search 3" in note
+
+    unlabelled = tmp_path / "без-семейства.csv"
+    unlabelled.write_text("".join(f"{100 + gap},100\n" for gap in range(1, 10)),
+                          encoding="utf-8")
+    kept, note = trust_gate.by_family(trust_gate.load_pairs(unlabelled), "search")
+    assert len(kept) == 9
+    assert "не проставлено" in note
+
+
 def test_the_surrogate_passport_documents_calibrated_candidate_mode():
     passport = (ROOT / "docs/surrogate.md").read_text(encoding="utf-8")
 

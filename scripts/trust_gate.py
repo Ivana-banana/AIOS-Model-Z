@@ -21,6 +21,7 @@ import csv
 import json
 import random
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -107,28 +108,56 @@ def coordinatewise(one: dict[str, float],
     return True
 
 
-def load_pairs(path: Path | None) -> list[tuple[float, float]]:
-    """Пары «прогноз, полный расчёт» из CSV, который пишет `collect_pairs.py`.
+def load_pairs(path: Path | None) -> list[tuple[float, float, str]]:
+    """Пары «прогноз, полный расчёт, семейство» из CSV `collect_pairs.py`.
 
-    Нечитаемая строка называется по номеру и содержимому, а не роняет команду
-    голым `ValueError`: свой файл `collect_pairs.py` пишет без шапки, но ключ
+    Семейство читается вместе с числами, а не выбрасывается: калибровать запас
+    можно только тем семейством, к которому его применяют (Р-106). Нечитаемая
+    строка называется по номеру и содержимому, а не роняет команду голым
+    `ValueError`: свой файл `collect_pairs.py` пишет без шапки, но ключ
     `--pairs` задокументирован как ручной, а таблица шапку добавляет.
     """
     if path is None or not path.exists():
         return []
-    pairs: list[tuple[float, float]] = []
+    pairs: list[tuple[float, float, str]] = []
     with path.open(newline="", encoding="utf-8") as handle:
         for number, row in enumerate(csv.reader(handle), start=1):
             if not row:
                 continue
             try:
-                pairs.append((float(row[0]), float(row[1])))
+                pairs.append((float(row[0]), float(row[1]),
+                              row[3].strip() if len(row) > 3 else ""))
             except (IndexError, ValueError) as error:
                 raise ValueError(
                     f"{path}, строка {number}: ожидались два числа "
                     f"«прогноз, полный расчёт», получено {row} — {error}"
                 ) from error
     return pairs
+
+
+def by_family(rows: list[tuple[float, float, str]],
+              family: str) -> tuple[list[tuple[float, float]], str]:
+    """Оставить то семейство, к которому запас и применяется.
+
+    Зачем. Конформная гарантия держится на обмениваемости, а знак остатка
+    разделяет наши семейства начисто: на ручных сценариях суррогат занижает ЧДД,
+    на кандидатах оптимизатора завышает. Смешанная выборка даёт меньший запас —
+    то есть **разрешает больше**, — и `collect_pairs.py` пишет именно смешанный
+    файл по умолчанию (`docs/data/margin-pairs.csv`, 21 ручная пара и 3
+    поисковые). Отбор молчаливым быть не может: строка отбора печатается.
+
+    Файл без колонки семейства принимается целиком. Он собран руками, сказать о
+    его происхождении нечего, и выбросить его молча значит решить за оператора.
+    """
+    counts = Counter(name for *_, name in rows)
+    if not any(name for name in counts):
+        return ([(predicted, actual) for predicted, actual, _ in rows],
+                f"пар {len(rows)}: семейство в файле не проставлено, взяты все")
+    kept = [(predicted, actual) for predicted, actual, name in rows if name == family]
+    shown = ", ".join(f"{name or 'без семейства'} {number}"
+                      for name, number in sorted(counts.items()))
+    return kept, (f"пар {len(rows)} ({shown}): взяты {len(kept)} "
+                  f"семейства «{family}»")
 
 
 def show_margin(margin: trust.OptimismMargin) -> str:
@@ -217,6 +246,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=config_module.DEFAULT_PATH)
     parser.add_argument("--pairs", type=Path, default=None,
                         help="CSV «прогноз, полный расчёт» в млн руб. для калибровки")
+    parser.add_argument("--pairs-family", default="search",
+                        help="каким семейством калибровать: шлюз судит кандидатов "
+                             "оптимизатора, и обмениваемы с ними только они (Р-106)")
     parser.add_argument("--out", type=Path, default=Path("artifacts/trust-gate.json"))
     parser.add_argument("--k", type=int, default=trust.DEFAULT_K)
     parser.add_argument("--alpha", type=float, default=trust.DEFAULT_ALPHA)
@@ -234,10 +266,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"нет файла калибровочных пар: {args.pairs}", file=sys.stderr)
         return 1
     try:
-        pairs = load_pairs(args.pairs)
+        rows = load_pairs(args.pairs)
     except ValueError as error:
         print(error, file=sys.stderr)
         return 1
+    pairs, note = by_family(rows, args.pairs_family)
+    if args.pairs is not None:
+        print(note)
 
     if args.model or args.schedule:
         if not (args.model and args.schedule):
