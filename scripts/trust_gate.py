@@ -131,6 +131,18 @@ def load_pairs(path: Path | None) -> list[tuple[float, float]]:
     return pairs
 
 
+def show_margin(margin: trust.OptimismMargin) -> str:
+    """Строка запаса для человека — в том же виде, в каком число стоит в отчёте.
+
+    Единица у запаса та же, что у цели, — млн руб., и приводится он всюду с
+    одним знаком (927,8). Сырой `repr` давал `927.8179970000001`, то есть
+    команда, которой это число подтверждают, его же и не показывала.
+    """
+    if not margin.calibrated:
+        return f"конформный запас: не калиброван — {margin.reason}"
+    return f"конформный запас: {margin.value:.1f} млн руб."
+
+
 def judge(model: Path, schedule: Path, config_path: Path, *,
           pairs: list[tuple[float, float]] | None = None,
           alpha: float = trust.DEFAULT_ALPHA) -> int:
@@ -186,8 +198,7 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
               f"{'ВНЕ области' if distance.outside else 'внутри области'}")
         for neighbour in distance.neighbours[:3]:
             print(f"  ближайший обучающий сценарий {neighbour.scenario}: {neighbour.distance:.3f}")
-    print(f"конформный запас: {margin.value if margin.calibrated else 'не калиброван'}"
-          f"{'' if margin.calibrated else ' — ' + margin.reason}")
+    print(show_margin(margin))
     print()
     print(f"причин идти на полный расчёт: {len(reasons)}")
     for reason in reasons:
@@ -250,8 +261,7 @@ def main(argv: list[str] | None = None) -> int:
           f"замороженных {len(region.frozen)}")
     print(f"порог t = {region.threshold:.3f} "
           f"(квантиль {args.quantile:.2f} leave-one-out расстояний)")
-    print(f"конформный запас: {margin.value if margin.calibrated else 'не калиброван'}"
-          f"{'' if margin.calibrated else ' — ' + margin.reason}")
+    print(show_margin(margin))
 
     candidates = shifted(profiles, seed=args.seed, count=args.shifted, share=args.share)
     passed_box = sum(coordinatewise(one, profiles) for one in candidates)

@@ -298,7 +298,10 @@ def test_the_gate_judges_a_candidate_by_the_region_inside_the_artifact(tmp_path,
     printed = capsys.readouterr().out
 
     assert code == 0, printed
-    assert "конформный запас: 9.0" in printed
+    # число печатается так же, как его приводят отчёт и паспорт: 927,8, а не
+    # 927.8179970000001 — иначе команда, которой это число подтверждают, его же
+    # и не показывает
+    assert "конформный запас: 9.0 млн руб." in printed
     assert "причин идти на полный расчёт: 1" in printed
     assert "мера доверия не калибрована" not in printed
     assert "совместный режим далёк" in printed
