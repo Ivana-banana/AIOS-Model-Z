@@ -530,6 +530,44 @@ def test_the_gate_names_a_missing_model_instead_of_falling(tmp_path, capsys):
     assert "нет обученного суррогата" in capsys.readouterr().err
 
 
+def test_pairs_from_another_artifact_do_not_calibrate_this_one(tmp_path, capsys):
+    """Пары помнят, каким суррогатом они посчитаны, и молчать об этом нельзя.
+
+    Остаток `прогноз − факт` — свойство **пары** «модель и расписание», а не
+    расписания. Переобучили артефакт, файл пар оставили на месте — и шлюз
+    отвечает «калиброван» по остаткам модели, которой больше нет. Артефакт
+    лежит в `artifacts/`, вне git, и переобучается той же командой под тем же
+    именем, так что расхождение не редкость.
+
+    Отпечаток тот же, которым пакетный допуск сверяет байты суррогата, — sha256.
+    Файл без колонки отпечатка (все, собранные до этой правки) принимается, но
+    вслух: сказать о его происхождении нечего.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    corpus = tmp_path / "поиск.csv"
+    corpus.write_text(
+        "".join(f"{200 + gap:.6f},100.000000,srg-p{gap},search,2.0,{'a' * 64}\n"
+                for gap in range(1, 10)),
+        encoding="utf-8",
+    )
+    rows = trust_gate.load_pairs(corpus)
+    assert all(pair.model == "a" * 64 for pair in rows)
+
+    assert trust_gate.foreign_model(rows, "a" * 64) == ""
+    problem = trust_gate.foreign_model(rows, "b" * 64)
+    assert "другим артефактом" in problem
+    assert "a" * 12 in problem
+
+    old = tmp_path / "без-отпечатка.csv"
+    old.write_text("".join(f"{100 + gap},100,прогон-{gap},search\n"
+                           for gap in range(1, 10)), encoding="utf-8")
+    assert "не записан" in trust_gate.foreign_model(trust_gate.load_pairs(old), "c" * 64)
+
+
 def test_the_surrogate_passport_documents_calibrated_candidate_mode():
     passport = (ROOT / "docs/surrogate.md").read_text(encoding="utf-8")
 

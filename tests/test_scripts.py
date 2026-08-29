@@ -83,6 +83,10 @@ def test_collect_pairs_example_updates_the_tracked_report():
 
     assert "--out docs/data/margin-pairs.csv" in text
     assert 'default="docs/data/margin-pairs.csv"' in text
+    # шестая колонка — sha256 артефакта: без неё переобученный суррогат молча
+    # наследует калибровку модели, которой больше нет
+    assert "model_sha = checksum(Path(arguments.model))" in text
+    assert "model_sha]" in text
 
 
 def test_shell_scripts_are_executable():

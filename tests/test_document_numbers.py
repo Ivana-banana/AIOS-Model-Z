@@ -46,7 +46,9 @@ def test_declared_conformal_margin_is_recomputed_from_search_pairs():
         rows = list(csv.reader(handle))
 
     assert len(rows) == 9
-    assert all(len(row) == 5 and row[3] == "search" for row in rows)
+    # колонок может стать больше — 28.08 добавлена шестая, sha256 артефакта;
+    # сторож следит за содержанием корпуса, а не за его шириной
+    assert all(len(row) >= 5 and row[3] == "search" for row in rows)
     assert len({row[2] for row in rows}) == len(rows)
 
     margin = OptimismMargin.fit(

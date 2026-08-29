@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import sys
 from pathlib import Path
 
@@ -38,6 +39,20 @@ from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 from aios.model import SurrogateLoadError, for_cycle  # noqa: E402
 from aios.neural import NeuralSurrogate  # noqa: E402
+
+
+def checksum(path: Path) -> str:
+    """sha256 артефакта — тот же отпечаток, что и в пакетном допуске.
+
+    Пишется рядом с каждой парой, потому что остаток «прогноз минус факт» —
+    свойство пары «модель и расписание». Без отпечатка переобученный суррогат
+    молча наследует калибровку модели, которой больше нет.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def actual_npv(run_dir: Path, start_date: str, norms_file: Path) -> float | None:
@@ -155,11 +170,13 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(arguments.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    model_sha = checksum(Path(arguments.model))
     with out.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         for name, predicted, actual, family, distance in rows_out:
             writer.writerow([f"{predicted:.6f}", f"{actual:.6f}", name, family,
-                             "" if distance is None else f"{distance:.4f}"])
+                             "" if distance is None else f"{distance:.4f}",
+                             model_sha])
     print()
     print(f"пар собрано: {len(rows_out)} → {out}")
 

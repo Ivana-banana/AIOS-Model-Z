@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import random
 import sys
@@ -123,6 +124,8 @@ class Pair(NamedTuple):
     actual: float
     run: str
     family: str
+    model: str = ""
+    """sha256 артефакта, которым посчитан прогноз. Пусто у файлов до 28.08."""
 
 
 def load_pairs(path: Path | None) -> list[Pair]:
@@ -144,7 +147,8 @@ def load_pairs(path: Path | None) -> list[Pair]:
             try:
                 pairs.append(Pair(float(row[0]), float(row[1]),
                                   row[2].strip() if len(row) > 2 else "",
-                                  row[3].strip() if len(row) > 3 else ""))
+                                  row[3].strip() if len(row) > 3 else "",
+                                  row[5].strip() if len(row) > 5 else ""))
             except (IndexError, ValueError) as error:
                 raise ValueError(
                     f"{path}, строка {number}: ожидались два числа "
@@ -153,7 +157,7 @@ def load_pairs(path: Path | None) -> list[Pair]:
     return pairs
 
 
-def by_family(rows: list[Pair], family: str) -> tuple[list[tuple[float, float]], str]:
+def by_family(rows: list[Pair], family: str) -> tuple[list[Pair], str]:
     """Оставить то семейство, к которому запас и применяется.
 
     Зачем. Конформная гарантия держится на обмениваемости, а знак остатка
@@ -168,9 +172,8 @@ def by_family(rows: list[Pair], family: str) -> tuple[list[tuple[float, float]],
     """
     counts = Counter(pair.family for pair in rows)
     if not any(name for name in counts):
-        return ([(pair.predicted, pair.actual) for pair in rows],
-                f"пар {len(rows)}: семейство в файле не проставлено, взяты все")
-    kept = [(pair.predicted, pair.actual) for pair in rows if pair.family == family]
+        return (rows, f"пар {len(rows)}: семейство в файле не проставлено, взяты все")
+    kept = [pair for pair in rows if pair.family == family]
     shown = ", ".join(f"{name or 'без семейства'} {number}"
                       for name, number in sorted(counts.items()))
     return kept, (f"пар {len(rows)} ({shown}): взяты {len(kept)} "
@@ -198,6 +201,38 @@ def without_run(rows: list[Pair], run: str) -> tuple[list[Pair], str]:
                   f"обменяем с выборкой, в которой лежит его же расчёт")
 
 
+def checksum(path: Path) -> str:
+    """sha256 файла — тот же отпечаток, которым пакетный допуск сверяет суррогат."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def foreign_model(rows: list[Pair], model: str) -> str:
+    """Посчитаны ли пары тем самым артефактом, который сейчас судят.
+
+    Остаток «прогноз минус факт» — свойство пары «модель и расписание», а не
+    одного расписания. Переобучили суррогат, файл пар оставили на месте — и
+    шлюз отвечает «калиброван» по остаткам модели, которой больше нет.
+    Артефакт живёт в `artifacts/` вне git и переобучается под тем же именем,
+    так что расхождение здесь — обычный ход дела, а не редкий случай.
+
+    Возвращается описание расхождения или пустая строка. Файлы, собранные до
+    появления колонки, отпечатка не несут: о них говорится вслух, но в отказ
+    это не превращается — задним числом их не пересобрать.
+    """
+    stamped = {pair.model for pair in rows if pair.model}
+    if not rows or not stamped:
+        return "отпечаток модели в парах не записан: чем они посчитаны — неизвестно"
+    if stamped == {model}:
+        return ""
+    names = ", ".join(sorted(one[:12] for one in stamped))
+    return (f"пары посчитаны другим артефактом (sha256 {names}), "
+            f"а судится {model[:12]}: остатки чужой модели эту не калибруют")
+
+
 def show_margin(margin: trust.OptimismMargin) -> str:
     """Строка запаса для человека — в том же виде, в каком число стоит в отчёте.
 
@@ -211,7 +246,7 @@ def show_margin(margin: trust.OptimismMargin) -> str:
 
 
 def judge(model: Path, schedule: Path, config_path: Path, *,
-          pairs: list[tuple[float, float]] | None = None,
+          pairs: list[Pair] | None = None,
           alpha: float = trust.DEFAULT_ALPHA) -> int:
     """Вердикт по одному кандидату — по области, лежащей в самом артефакте.
 
@@ -261,8 +296,16 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
 
     region = bundle.trust_region
     distance = region.distance(surrogate.control_profile(steps)) if region else None
-    margin = trust.OptimismMargin.fit(pairs or [], alpha=alpha)
-    reasons = trust.routed_to_full_run(distance, margin)
+    rows = pairs or []
+    margin = trust.OptimismMargin.fit([(one.predicted, one.actual) for one in rows],
+                                      alpha=alpha)
+    # чужой отпечаток — причина не хуже расстояния: остатки модели, которой уже
+    # нет, эту модель не калибруют. Отсутствие отпечатка причиной не делаем:
+    # файлы, собранные до его появления, задним числом не пересобрать
+    binding = foreign_model(rows, checksum(model)) if rows else ""
+    stamped = any(one.model for one in rows)
+    reasons = trust.routed_to_full_run(distance, margin,
+                                       [binding] if binding and stamped else None)
 
     print(f"кандидат:  {schedule}")
     print(f"модель:    {model} ({bundle.report.kind})")
@@ -276,6 +319,8 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
         for neighbour in distance.neighbours[:3]:
             print(f"  ближайший обучающий сценарий {neighbour.scenario}: {neighbour.distance:.3f}")
     print(show_margin(margin))
+    if binding:
+        print(binding)
     print()
     print(f"причин идти на полный расчёт: {len(reasons)}")
     for reason in reasons:
@@ -342,7 +387,8 @@ def main(argv: list[str] | None = None) -> int:
 
     profiles = load_profiles(args.dataset)
     region = trust.TrustRegion.fit(profiles, k=args.k, quantile=args.quantile)
-    margin = trust.OptimismMargin.fit(pairs, alpha=args.alpha)
+    margin = trust.OptimismMargin.fit(
+        [(pair.predicted, pair.actual) for pair in pairs], alpha=args.alpha)
 
     print(f"сценариев {len(profiles)}, признаков {len(region.features)}, "
           f"замороженных {len(region.frozen)}")
