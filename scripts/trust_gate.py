@@ -23,6 +23,7 @@ import random
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -108,7 +109,20 @@ def coordinatewise(one: dict[str, float],
     return True
 
 
-def load_pairs(path: Path | None) -> list[tuple[float, float, str]]:
+class Pair(NamedTuple):
+    """Строка калибровочного файла целиком: числа, прогон и его семейство.
+
+    Имя прогона и семейство `collect_pairs.py` пишет рядом с числами не для
+    красоты — по ним решается, обмениваема ли пара с подсудимым кандидатом.
+    """
+
+    predicted: float
+    actual: float
+    run: str
+    family: str
+
+
+def load_pairs(path: Path | None) -> list[Pair]:
     """Пары «прогноз, полный расчёт, семейство» из CSV `collect_pairs.py`.
 
     Семейство читается вместе с числами, а не выбрасывается: калибровать запас
@@ -119,14 +133,15 @@ def load_pairs(path: Path | None) -> list[tuple[float, float, str]]:
     """
     if path is None or not path.exists():
         return []
-    pairs: list[tuple[float, float, str]] = []
+    pairs: list[Pair] = []
     with path.open(newline="", encoding="utf-8") as handle:
         for number, row in enumerate(csv.reader(handle), start=1):
             if not row:
                 continue
             try:
-                pairs.append((float(row[0]), float(row[1]),
-                              row[3].strip() if len(row) > 3 else ""))
+                pairs.append(Pair(float(row[0]), float(row[1]),
+                                  row[2].strip() if len(row) > 2 else "",
+                                  row[3].strip() if len(row) > 3 else ""))
             except (IndexError, ValueError) as error:
                 raise ValueError(
                     f"{path}, строка {number}: ожидались два числа "
@@ -135,8 +150,7 @@ def load_pairs(path: Path | None) -> list[tuple[float, float, str]]:
     return pairs
 
 
-def by_family(rows: list[tuple[float, float, str]],
-              family: str) -> tuple[list[tuple[float, float]], str]:
+def by_family(rows: list[Pair], family: str) -> tuple[list[tuple[float, float]], str]:
     """Оставить то семейство, к которому запас и применяется.
 
     Зачем. Конформная гарантия держится на обмениваемости, а знак остатка
@@ -149,15 +163,36 @@ def by_family(rows: list[tuple[float, float, str]],
     Файл без колонки семейства принимается целиком. Он собран руками, сказать о
     его происхождении нечего, и выбросить его молча значит решить за оператора.
     """
-    counts = Counter(name for *_, name in rows)
+    counts = Counter(pair.family for pair in rows)
     if not any(name for name in counts):
-        return ([(predicted, actual) for predicted, actual, _ in rows],
+        return ([(pair.predicted, pair.actual) for pair in rows],
                 f"пар {len(rows)}: семейство в файле не проставлено, взяты все")
-    kept = [(predicted, actual) for predicted, actual, name in rows if name == family]
+    kept = [(pair.predicted, pair.actual) for pair in rows if pair.family == family]
     shown = ", ".join(f"{name or 'без семейства'} {number}"
                       for name, number in sorted(counts.items()))
     return kept, (f"пар {len(rows)} ({shown}): взяты {len(kept)} "
                   f"семейства «{family}»")
+
+
+def without_run(rows: list[Pair], run: str) -> tuple[list[Pair], str]:
+    """Убрать из калибровки пару самого подсудимого кандидата.
+
+    Односторонний конформный квантиль покрывает обменяемый с выборкой сценарий.
+    Кандидат, чей собственный полный расчёт лежит в этой же выборке, обменяемым
+    с ней не является ни в каком смысле: его остаток одновременно и калибрует
+    порог, и проверяется этим порогом. `docs/data/margin-pairs-search.csv`
+    собран ровно по кандидатам поиска, так что совпадение имени — не редкость,
+    а обычный ход дела при повторной проверке уже посчитанного расписания.
+
+    Возвращается вторая строка — что именно выброшено. Пустая означает «пары
+    этого прогона в файле не было», и молчать об изъятии нельзя: оно меняет `n`,
+    а вместе с ним и само существование квантиля.
+    """
+    kept = [pair for pair in rows if pair.run != run]
+    if len(kept) == len(rows):
+        return rows, ""
+    return kept, (f"пара прогона «{run}» изъята из калибровки: кандидат не "
+                  f"обменяем с выборкой, в которой лежит его же расчёт")
 
 
 def show_margin(margin: trust.OptimismMargin) -> str:
@@ -270,6 +305,10 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         print(error, file=sys.stderr)
         return 1
+    if args.schedule is not None:
+        rows, dropped = without_run(rows, args.schedule.parent.name)
+        if dropped:
+            print(dropped)
     pairs, note = by_family(rows, args.pairs_family)
     if args.pairs is not None:
         print(note)

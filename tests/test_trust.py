@@ -407,6 +407,39 @@ def test_the_gate_calibrates_only_on_the_family_it_judges(tmp_path, capsys):
     assert "не проставлено" in note
 
 
+def test_a_candidate_does_not_calibrate_itself(tmp_path, capsys):
+    """Кандидат, чей полный расчёт лежит в калибровке, судится сам собой.
+
+    `docs/data/margin-pairs-search.csv` собран по кандидатам поиска — `srg-narrow`,
+    `srg-search`, `srg-on-top`, `srg-p1…p7`. Судить `runs/srg-narrow` этим же
+    файлом значит взять в калибровочную выборку остаток самого подсудимого:
+    обмениваемость, на которой держится односторонний квантиль (`GUARANTEE_SCOPE`),
+    при этом исчезает, а вердикт выглядит чистым. Имя прогона в CSV уже есть —
+    третьей колонкой, — и до сих пор оно не читалось.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    corpus = tmp_path / "поиск.csv"
+    corpus.write_text(
+        "".join(f"{200 + gap:.6f},100.000000,srg-p{gap},search,2.0\n"
+                for gap in range(1, 10)),
+        encoding="utf-8",
+    )
+    rows = trust_gate.load_pairs(corpus)
+
+    kept, note = trust_gate.without_run(rows, "srg-p3")
+    assert len(kept) == 8
+    assert all(pair.run != "srg-p3" for pair in kept)
+    assert "srg-p3" in note
+
+    kept, note = trust_gate.without_run(rows, "matched-0995")
+    assert len(kept) == 9
+    assert note == ""
+
+
 def test_the_surrogate_passport_documents_calibrated_candidate_mode():
     passport = (ROOT / "docs/surrogate.md").read_text(encoding="utf-8")
 
