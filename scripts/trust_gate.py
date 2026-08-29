@@ -199,6 +199,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="какую долю управлений сдвигать к краю")
     args = parser.parse_args(argv)
 
+    # путь, заданный руками, обязан существовать: молчаливый `[]` даёт ровно тот
+    # же вердикт «нет ни одной пары», что и запуск без ключа вовсе, и опечатка
+    # в пути читается как ожидаемый ответ
+    if args.pairs is not None and not args.pairs.is_file():
+        print(f"нет файла калибровочных пар: {args.pairs}", file=sys.stderr)
+        return 1
+
     if args.model or args.schedule:
         if not (args.model and args.schedule):
             print("режиму кандидата нужны оба ключа: --model и --schedule",

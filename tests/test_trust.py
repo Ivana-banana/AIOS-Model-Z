@@ -315,6 +315,26 @@ def test_the_gate_refuses_half_of_the_candidate_mode(tmp_path, capsys):
     assert "оба ключа" in capsys.readouterr().err
 
 
+def test_the_gate_refuses_a_pairs_file_that_is_not_there(tmp_path, capsys):
+    """Опечатка в `--pairs` не имеет права выглядеть как «пар не собирали».
+
+    `load_pairs` отдавал `[]` на несуществующий путь молча, и вердикт выходил
+    тот же самый, что и без ключа вовсе: «нет ни одной пары». Оператор, который
+    путь **задал**, читает такой ответ как ожидаемый, а не как промах мимо файла.
+    Направление ошибки безопасное — лишний полный расчёт, — но `--pairs` стал
+    штатным ключом режима кандидата, и холостой ход теперь на главном пути.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    code = trust_gate.main(["--dataset", str(tmp_path / "нет.csv"),
+                            "--pairs", str(tmp_path / "опечатка.csv")])
+    assert code == 1
+    assert "нет файла калибровочных пар" in capsys.readouterr().err
+
+
 def test_the_surrogate_passport_documents_calibrated_candidate_mode():
     passport = (ROOT / "docs/surrogate.md").read_text(encoding="utf-8")
 
