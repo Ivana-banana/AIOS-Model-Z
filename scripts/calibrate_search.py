@@ -52,6 +52,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", default=None, help="готовый базовый расчёт; по умолчанию [case].run_dir")
     parser.add_argument("--out-root", default="runs/search-calibration")
     parser.add_argument("--flow-args", default="")
+    # Число процессов MPI меняет разбиение области, то есть немного меняет и
+    # результат: калибровочные пары обязаны считаться так же, как base и уже
+    # собранный корпус (4 процесса), а не так, как удобно текущей машине.
+    parser.add_argument("--processes", type=int, default=None,
+                        help="процессов MPI; по умолчанию [run].processes")
     parser.add_argument("--config", default=str(config_module.DEFAULT_PATH))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -63,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     plan = commands(model=args.model, base=Path(args.base) if args.base else settings.case.run_dir,
                     out_root=Path(args.out_root), config=args.config,
                     seeds=settings.trust.search_seeds,
-                    processes=settings.run.processes, flow_args=args.flow_args,
+                    processes=args.processes or settings.run.processes, flow_args=args.flow_args,
                     pairs=settings.trust.pairs_file, family=settings.trust.pairs_family)
     for command in plan:
         print(" ".join(command), flush=True)

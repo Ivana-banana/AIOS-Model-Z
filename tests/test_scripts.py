@@ -1051,3 +1051,23 @@ def test_base_schedule_starts_the_search_from_the_scenario_not_from_the_deck(tmp
 
     assert seen["start_multipliers"] == {("production", "1"): 1.5}
     assert "старт:" in capsys.readouterr().out
+
+
+def test_search_calibration_can_match_the_mpi_layout_of_the_existing_corpus(tmp_path, capsys):
+    """Пары считаются на том же числе процессов, что base и уже собранный корпус.
+
+    `runs/base`, `inj-1.6`, `matched-0995` и `policy` посчитаны на 4 процессах
+    MPI, а `[run].processes` в конфиге — 2. Разбиение области на процессы слегка
+    меняет результат, поэтому калибровочный прогон обязан уметь повторить среду
+    корпуса, не переписывая конфиг под текущую машину.
+    """
+    from scripts.calibrate_search import main
+
+    code = main(["--model", "artifacts/surrogate.joblib", "--out-root", str(tmp_path),
+                 "--processes", "4", "--dry-run"])
+    printed = capsys.readouterr().out.splitlines()
+
+    assert code == 0
+    runs = [line for line in printed if "run_all.py" in line]
+    assert runs, "план пуст"
+    assert all("--processes 4" in line for line in runs)
