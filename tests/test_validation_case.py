@@ -680,3 +680,87 @@ def test_uncontrollable_wells_keep_the_reference_regime():
     restored = _restore_uncontrolled(origin, changed, frozenset({"P1"}))
 
     assert [c.liquid_rate for c in restored[0].producers] == [45.0, 30.0]
+def _switching(states, injecting=()):
+    """Расписание одной скважины, где статус меняется от шага к шагу.
+
+    `states` — статус P1 по месяцам; `injecting` — месяцы, в которых у той же
+    скважины появляется запись закачки (так выглядит перевод под закачку:
+    добыча закрывается, `WCONINJE` дописывается).
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+
+    steps = []
+    for index, status in enumerate(states, start=1):
+        rate = 30.0 if status == "OPEN" else None
+        producers = (ProducerControl("P1", status, "LRAT", rate, 50.0),)
+        injectors = ((InjectorControl("P1", "WATER", "OPEN", "RATE", 30.0, 300.0),)
+                     if index in injecting else ())
+        steps.append(ScheduleStep(date(2014, index, 1), producers, injectors))
+    return steps
+
+
+def test_the_event_quota_is_enforced_and_not_only_parsed():
+    """`max_events_per_year` до 30.08 разбирался конфигурацией и ничего не делал.
+
+    Методика оценивает мероприятия поштучно (1,0 млн руб. за остановку и за
+    пуск), поэтому «не более N мероприятий в год» — естественная форма
+    ограничения по фонду. Квота расходуется по календарю: первые N мероприятий
+    года проходят, остальные отменяются, и скважина остаётся в том состоянии,
+    в котором была.
+    """
+    from aios import planner
+
+    # стоп, пуск, стоп — три мероприятия за 2014 год
+    steps = _switching(["OPEN", "SHUT", "OPEN", "SHUT"])
+
+    fitted, decisions = planner.enforce(
+        steps, _forecast(), Norms.from_file(), _limits(max_events_per_year=1),
+    )
+
+    assert [step.producers[0].status for step in fitted] ==         ["OPEN", "SHUT", "SHUT", "SHUT"]
+    assert len(decisions) == 1
+    assert decisions[0].well == "P1"
+    assert "2014" in decisions[0].resource
+    assert "пуск" in decisions[0].reason and "предел 1" in decisions[0].reason
+
+
+def test_the_event_quota_counts_a_conversion_once():
+    """Перевод под закачку — одно мероприятие, а не остановка плюс пуск.
+
+    В расписании он выглядит двумя записями: добыча закрывается, `WCONINJE`
+    дописывается. Считать это за два мероприятия значило бы вдвое сузить квоту.
+    """
+    from aios import planner
+
+    steps = _switching(["OPEN", "SHUT", "SHUT"], injecting=(2, 3))
+
+    passes, none = planner.enforce(
+        steps, _forecast(), Norms.from_file(), _limits(max_events_per_year=1),
+    )
+    assert none == []
+    assert [len(step.injectors) for step in passes] == [0, 1, 1]
+
+    # квота уже израсходована пуском — перевод отменён целиком: и добыча
+    # возвращена, и запись закачки, которой до перевода не было, снята
+    spent = _switching(["SHUT", "OPEN", "SHUT"], injecting=(3,))
+    reverted, decisions = planner.enforce(
+        spent, _forecast(), Norms.from_file(), _limits(max_events_per_year=1),
+    )
+    assert [step.producers[0].status for step in reverted] == ["SHUT", "OPEN", "OPEN"]
+    assert [len(step.injectors) for step in reverted] == [0, 0, 0]
+    assert len(decisions) == 1
+    assert "перевод под закачку" in decisions[0].reason
+
+
+def test_without_the_event_key_nothing_changes():
+    """Умолчание ручки — «ограничения нет»: ни одного решения и ни одной правки."""
+    from aios import planner
+
+    steps = _switching(["OPEN", "SHUT", "OPEN"])
+
+    fitted, decisions = planner.enforce(
+        steps, _forecast(), Norms.from_file(), _limits(),
+    )
+
+    assert decisions == []
+    assert [step.producers[0].status for step in fitted] == ["OPEN", "SHUT", "OPEN"]
