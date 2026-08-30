@@ -41,6 +41,11 @@ cache_dir = "artifacts/explanations"
 [policy]
 lookback_months = 6
 
+[trust]
+pairs_file = "docs/data/margin-pairs-search.csv"
+pairs_family = "search"
+search_seeds = [1, 2, 3]
+
 [run]
 seed = 20260817
 processes = 2
@@ -56,6 +61,8 @@ def test_repository_config_loads():
     assert loaded.case.model_dir.name == "Model_Z_OPM"
     assert loaded.fluids.oil_density == pytest.approx(913.0765883224138)
     assert loaded.run.seed == 20260817
+    assert loaded.trust.pairs_family == "search"
+    assert loaded.trust.search_seeds == (20260830, 20260831, 20260901, 20260902, 20260903, 20260904)
 
 
 def test_paths_are_resolved_relative_to_the_config_file(tmp_path):
@@ -83,6 +90,13 @@ def test_missing_key_names_the_key_and_the_section(tmp_path):
 
     with pytest.raises(KeyError, match="seed"):
         config.load(path)
+
+
+def test_trust_seeds_are_required_and_distinct(tmp_path):
+    with pytest.raises(ValueError, match="search_seeds"):
+        config.load(_written(tmp_path, MINIMAL.replace("search_seeds = [1, 2, 3]", "search_seeds = []")))
+    with pytest.raises(ValueError, match="повторяются"):
+        config.load(_written(tmp_path, MINIMAL.replace("search_seeds = [1, 2, 3]", "search_seeds = [1, 1]")))
 
 
 def test_no_silent_defaults(tmp_path):

@@ -49,9 +49,11 @@
 
 from __future__ import annotations
 
+import csv
 import math
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -311,6 +313,29 @@ class OptimismMargin:
     @property
     def calibrated(self) -> bool:
         return self.value is not None
+
+
+def margin_from_pairs(path: Path, *, family: str, alpha: float = DEFAULT_ALPHA) -> OptimismMargin:
+    """Прочитать пары `collect_pairs.py` и откалибровать ровно одно семейство.
+
+    Отсутствующий корпус — явное состояние «не калиброван», а не нулевой запас.
+    CSV оставлен простым намеренно: его создаёт `collect_pairs.py`, а не второй
+    формат, который можно забыть собрать после ночного прогона.
+    """
+    if not path.is_file():
+        return OptimismMargin(None, alpha, 0, math.ceil(1 - alpha), f"нет файла пар {path}")
+    pairs: list[tuple[float, float]] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        for number, row in enumerate(csv.reader(handle), start=1):
+            if not row:
+                continue
+            try:
+                row_family = row[3].strip() if len(row) > 3 else ""
+                if row_family == family:
+                    pairs.append((float(row[0]), float(row[1])))
+            except (IndexError, ValueError) as error:
+                raise ValueError(f"{path}, строка {number}: не пара collect_pairs.py: {row}") from error
+    return OptimismMargin.fit(pairs, alpha=alpha)
 
 
 def safe_value(predicted: float, distance: Distance | None, margin: OptimismMargin | None,

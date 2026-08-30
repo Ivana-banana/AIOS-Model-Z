@@ -217,6 +217,17 @@ def test_an_uncalibrated_margin_is_not_silently_treated_as_zero_risk():
     assert any("не калибрована" in reason for reason in reasons)
 
 
+def test_margin_loader_uses_only_the_configured_family_and_names_missing_file(tmp_path):
+    corpus = tmp_path / "pairs.csv"
+    corpus.write_text(("100,90,manual,manual\n100,80,search,search\n") * 5,
+                      encoding="utf-8")
+
+    margin = trust.margin_from_pairs(corpus, family="search")
+
+    assert margin.samples == 5
+    assert not trust.margin_from_pairs(tmp_path / "missing.csv", family="search").calibrated
+
+
 def test_a_covered_candidate_with_calibration_is_not_routed_to_a_full_run():
     region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
     near = region.distance(trust.profile(flat({"prod:1": 1.0, "prod:2": 1.0})))

@@ -47,6 +47,15 @@ class RunConfig:
 
 
 @dataclass(frozen=True)
+class TrustConfig:
+    """Входы конформной защиты и ночного набора поисковых пар."""
+
+    pairs_file: Path
+    pairs_family: str
+    search_seeds: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class Config:
     case: CaseConfig
     economics: EconomicsConfig
@@ -55,6 +64,7 @@ class Config:
     limits: Limits
     policy: PolicyConfig
     run: RunConfig
+    trust: TrustConfig
     source: Path
     """Откуда прочитано — идёт в отчёт вместе с числом ЧДД."""
 
@@ -73,6 +83,10 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
     limits = _section(raw, "limits", source)
     policy = _section(raw, "policy", source)
     run = _section(raw, "run", source)
+    # Старые валидационные конфиги не должны перестать читаться только потому,
+    # что у них ещё не было конформного контура. Рабочий config.toml задаёт
+    # секцию явно; здесь совместимость означает именно безопасный пустой корпус.
+    trust = raw.get("trust", {})
 
     return Config(
         case=CaseConfig(
@@ -151,7 +165,28 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
             seed=int(_value(run, "seed", "run", source)),
             processes=_at_least_one(run, "processes", "run", source),
         ),
+        trust=_trust_config(trust, root, source),
         source=source,
+    )
+
+
+def _seeds(section: dict, source: Path) -> tuple[int, ...]:
+    values = section.get("search_seeds")
+    if not isinstance(values, list) or not values:
+        raise ValueError(f"В {source} значение search_seeds в секции [trust] должно быть непустым списком seed")
+    result = tuple(int(value) for value in values)
+    if len(set(result)) != len(result):
+        raise ValueError(f"В {source} seed'ы поиска в секции [trust] повторяются")
+    return result
+
+
+def _trust_config(section: dict, root: Path, source: Path) -> TrustConfig:
+    if not section:
+        return TrustConfig(root / "docs/data/margin-pairs-search.csv", "search", ())
+    return TrustConfig(
+        pairs_file=root / _value(section, "pairs_file", "trust", source),
+        pairs_family=str(_value(section, "pairs_family", "trust", source)),
+        search_seeds=_seeds(section, source),
     )
 
 

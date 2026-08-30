@@ -34,6 +34,7 @@ from aios import (  # noqa: E402
     optimise,
     pvt,  # noqa: E402
     summary,
+    trust,
 )
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
@@ -89,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="набор множителей поиска через запятую, например "
                              "0.75,1.0,1.25; по умолчанию — набор из aios.optimise")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
+    parser.add_argument("--search-seed", type=int, default=None,
+                        help="seed порядка координат совместного поиска; по умолчанию [run].seed")
     arguments = parser.parse_args(argv)
 
     config = config_module.load(arguments.config)
@@ -186,6 +189,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"суррогат: {selected.name}")
+    margin = trust.margin_from_pairs(config.trust.pairs_file,
+                                     family=config.trust.pairs_family)
+    if margin.calibrated:
+        print(f"конформный запас: {margin.value:+.1f} млн руб. "
+              f"({margin.samples} пар семейства {config.trust.pairs_family})")
+    else:
+        print(f"конформный запас: НЕ КАЛИБРОВАН — {margin.reason}")
     result = loop.run_cycle(
         selected.model,
         base_steps,
@@ -199,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
         limits=config.limits,
         multipliers=multipliers,
         start_multipliers=start_multipliers,
+        margin=margin,
+        search_seed=arguments.search_seed if arguments.search_seed is not None else config.run.seed,
         norms_file=config.economics.norms_file,
         # см. пояснение выше: цикл считает прогноз одной плотностью, а
         # подеквенные идут в выгрузку, из которой берётся заявляемое число
@@ -297,6 +309,9 @@ def main(argv: list[str] | None = None) -> int:
             "tune_rates": not arguments.no_tune_rates,
             "forecast_chdd_m": result.chdd_m,
             "forecast_gain_m": result.gain_m,
+            "safe_forecast_chdd_m": result.safe_chdd_m,
+            "optimism_margin": margin.value,
+            "margin_reason": margin.reason,
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

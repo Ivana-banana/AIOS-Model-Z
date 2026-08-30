@@ -541,6 +541,27 @@ def test_explain_reports_candidates_withheld_even_without_a_change():
 
     assert "вне обучения" in text
     assert "1" in text
+    assert "×1.5" in text
+    assert "покрытия" in text
+
+
+def test_explain_keeps_the_pruning_summary_when_nothing_changed():
+    text = optimise.explain([
+        optimise.JointRateChoice("1", 1.0, 100.0, 100.0, "production",
+                                 outside_training=(0.5,)),
+    ])
+
+    assert "урезание кандидатов" in text
+    assert "×0.5" in text
+    assert "точек управления 1; урезан у 1" in text
+
+
+def test_joint_report_names_a_complete_candidate_set_too():
+    text = optimise.explain([
+        optimise.JointRateChoice("1", 1.0, 100.0, 100.0, "production"),
+    ])
+
+    assert "точек управления 1; урезан у 0" in text
 
 
 # ── режим по периодам горизонта ──────────────────────────────────────────────

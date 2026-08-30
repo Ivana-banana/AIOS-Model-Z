@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 
 #: Скрипты, на которые ссылаются документация и Dockerfile.
-REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_doe.py", "run_cycle.py",
+REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_doe.py", "run_cycle.py", "calibrate_search.py",
             "transcribe.py", "build_dataset.py", "train_surrogate.py", "run_all.py",
             "docx_to_text.py", "profiles.py", "pack_npv.py",
             "surrogate_warnings.py", "build_scaled_case.py", "check_deck.py",
@@ -724,6 +724,21 @@ def test_no_call_passes_an_argument_the_callee_does_not_accept():
     mismatches = [line for path in modules + scripts for line in _keyword_mismatches(path)]
 
     assert mismatches == [], "\n".join(mismatches)
+
+
+def test_search_calibration_runs_every_config_seed_through_full_cycle(tmp_path):
+    from scripts.calibrate_search import commands
+
+    plan = commands(model="artifacts/surrogate.joblib", base=Path("runs/base"),
+                    out_root=tmp_path, config="config.toml", seeds=(11, 12),
+                    processes=2, flow_args="--parsing-strictness=low",
+                    pairs=Path("docs/data/pairs.csv"), family="search")
+
+    runs = [command for command in plan if command[1].endswith("run_all.py")]
+    assert [command[command.index("--search-seed") + 1] for command in runs] == ["11", "12"]
+    assert all("--skip-base" in command and "--surrogate-model" in command for command in runs)
+    assert plan[-1][-2:] == ["--config", "config.toml"]
+    assert "--append" in plan[-1]
 
 
 def test_run_all_confirms_with_the_same_surrogate_it_planned_with():

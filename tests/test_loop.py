@@ -11,7 +11,7 @@ from datetime import date
 import pytest
 from conftest import make_row
 
-from aios import economics, loop, optimise, summary
+from aios import economics, loop, optimise, summary, trust
 from aios.deck import ProducerControl, ScheduleStep
 from aios.margin import Norms
 from aios.surrogate import DeclineSurrogate
@@ -136,6 +136,24 @@ def test_forecast_is_never_reported_as_confirmed(surrogate, norms):
 
     assert result.confirmed is False
     assert "ПРОГНОЗ, не подтверждён" in result.summary()
+
+
+def test_uncalibrated_margin_is_visible_in_the_cycle_report(surrogate, norms):
+    margin = trust.OptimismMargin.fit([(100.0, 90.0)])
+    result = loop.run_cycle(surrogate, plan(), norms, control_start=CONTROL_START,
+                            start_date=CONTROL_START, margin=margin)
+
+    assert "НЕ КАЛИБРОВАН" in result.summary()
+
+
+def test_cycle_report_shows_the_raw_and_reserved_forecast(surrogate, norms):
+    margin = trust.OptimismMargin.fit([(100.0 + gap, 100.0) for gap in range(1, 10)])
+    result = loop.run_cycle(surrogate, plan(), norms, control_start=CONTROL_START,
+                            start_date=CONTROL_START, margin=margin)
+
+    assert margin.calibrated
+    assert "Прогноз после запаса" in result.summary()
+    assert "сырой" in result.summary()
 
 
 def test_confirmation_replaces_the_forecast_with_the_real_calculation(surrogate, norms):
