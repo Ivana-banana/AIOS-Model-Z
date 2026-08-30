@@ -62,7 +62,8 @@ def test_repository_config_loads():
     assert loaded.fluids.oil_density == pytest.approx(913.0765883224138)
     assert loaded.run.seed == 20260817
     assert loaded.trust.pairs_family == "search"
-    assert loaded.trust.search_seeds == (20260830, 20260831, 20260901, 20260902, 20260903, 20260904)
+    assert loaded.trust.search_seeds == (20260830, 20260831, 20260901, 20260902, 20260903,
+                                         20260904, 20260905, 20260906, 20260907, 20260908)
 
 
 def test_paths_are_resolved_relative_to_the_config_file(tmp_path):

@@ -659,3 +659,27 @@ def test_the_margin_is_negative_when_the_model_never_overpromises():
     assert "нужен" in on_search.reason
     assert all(predicted > actual for predicted, actual in search), (
         "на кандидатах оптимизатора суррогат завышает — знак остатка разделяет семейства")
+
+
+def test_the_nightly_seeds_take_the_corpus_past_the_worst_observed_error():
+    """Ночной пакет заказан не «на глазок»: 19 пар — первое n, где запас не максимум.
+
+    При α = 0,1 индекс ⌈(n+1)·0,9⌉ равен n вплоть до n = 18, то есть любой корпус
+    меньше 19 пар отдаёт в качестве запаса худшую наблюдённую ошибку: одна
+    неудачная пара двигает гарантию целиком. Сторож держит связь между числом
+    seed'ов в рабочем конфиге и уже собранным корпусом — урезали `search_seeds`,
+    тест падает.
+    """
+    import math
+
+    from aios import config as config_module
+
+    settings = config_module.load(ROOT / "config.toml")
+    collected = trust.margin_from_pairs(settings.trust.pairs_file,
+                                        family=settings.trust.pairs_family)
+    total = collected.samples + len(settings.trust.search_seeds)
+    index = math.ceil((total + 1) * (1 - collected.alpha))
+
+    assert index < total, (
+        f"{collected.samples} пар плюс {len(settings.trust.search_seeds)} seed'ов дают {total}: "
+        "запас останется максимумом ошибок")
