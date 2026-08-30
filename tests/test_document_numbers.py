@@ -94,6 +94,55 @@ def test_declared_conformal_margin_is_recomputed_from_search_pairs():
     assert "по Пирсону 0,844" in _read("docs/explained.md")
 
 
+def test_conformal_guarantee_scope_is_spelled_out_for_humans():
+    """Область действия гарантии обязана жить не только в машинном выводе.
+
+    `GUARANTEE_SCOPE` уходит в паспорт шлюза, но защиту читают люди: уровень
+    90 % — маргинальное покрытие, а кандидатов выбирает максимизация прогноза
+    той же модели, и на такого кандидата гарантия не распространяется (Р-114).
+    """
+    from aios.trust import GUARANTEE_SCOPE
+
+    assert "маргинальное покрытие" in GUARANTEE_SCOPE
+    for name in ("docs/surrogate.md", "docs/defence-qa.md"):
+        text = _read(name)
+        assert "аргинальное" in text, f"{name} не говорит, что покрытие маргинальное"
+        assert "GUARANTEE_SCOPE" in text, f"{name} не ссылается на константу"
+
+    # формулировки, которые Р-114 запрещает: их отсутствие и есть проверка
+    for name in ("docs/report.md", "docs/defence-qa.md", "docs/surrogate.md",
+                 "docs/presentation.md", "docs/explained.md"):
+        text = _read(name)
+        assert "90-й процентиль" not in text, f"{name} выдаёт максимум за процентиль"
+        assert "с вероятностью 90 %" not in text, f"{name} обещает вероятность"
+
+
+def test_cost_of_a_non_degenerate_margin_is_computed_not_guessed():
+    """Сколько ещё полных расчётов — считается формулой, а не оценивается.
+
+    Порог равен максимуму выборки, пока `ceil((n+1)(1-alpha)) > n-1`. Числа 19
+    и 39 названы в `docs/defence-qa.md`; здесь они выводятся из той же формулы,
+    которой считает `OptimismMargin.fit`.
+    """
+    def first_non_degenerate(coverage: float) -> int:
+        return next(n for n in range(2, 200)
+                    if math.ceil((n + 1) * coverage) <= n - 1)
+
+    def first_finite(coverage: float) -> int:
+        return next(n for n in range(2, 200)
+                    if math.ceil((n + 1) * coverage) <= n)
+
+    assert first_finite(0.90) == 9      # ровно наш нынешний корпус
+    assert first_non_degenerate(0.90) == 19
+    assert first_finite(0.95) == 19
+    assert first_non_degenerate(0.95) == 39
+    assert math.ceil(20 * 0.90) / 20 == 0.90
+
+    answers = _read("docs/defence-qa.md")
+    assert "19 пар" in answers or "с **19 пар**" in answers
+    assert "**39**" in answers
+
+
 def test_mixed_margin_corpus_size_matches_its_current_description():
     with (ROOT / "docs/data/margin-pairs.csv").open(
         encoding="utf-8", newline=""
