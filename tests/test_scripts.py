@@ -1071,3 +1071,27 @@ def test_search_calibration_can_match_the_mpi_layout_of_the_existing_corpus(tmp_
     runs = [line for line in printed if "run_all.py" in line]
     assert runs, "план пуст"
     assert all("--processes 4" in line for line in runs)
+
+
+def test_search_calibration_resumes_past_seeds_that_already_have_an_export(tmp_path):
+    """Возобновление пропускает посчитанное, но собирает пары по всем каталогам.
+
+    Пакет идёт около восьми часов; падение на девятом прогоне не должно стоить
+    восьми часов заново. Готовность seed'а — `rows.csv`: именно его читает
+    `collect_pairs.py`. Сбор в конце идёт по всем каталогам, включая пропущенные,
+    иначе возобновлённая ночь потеряет уже посчитанные пары.
+    """
+    from scripts.calibrate_search import commands
+
+    done = tmp_path / "search-seed-11"
+    done.mkdir()
+    (done / "rows.csv").write_text("DATA,well\n", encoding="utf-8")
+
+    plan = commands(model="artifacts/surrogate.joblib", base=Path("runs/base"),
+                    out_root=tmp_path, config="config.toml", seeds=(11, 12),
+                    processes=4, flow_args="--parsing-strictness=low",
+                    pairs=Path("docs/data/pairs.csv"), family="search", resume=True)
+
+    runs = [command for command in plan if command[1].endswith("run_all.py")]
+    assert [command[command.index("--search-seed") + 1] for command in runs] == ["12"]
+    assert str(done) in plan[-1], "пропущенный seed обязан попасть в сбор пар"
