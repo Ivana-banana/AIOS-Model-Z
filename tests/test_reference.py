@@ -222,3 +222,77 @@ def test_csv_reader_rejects_foreign_layout(tmp_path: Path) -> None:
     path.write_text("Что-то другое;ед;1991" + LINE_END, encoding="utf-8")
     with pytest.raises(ValueError, match="формат раскладки изменился"):
         reference.load(path)
+
+
+def test_decompose_sums_to_chdd_gap() -> None:
+    """Сумма вкладов слагаемых обязана дать разницу ЧДД, а не «примерно».
+
+    Это сторож на само разложение: если знак или состав `FCF_TERMS` разъедется,
+    невязка перестанет быть нулевой, и объяснение расхождения станет вымыслом.
+    """
+    table = reference.ReferenceTable(
+        path=Path("нет"),
+        sheet="лист",
+        years=(1991, 1992),
+        rows={
+            "Коэффициент дисконтирования": {1991: 1.0, 1992: 0.5},
+            "Выручка от основной деятельности": {1991: 100.0, 1992: 200.0},
+            "Полный OPEX": {1991: 10.0, 1992: 20.0},
+            "CAPEX новых ЭЦН": {1991: 1.0, 1992: 2.0},
+            "Отчисления": {1991: 70.0, 1992: 140.0},
+            "Налог на прибыль": {1991: 5.0, 1992: 10.0},
+            "ЧДД": {1991: 14.0, 1992: 14.0},
+        },
+    )
+    annual = [
+        {"year": 1991, "revenueM": 110.0, "opexM": 10.0, "capexM": 1.0,
+         "deductionsM": 70.0, "profitTaxM": 5.0, "chddM": 24.0},
+        {"year": 1992, "revenueM": 200.0, "opexM": 24.0, "capexM": 2.0,
+         "deductionsM": 140.0, "profitTaxM": 10.0, "chddM": 12.0},
+    ]
+    parts = reference.decompose(table, annual)
+    # выручка выросла на 10 в год с коэффициентом 1, OPEX — на 4 в год с 0,5
+    assert parts["Выручка от основной деятельности"] == pytest.approx(10.0)
+    assert parts["Полный OPEX"] == pytest.approx(-2.0)
+    ours_chdd = sum(item["chddM"] for item in annual)
+    gap = ours_chdd - sum(table.series("ЧДД").values())
+    assert sum(parts.values()) == pytest.approx(gap)
+
+
+def test_decompose_skips_years_absent_from_our_run() -> None:
+    table = reference.ReferenceTable(
+        path=Path("нет"),
+        sheet="лист",
+        years=(1991, 1992),
+        rows={
+            "Коэффициент дисконтирования": {1991: 1.0, 1992: 0.5},
+            "Выручка от основной деятельности": {1991: 100.0, 1992: 200.0},
+        },
+    )
+    parts = reference.decompose(
+        table,
+        [{"year": 1992, "revenueM": 210.0}],
+        terms={"Выручка от основной деятельности": +1},
+    )
+    assert parts["Выручка от основной деятельности"] == pytest.approx(5.0)
+
+
+def test_events_agree_with_both_references_after_2004(
+    table: reference.ReferenceTable, tnavigator: reference.ReferenceTable
+) -> None:
+    """С 2004 счётчик остановок-пусков у обоих симуляторов один и тот же.
+
+    Всё расхождение по событиям живёт в 1994–2003, когда фонд вводился в
+    работу. Там сами эталоны расходятся между собой на 35 % — то есть счётчик
+    событий в этот период неустойчив у организаторов, а не только у нас.
+    """
+    key = "Количество остановок или запусков"
+    late = [year for year in table.years if year >= 2004]
+    assert sum(table.rows[key][y] for y in late) == 23
+    assert sum(tnavigator.rows[key][y] for y in late) == 23
+
+    early = [year for year in table.years if 1994 <= year <= 2003]
+    opm_early = sum(table.rows[key][y] for y in early)
+    tn_early = sum(tnavigator.rows[key][y] for y in early)
+    assert opm_early == 108
+    assert tn_early == 80

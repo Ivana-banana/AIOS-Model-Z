@@ -80,6 +80,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="только итоги и ключевые строки, без годовой таблицы")
     parser.add_argument("--charge-initial-pump", action="store_true",
                         help="начислять ЭЦН при первом пуске скважины (как в эталоне)")
+    parser.add_argument("--explain", action="store_true",
+                        help="разложить расхождение ЧДД на слагаемые и показать, "
+                             "объём это или распределение по годам")
     return parser
 
 
@@ -111,6 +114,7 @@ def report(
     *,
     labels: tuple[str, ...],
     detailed: bool,
+    explain: bool = False,
 ) -> float:
     """Напечатать сверку с одной раскладкой. Возвращает ЧДД эталона."""
 
@@ -138,6 +142,28 @@ def report(
         gap = our_total - ref_total
         share = f"{100 * gap / abs(ref_total):+7.2f}%" if abs(ref_total) > 1e-12 else "     — "
         print(f"{label:38s} {ref_total:14.3f} {our_total:14.3f} {gap:+12.3f} {share:>8s}")
+
+    if explain:
+        print()
+        print("откуда расхождение (дисконтированные вклады слагаемых FCF):")
+        parts = reference.decompose(table, result.annual)
+        for label, value in sorted(parts.items(), key=lambda item: -abs(item[1])):
+            print(f"  {label:38s} {value:+10.2f}")
+        residual = delta - sum(parts.values())
+        print(f"  {'сумма слагаемых':38s} {sum(parts.values()):+10.2f} "
+              f"(невязка {residual:+.3f})")
+
+        factors = table.series("Коэффициент дисконтирования")
+        ours = {int(item["year"]): item for item in result.annual}
+        oil = table.series("Добыча нефти")
+        volume = sum(ours[y]["oilKt"] - oil[y] for y in table.years if y in ours)
+        weighted = sum((ours[y]["oilKt"] - oil[y]) * factors[y]
+                       for y in table.years if y in ours)
+        print()
+        print("нефть: объём против распределения по годам")
+        print(f"  расхождение по объёму:            {volume:+8.2f} тыс. т")
+        print(f"  оно же, взвешенное дисконтом:     {weighted:+8.2f} тыс. т")
+        print("  вторая величина и есть деньги: тонна раннего года весит больше")
 
     if detailed:
         print()
@@ -191,7 +217,8 @@ def main(argv: list[str] | None = None) -> int:
 
     labels = BRIEF_LABELS if arguments.brief else tuple(reference.ROW_TO_ANNUAL)
     totals = {table.path.name: report(table, result, labels=labels,
-                                      detailed=not arguments.brief)
+                                      detailed=not arguments.brief,
+                                      explain=arguments.explain)
               for table in tables}
 
     if len(totals) > 1:

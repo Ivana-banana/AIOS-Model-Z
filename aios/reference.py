@@ -203,6 +203,51 @@ class YearDiff:
         return self.delta / abs(self.reference)
 
 
+#: Слагаемые FCF и их знак в нём. Сумма вкладов этих строк, взвешенная
+#: коэффициентом дисконтирования, обязана в точности дать расхождение по ЧДД —
+#: `decompose` это и проверяет, а не предполагает.
+FCF_TERMS: dict[str, int] = {
+    "Выручка от основной деятельности": +1,
+    "Полный OPEX": -1,
+    "CAPEX новых ЭЦН": -1,
+    "Отчисления": -1,
+    "Налог на прибыль": -1,
+}
+
+
+def decompose(
+    table: ReferenceTable,
+    annual: list[dict[str, Any]],
+    *,
+    terms: dict[str, int] | None = None,
+) -> dict[str, float]:
+    """Разложить расхождение по ЧДД на дисконтированные вклады слагаемых FCF.
+
+    Зачем. Итоговая разница ЧДД сама по себе не говорит, что именно разошлось:
+    объём добычи, её распределение по годам, состав затрат или события. Здесь
+    каждое слагаемое умножается на коэффициент дисконтирования **того же года**,
+    поэтому «одна и та же тонна в 1995 и в 2020» перестаёт быть одной и той же
+    величиной — а разница между эталоном и нами обычно именно в этом.
+
+    Возвращает `{название строки: вклад в млн руб.}`. Сумма значений совпадает с
+    разностью ЧДД с точностью до ошибки округления.
+    """
+
+    wanted = terms if terms is not None else FCF_TERMS
+    factors = table.series("Коэффициент дисконтирования")
+    ours = {int(item["year"]): item for item in annual}
+    result: dict[str, float] = {}
+    for label, sign in wanted.items():
+        key = ROW_TO_ANNUAL[label]
+        reference_row = table.series(label)
+        result[label] = sum(
+            sign * (float(ours[year][key]) - reference_row[year]) * factors[year]
+            for year in table.years
+            if year in ours
+        )
+    return result
+
+
 def compare(
     table: ReferenceTable,
     annual: list[dict[str, Any]],
