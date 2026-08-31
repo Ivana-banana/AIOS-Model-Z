@@ -53,6 +53,17 @@ def case_name(active: frozenset[str], names: list[str]) -> str:
     return "c" + "".join("1" if name in active else "0" for name in names)
 
 
+def active_groups(groups: list[groups_module.Group]) -> list[groups_module.Group]:
+    """Оставить только группы, чей множитель меняет хотя бы одну скважину.
+
+    `aios.groups.build_groups` специально возвращает четыре именованные группы
+    даже для пустого окна. Это удобно для диагностики, но в плане Шепли пустая
+    группа удваивает число дорогих ГГДМ-прогонов и не меняет ни одной коалиции.
+    """
+
+    return [group for group in groups if group.weights]
+
+
 def build(arguments) -> int:
     config = config_module.load(arguments.config)
     model_dir = config.case.model_dir
@@ -67,7 +78,10 @@ def build(arguments) -> int:
     # валидационном кейсе (ТЗ п. 4.3) управление начинается с другой даты, и
     # группы, посчитанные «с 2007», описывали бы не тот период (Б28)
     since = arguments.since or config.case.control_start.isoformat()
-    found = groups_module.build_groups(rows, since=since)
+    found = active_groups(groups_module.build_groups(rows, since=since))
+    if not found:
+        print(f"с {since} нет управляемых скважин — план коалиций не построен", file=sys.stderr)
+        return 1
     if arguments.merge_producers:
         found = _merge_producers(found)
 
