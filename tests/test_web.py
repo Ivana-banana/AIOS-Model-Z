@@ -361,6 +361,25 @@ def test_rows_csv_round_trips_through_the_writer(tmp_path):
     assert restored[0]["WOMT_Diff"] == pytest.approx(rows[0]["WOMT_Diff"])
 
 
+def test_rows_csv_missing_required_column_is_rejected(project):
+    """Неполная выгрузка не должна выглядеть как нулевой корректный прогон."""
+    path = project / "runs" / "base" / "rows.csv"
+    with path.open(encoding="utf-8", newline="") as handle:
+        source = list(csv.DictReader(handle))
+    columns = [column for column in economics.REQUIRED_COLUMNS if column != "WOMT_Diff"]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(source)
+
+    with pytest.raises(ValueError, match="WOMT_Diff"):
+        read_rows_csv(path)
+
+    response = TestClient(create_app(project)).get("/run/base")
+    assert response.status_code == 422
+    assert "WOMT_Diff" in response.text
+
+
 @pytest.fixture
 def two_runs(project):
     """Второй прогон: тот же фонд, но обводнённая скважина остановлена."""

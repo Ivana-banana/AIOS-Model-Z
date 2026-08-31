@@ -669,7 +669,13 @@ def load_rows(run: Run, fluids: summary.Fluids,
     пласте просто неверно (ТЗ п. 4.3).
     """
     if run.rows_csv.is_file():
-        return read_rows_csv(run.rows_csv)
+        try:
+            return read_rows_csv(run.rows_csv)
+        except ValueError as error:
+            raise HTTPException(
+                422,
+                f"выгрузка {run.rows_csv.name} не соответствует контракту расчётчика: {error}",
+            ) from error
     case = run.summary_case
     if case is not None:
         return summary.monthly_rows(case, fluids=fluids, well_fluids=well_fluids)
@@ -681,10 +687,24 @@ def read_rows_csv(path: Path) -> list[dict[str, Any]]:
 
     Расчётчик и сам разбирает строки, но диагностика и графики считают
     арифметику, и строка «0.0» в сравнении с нулём ведёт себя не как число.
+    Заголовок проверяется целиком: отсутствующая колонка — не нулевой показатель,
+    а неполная выгрузка, которой нельзя доверять ЧДД.
     """
     with path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        headers = reader.fieldnames or []
+        missing = [column for column in economics.REQUIRED_COLUMNS if column not in headers]
+        duplicate = [column for column in economics.REQUIRED_COLUMNS if headers.count(column) > 1]
+        if missing or duplicate:
+            details = []
+            if missing:
+                details.append("нет колонок " + ", ".join(missing))
+            if duplicate:
+                details.append("колонки повторены " + ", ".join(duplicate))
+            raise ValueError("; ".join(details))
+
         rows = []
-        for raw in csv.DictReader(handle):
+        for raw in reader:
             row = dict(raw)
             for column in NUMERIC_COLUMNS:
                 row[column] = float(row.get(column) or 0.0)
