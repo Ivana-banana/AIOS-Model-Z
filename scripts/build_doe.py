@@ -145,6 +145,13 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.dry_run:
         return 0
 
+    # `RUN.DATA` ниже собирается заново в тех же каталогах. Старый результат
+    # симулятора оставляем до следующего прогона, но его отметка означает
+    # «рассчитан именно этот входной дек»: иначе run_doe.py молча пропустит
+    # сценарий с уже другим расписанием.
+    for scenario in scenarios:
+        (Path(arguments.run_root) / scenario.name / ".doe-done").unlink(missing_ok=True)
+
     written = doe.write_cases(
         scenarios,
         arguments.run_root,
