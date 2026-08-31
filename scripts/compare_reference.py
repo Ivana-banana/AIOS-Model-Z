@@ -118,12 +118,13 @@ def report(
 ) -> float:
     """Напечатать сверку с одной раскладкой. Возвращает ЧДД эталона."""
 
-    ours = table.cumulative_chdd_m
-    delta = result.chdd_m - ours
+    reference_chdd_m = table.cumulative_chdd_m
+    delta = result.chdd_m - reference_chdd_m
     print(f"--- {table.path.name} ({table.sheet}) ---")
-    print(f"ЧДД эталона:  {ours:12.3f} млн руб.")
+    print(f"ЧДД эталона:  {reference_chdd_m:12.3f} млн руб.")
     print(f"ЧДД наш:      {result.chdd_m:12.3f} млн руб.")
-    print(f"расхождение:  {delta:+12.3f} млн руб. ({100 * delta / abs(ours):+.2f} %)")
+    print(f"расхождение:  {delta:+12.3f} млн руб. "
+          f"({100 * delta / abs(reference_chdd_m):+.2f} %)")
     print()
 
     diffs = reference.compare(table, result.annual, labels=labels)
@@ -154,11 +155,12 @@ def report(
               f"(невязка {residual:+.3f})")
 
         factors = table.series("Коэффициент дисконтирования")
-        ours = {int(item["year"]): item for item in result.annual}
+        annual_by_year = {int(item["year"]): item for item in result.annual}
         oil = table.series("Добыча нефти")
-        volume = sum(ours[y]["oilKt"] - oil[y] for y in table.years if y in ours)
-        weighted = sum((ours[y]["oilKt"] - oil[y]) * factors[y]
-                       for y in table.years if y in ours)
+        volume = sum(annual_by_year[y]["oilKt"] - oil[y]
+                     for y in table.years if y in annual_by_year)
+        weighted = sum((annual_by_year[y]["oilKt"] - oil[y]) * factors[y]
+                       for y in table.years if y in annual_by_year)
         print()
         print("нефть: объём против распределения по годам")
         print(f"  расхождение по объёму:            {volume:+8.2f} тыс. т")
@@ -175,7 +177,7 @@ def report(
             print(f"{diff.year:5d} {diff.reference:12.2f} {diff.ours:12.2f} "
                   f"{diff.delta:+10.2f} {share:>9s}")
     print()
-    return ours
+    return reference_chdd_m
 
 
 def main(argv: list[str] | None = None) -> int:

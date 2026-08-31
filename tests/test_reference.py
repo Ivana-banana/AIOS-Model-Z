@@ -7,12 +7,20 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import openpyxl
 import pytest
 
 from aios import reference
+
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from compare_reference import report  # noqa: E402
 
 #: BOM, с которого начинается CSV организаторов.
 BOM = "\ufeff"
@@ -275,6 +283,38 @@ def test_decompose_skips_years_absent_from_our_run() -> None:
         terms={"Выручка от основной деятельности": +1},
     )
     assert parts["Выручка от основной деятельности"] == pytest.approx(5.0)
+
+
+def test_explained_report_returns_reference_chdd(capsys: pytest.CaptureFixture[str]) -> None:
+    """`--explain` не должен менять тип итога, нужного для сравнения эталонов."""
+    table = reference.ReferenceTable(
+        path=Path("эталон.xlsx"),
+        sheet="лист",
+        years=(1991,),
+        rows={
+            "ЧДД": {1991: 10.0},
+            "Накопленный ЧДД": {1991: 10.0},
+            "Коэффициент дисконтирования": {1991: 1.0},
+            "Добыча нефти": {1991: 1.0},
+            "Выручка от основной деятельности": {1991: 10.0},
+            "Полный OPEX": {1991: 2.0},
+            "CAPEX новых ЭЦН": {1991: 1.0},
+            "Отчисления": {1991: 3.0},
+            "Налог на прибыль": {1991: 1.0},
+        },
+    )
+    result = SimpleNamespace(
+        chdd_m=12.0,
+        annual=[{
+            "year": 1991, "chddM": 12.0, "oilKt": 1.5, "revenueM": 12.0,
+            "opexM": 2.0, "capexM": 1.0, "deductionsM": 3.0, "profitTaxM": 1.0,
+        }],
+    )
+
+    returned = report(table, result, labels=("ЧДД",), detailed=False, explain=True)
+
+    assert returned == 10.0
+    assert "откуда расхождение" in capsys.readouterr().out
 
 
 def test_events_agree_with_both_references_after_2004(
