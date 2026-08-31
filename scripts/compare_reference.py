@@ -154,11 +154,13 @@ def report(
               f"(невязка {residual:+.3f})")
 
         factors = table.series("Коэффициент дисконтирования")
-        ours = {int(item["year"]): item for item in result.annual}
+        # имя намеренно не `ours`: под ним уже лежит ЧДД эталона, который
+        # функция возвращает, и затирание роняло вызов с двумя раскладками
+        annual = {int(item["year"]): item for item in result.annual}
         oil = table.series("Добыча нефти")
-        volume = sum(ours[y]["oilKt"] - oil[y] for y in table.years if y in ours)
-        weighted = sum((ours[y]["oilKt"] - oil[y]) * factors[y]
-                       for y in table.years if y in ours)
+        volume = sum(annual[y]["oilKt"] - oil[y] for y in table.years if y in annual)
+        weighted = sum((annual[y]["oilKt"] - oil[y]) * factors[y]
+                       for y in table.years if y in annual)
         print()
         print("нефть: объём против распределения по годам")
         print(f"  расхождение по объёму:            {volume:+8.2f} тыс. т")
@@ -240,4 +242,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Вывод только в UTF-8: под Windows умолчание — cp1251, и печать «Δ»
+    # или кириллицы роняет скрипт уже после расчёта, на выдаче результата.
+    # Скрытая зависимость от локали запрещена п. 3.5 ТЗ.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     raise SystemExit(main())

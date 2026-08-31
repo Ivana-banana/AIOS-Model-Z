@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -1036,3 +1037,62 @@ def test_base_schedule_starts_the_search_from_the_scenario_not_from_the_deck(tmp
 
     assert seen["start_multipliers"] == {("production", "1"): 1.5}
     assert "старт:" in capsys.readouterr().out
+
+
+#: Скрипты, которые ничего не печатают сами, — им `reconfigure` не нужен.
+_SILENT_ENTRYPOINTS = frozenset({"__init__.py"})
+
+
+@pytest.mark.parametrize(
+    "name", [n for n in PYTHON_ENTRYPOINTS if n not in _SILENT_ENTRYPOINTS]
+)
+def test_every_script_prints_in_utf8_regardless_of_locale(name: str):
+    """Ни один скрипт пакета не должен зависеть от локали консоли (п. 3.5 ТЗ).
+
+    Найдено 31.08 при подготовке к КТ-2: `compare_reference.py` — команда, которую
+    план защиты предписывает запустить **вживую на экране**, — падала
+    `UnicodeEncodeError` на символе «Δ» в шапке таблицы, то есть после того, как
+    сверка уже посчитана. Под cp1251 (умолчание русской Windows) «Δ» не кодируется
+    вовсе. Тест `test_profiles.py` закрывал этот класс поштучно и утверждал, что
+    «остальные десять скриптов защищены»; на деле без `reconfigure` их было семь.
+    Поэтому проверка стала общей: новый скрипт получает её автоматически.
+    """
+    source = (SCRIPTS / name).read_text(encoding="utf-8")
+    if "print(" not in source:
+        pytest.skip(f"{name} ничего не печатает")
+
+    assert 'sys.stdout.reconfigure(encoding="utf-8"' in source, (
+        f"scripts/{name} печатает, но не переключает stdout в UTF-8 — "
+        "под cp1251 упадёт на выдаче уже посчитанного результата"
+    )
+    assert 'sys.stderr.reconfigure(encoding="utf-8"' in source, (
+        f"scripts/{name} печатает, но не переключает stderr в UTF-8 — "
+        "сообщение об ошибке само станет ошибкой"
+    )
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--charge-initial-pump", "--brief"],
+    ["--charge-initial-pump", "--explain"],
+])
+def test_defence_comparison_command_survives_a_narrow_locale(arguments: list[str]):
+    """Обе команды блока 2 плана защиты запускаются на экране — и не под UTF-8.
+
+    Проверяется именно то, что делает жюри: запуск как есть, без переменных
+    окружения. `PYTHONIOENCODING=ascii` — самая узкая локаль; проходит она —
+    пройдёт и cp1251, и cp437.
+    """
+    if not (ROOT / "runs" / "base" / "rows.csv").is_file():
+        pytest.skip("нет выгрузки runs/base — сверять нечего")
+
+    environment = dict(os.environ, PYTHONIOENCODING="ascii")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "compare_reference.py"), *arguments],
+        cwd=ROOT, env=environment, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=600,
+    )
+
+    assert result.returncode == 0, (
+        "команда защиты упала на выдаче уже посчитанного:\n" + result.stderr[-600:]
+    )
+    assert "UnicodeEncodeError" not in result.stderr
