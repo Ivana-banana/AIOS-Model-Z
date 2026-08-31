@@ -182,6 +182,9 @@ def stability(rows: pd.DataFrame, since: str, draws: int, seed: int) -> float:
     месяцев. Ниже — состав групп определяется не историей, а случайностью окна,
     и укрупнение теряет смысл.
     """
+    if draws <= 0:
+        raise ValueError("число выборок bootstrap должно быть положительным")
+
     reference = _labels(build_groups(rows, since))
     months = np.sort(rows["DATA"].unique())
     generator = np.random.default_rng(seed)
@@ -191,6 +194,13 @@ def stability(rows: pd.DataFrame, since: str, draws: int, seed: int) -> float:
         sample = rows[rows["DATA"].isin(keep)]
         labels = _labels(build_groups(sample, since))
         shared = sorted(set(reference) & set(labels), key=_well_order)
+        # adjusted_rand_score([], []) и ARI для одной скважины формально равны
+        # единице, но ни одна из этих выборок не подтверждает устойчивость
+        # *разбиения*: сравнивать нечего. Такая выборка должна понижать оценку,
+        # иначе разреженная история получает ложный пропуск через порог 0,70.
+        if len(shared) < 2:
+            scores.append(0.0)
+            continue
         scores.append(adjusted_rand_score([reference[w] for w in shared],
                                           [labels[w] for w in shared]))
     return float(np.mean(scores))
