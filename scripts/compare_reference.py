@@ -155,6 +155,8 @@ def report(
               f"(невязка {residual:+.3f})")
 
         factors = table.series("Коэффициент дисконтирования")
+        # ЧДД эталона хранится отдельно: годовые строки пояснения не должны
+        # менять числовой итог, который возвращается для сравнения эталонов.
         annual_by_year = {int(item["year"]): item for item in result.annual}
         oil = table.series("Добыча нефти")
         volume = sum(annual_by_year[y]["oilKt"] - oil[y]
@@ -242,4 +244,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Вывод только в UTF-8: под Windows умолчание — cp1251, и печать «Δ»
+    # или кириллицы роняет скрипт уже после расчёта, на выдаче результата.
+    # Скрытая зависимость от локали запрещена п. 3.5 ТЗ.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     raise SystemExit(main())

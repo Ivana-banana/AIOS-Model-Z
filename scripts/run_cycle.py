@@ -315,9 +315,20 @@ def main(argv: list[str] | None = None) -> int:
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    # Плотности, на которых цикл ВЫБИРАЛ решения, до сих пор жили только в
+    # прокрутке терминала: rows.csv в каталоге кейса не появляется — его пишет
+    # export_rows.py уже по результату полного расчёта. Подпись едет вместе с
+    # кейсом на ту машину, где его будут считать (Р-47, хвост).
+    fluids_note = deck_fluids.write_case_note(
+        arguments.out,
+        fluids=config.fluids,
+        model_dir=config.case.model_dir,
+        forecast_fluids=config.fluids,
+    )
     print(f"кейс собран: {case.data_file}")
     print(f"расписание:  {case.schedule_file}")
     print(f"чем считался прогноз: {marker}")
+    print(f"на каких плотностях:  {fluids_note}")
     print()
     print("дальше — полный расчёт, без него прирост остаётся прогнозом:")
     # путь печатается относительным, когда кейс внутри репозитория, и абсолютным,

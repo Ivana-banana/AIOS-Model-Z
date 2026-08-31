@@ -401,3 +401,67 @@ def test_a_partly_covered_fund_is_not_reported_as_a_whole_one(tmp_path):
     assert "ВНИМАНИЕ" in text
     assert "весь фонд" not in text
     assert "скважин без региона: 1 из 3" in text
+
+
+# --- подпись собранного кейса ------------------------------------------------
+#
+# Хвост Р-47. `rows.csv` подписан, но кейс собирается раньше выгрузки и другим
+# путём: `run_cycle.py --out` и веб-платформа кладут в каталог `RUN.DATA` и
+# `wells_schedule.inc`, а `rows.csv` там не появляется вовсе — его пишет
+# `export_rows.py` уже по результату полного расчёта. До этой правки плотности,
+# на которых цикл ВЫБИРАЛ решения, не были подписаны нигде: кейс уезжал считаться
+# на другую машину без единой строки о том, каким числом его собирали.
+
+def test_the_built_case_carries_the_density_source(tmp_path):
+    result = fluids_by_well(_deck(tmp_path, COMPDAT))
+
+    path = result.write_case_note(tmp_path / "policy", fluids=Fluids(),
+                                  model_dir=tmp_path / "model")
+
+    assert path.name == "fluids.source.txt"
+    text = path.read_text(encoding="utf-8")
+    assert "кейс: policy" in text
+    assert "скважин 2" in text
+    assert "ВНИМАНИЕ" not in text  # всё взято из дека, предупреждать не о чем
+
+
+def test_the_case_note_names_the_density_the_forecast_actually_used(tmp_path):
+    """В выгрузку идут подеквенные плотности, а решения выбирались одной.
+
+    Разница на Модели Z нулевая — все скважины в первом регионе, — но на чужом
+    пласте (ТЗ п. 4.3) это разные числа, и по каталогу кейса должно быть видно,
+    каким именно выбиралось решение.
+    """
+    result = fluids_by_well(_deck(tmp_path, COMPDAT))
+
+    text = result.write_case_note(
+        tmp_path / "policy", fluids=Fluids(), model_dir=tmp_path / "model",
+        forecast_fluids=Fluids(oil_density=800.0, water_density=1010.0),
+    ).read_text(encoding="utf-8")
+
+    assert "800.0000" in text
+    assert "1010.0" in text
+    assert "прогноз цикла считался одной плотностью" in text
+
+
+def test_the_case_note_warns_when_the_deck_gave_nothing(tmp_path):
+    """Дек на COMPDATMD: решения выбраны по общей плотности, и это сказано вслух."""
+    result = fluids_by_well(_deck(tmp_path, COMPDATMD))
+
+    text = result.write_case_note(tmp_path / "policy", fluids=Fluids(),
+                                  model_dir=tmp_path / "model").read_text(encoding="utf-8")
+
+    assert "ВНИМАНИЕ" in text
+    assert "решения выбирались" in text  # не «тонны посчитаны»: кейс — это выбор
+    assert "913.0766" in text
+    assert "весь фонд" in text
+
+
+def test_the_case_note_is_created_together_with_its_directory(tmp_path):
+    """Каталог кейса может ещё не существовать — подпись не должна падать."""
+    result = fluids_by_well(_deck(tmp_path, COMPDAT))
+
+    path = result.write_case_note(tmp_path / "нет-такого" / "policy",
+                                  fluids=Fluids(), model_dir=tmp_path / "model")
+
+    assert path.is_file()

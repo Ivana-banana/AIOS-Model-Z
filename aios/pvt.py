@@ -267,6 +267,21 @@ class DeckFluids:
         """Все ли скважины получили плотность из дека."""
         return bool(self.by_well) and not self.without_region
 
+    def _warning(self, fluids: Fluids, what: str) -> str | None:
+        """Строка «ВНИМАНИЕ» или `None`, когда предупреждать не о чем.
+
+        `what` — что именно посчитано не той плотностью: у выгрузки это тонны,
+        у собранного кейса — сами решения цикла.
+        """
+        if self.complete:
+            return None
+        whose = ("весь фонд" if not self.by_well else
+                 f"скважин без региона: {len(self.without_region)} из "
+                 f"{len(self.by_well) + len(self.without_region)}")
+        return (f"ВНИМАНИЕ: {whose} — {what} по общей плотности из "
+                f"конфигурации (нефть {fluids.oil_density:.4f} кг/м3, "
+                f"вода {fluids.water_density:.1f} кг/м3)")
+
     def write_note(self, rows_csv: str | Path, *, fluids: Fluids,
                    model_dir: str | Path) -> Path:
         """Положить пометку рядом с выгрузкой: `rows.csv` → `rows.source.txt`.
@@ -287,18 +302,53 @@ class DeckFluids:
             f"дек: {model_dir}",
             f"плотности: {self.note}",
         ]
-        if not self.complete:
-            whose = ("весь фонд" if not self.by_well else
-                     f"скважин без региона: {len(self.without_region)} из "
-                     f"{len(self.by_well) + len(self.without_region)}")
-            lines.append(
-                f"ВНИМАНИЕ: {whose} — тонны посчитаны по общей плотности из "
-                f"конфигурации (нефть {fluids.oil_density:.4f} кг/м3, "
-                f"вода {fluids.water_density:.1f} кг/м3)"
-            )
+        warning = self._warning(fluids, "тонны посчитаны")
+        if warning is not None:
+            lines.append(warning)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return target
+
+    def write_case_note(self, case_dir: str | Path, *, fluids: Fluids,
+                        model_dir: str | Path,
+                        forecast_fluids: Fluids | None = None) -> Path:
+        """Подписать собранный кейс: `<case_dir>/fluids.source.txt`.
+
+        `write_note` подписывает **выгрузку** — файл, из которого считается
+        заявляемое ЧДД. Но кейс собирается раньше выгрузки и другим путём
+        (`run_cycle.py`, веб-платформа), и `rows.csv` в его каталоге не
+        появляется вовсе: его позже пишет `export_rows.py` по результату полного
+        расчёта. Поэтому плотности, на которых цикл **выбирал** решения (какую
+        скважину остановить, какой режим задать), не были подписаны нигде —
+        они жили в прокрутке терминала той машины, где цикл крутился.
+
+        Разница между двумя подписями существенная и потому названа отдельной
+        строкой. В выгрузку идут подеквенные плотности по PVT-регионам; прогноз
+        цикла считается **одной** плотностью из конфигурации — ни тривиальный
+        суррогат, ни обученный подеквенных не принимают. На Модели Z обе
+        величины совпадают, на чужом пласте (ТЗ п. 4.3) — нет, и тогда по
+        каталогу кейса должно быть видно, каким числом выбиралось решение.
+        """
+        target = Path(case_dir)
+        lines = [
+            f"кейс: {target.name}",
+            f"дек: {model_dir}",
+            f"плотности: {self.note}",
+        ]
+        if forecast_fluids is not None:
+            lines.append(
+                "прогноз цикла считался одной плотностью из конфигурации "
+                f"(нефть {forecast_fluids.oil_density:.4f} кг/м3, "
+                f"вода {forecast_fluids.water_density:.1f} кг/м3); "
+                "подеквенные плотности идут в выгрузку, из которой берётся ЧДД"
+            )
+        warning = self._warning(fluids, "решения выбирались")
+        if warning is not None:
+            lines.append(warning)
+        target.mkdir(parents=True, exist_ok=True)
+        note = target / "fluids.source.txt"
+        note.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return note
 
 
 def fluids_by_well(model_dir: str | Path,

@@ -524,6 +524,16 @@ def create_app(root: Path | None = None) -> FastAPI:
             # сборка сорвалась на нашей стороне: каталог свободен, запрос верен
             raise HTTPException(500, f"кейс собрать не удалось: {error}") from error
 
+        # Подпись плотностей едет вместе с каталогом кейса: rows.csv здесь не
+        # появится, его пишет export_rows.py уже по результату полного расчёта,
+        # а кейс уедет считаться на другую машину (Р-47, хвост).
+        deck_fluids().write_case_note(
+            target,
+            fluids=configuration.fluids,
+            model_dir=configuration.case.model_dir,
+            forecast_fluids=configuration.fluids,
+        )
+
         data_file = case.data_file.resolve()
         return TEMPLATES.TemplateResponse(
             request=request,

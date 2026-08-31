@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -585,6 +586,15 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert code == 0, printed
     assert "суррогат:" in printed
 
+    # Хвост Р-47: кейс уезжает считаться на другую машину, а `rows.csv` в его
+    # каталоге не появится — его пишет `export_rows.py` уже по результату
+    # полного расчёта. Поэтому плотности, на которых цикл ВЫБИРАЛ решения,
+    # подписаны здесь же, рядом с `RUN.DATA`, а не в прокрутке терминала.
+    note = tmp_path / "out" / "fluids.source.txt"
+    assert note.is_file(), printed
+    assert "прогноз цикла считался одной плотностью" in note.read_text(encoding="utf-8")
+    assert "на каких плотностях:" in printed
+
     monkeypatch.setattr(run_cycle.summary, "sanity_problems", lambda _rows: ["отрицательный объём"])
     code = run_cycle.main([
         "--from", str(source.parent), "--confirm", str(tmp_path / "out"),
@@ -1095,3 +1105,62 @@ def test_search_calibration_resumes_past_seeds_that_already_have_an_export(tmp_p
     runs = [command for command in plan if command[1].endswith("run_all.py")]
     assert [command[command.index("--search-seed") + 1] for command in runs] == ["12"]
     assert str(done) in plan[-1], "пропущенный seed обязан попасть в сбор пар"
+
+
+#: Скрипты, которые ничего не печатают сами, — им `reconfigure` не нужен.
+_SILENT_ENTRYPOINTS = frozenset({"__init__.py"})
+
+
+@pytest.mark.parametrize(
+    "name", [n for n in PYTHON_ENTRYPOINTS if n not in _SILENT_ENTRYPOINTS]
+)
+def test_every_script_prints_in_utf8_regardless_of_locale(name: str):
+    """Ни один скрипт пакета не должен зависеть от локали консоли (п. 3.5 ТЗ).
+
+    Найдено 31.08 при подготовке к КТ-2: `compare_reference.py` — команда, которую
+    план защиты предписывает запустить **вживую на экране**, — падала
+    `UnicodeEncodeError` на символе «Δ» в шапке таблицы, то есть после того, как
+    сверка уже посчитана. Под cp1251 (умолчание русской Windows) «Δ» не кодируется
+    вовсе. Тест `test_profiles.py` закрывал этот класс поштучно и утверждал, что
+    «остальные десять скриптов защищены»; на деле без `reconfigure` их было семь.
+    Поэтому проверка стала общей: новый скрипт получает её автоматически.
+    """
+    source = (SCRIPTS / name).read_text(encoding="utf-8")
+    if "print(" not in source:
+        pytest.skip(f"{name} ничего не печатает")
+
+    assert 'sys.stdout.reconfigure(encoding="utf-8"' in source, (
+        f"scripts/{name} печатает, но не переключает stdout в UTF-8 — "
+        "под cp1251 упадёт на выдаче уже посчитанного результата"
+    )
+    assert 'sys.stderr.reconfigure(encoding="utf-8"' in source, (
+        f"scripts/{name} печатает, но не переключает stderr в UTF-8 — "
+        "сообщение об ошибке само станет ошибкой"
+    )
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--charge-initial-pump", "--brief"],
+    ["--charge-initial-pump", "--explain"],
+])
+def test_defence_comparison_command_survives_a_narrow_locale(arguments: list[str]):
+    """Обе команды блока 2 плана защиты запускаются на экране — и не под UTF-8.
+
+    Проверяется именно то, что делает жюри: запуск как есть, без переменных
+    окружения. `PYTHONIOENCODING=ascii` — самая узкая локаль; проходит она —
+    пройдёт и cp1251, и cp437.
+    """
+    if not (ROOT / "runs" / "base" / "rows.csv").is_file():
+        pytest.skip("нет выгрузки runs/base — сверять нечего")
+
+    environment = dict(os.environ, PYTHONIOENCODING="ascii")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "compare_reference.py"), *arguments],
+        cwd=ROOT, env=environment, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=600,
+    )
+
+    assert result.returncode == 0, (
+        "команда защиты упала на выдаче уже посчитанного:\n" + result.stderr[-600:]
+    )
+    assert "UnicodeEncodeError" not in result.stderr

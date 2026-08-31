@@ -560,6 +560,24 @@ def test_saving_the_cycle_builds_a_case(project_with_deck):
     assert "01 NOV 2013" in (case_dir / "wells_schedule.inc").read_text(encoding="utf-8")
 
 
+def test_the_saved_case_says_on_which_densities_it_was_chosen(project_with_deck):
+    """Кейс уезжает считаться на другую машину — подпись обязана ехать с ним.
+
+    Хвост Р-47: `rows.csv` в каталоге кейса не появляется, его пишет
+    `export_rows.py` уже по результату полного расчёта. Без этой строки то, каким
+    числом цикл выбирал решения, оставалось только в прокрутке терминала.
+    """
+    client = TestClient(create_app(project_with_deck))
+
+    client.post("/run/base/cycle/save?model=decline&mode=full&lookback=6")
+
+    note = project_with_deck / "runs" / "base-mas-decline" / "fluids.source.txt"
+    assert note.is_file()
+    text = note.read_text(encoding="utf-8")
+    assert "кейс: base-mas-decline" in text
+    assert "прогноз цикла считался одной плотностью" in text
+
+
 def test_the_saved_case_is_called_a_forecast(project_with_deck):
     """Прирост собранного кейса — прогноз суррогата, пока нет полного расчёта."""
     client = TestClient(create_app(project_with_deck))
