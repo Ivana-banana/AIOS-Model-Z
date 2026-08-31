@@ -586,6 +586,15 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert code == 0, printed
     assert "суррогат:" in printed
 
+    # Хвост Р-47: кейс уезжает считаться на другую машину, а `rows.csv` в его
+    # каталоге не появится — его пишет `export_rows.py` уже по результату
+    # полного расчёта. Поэтому плотности, на которых цикл ВЫБИРАЛ решения,
+    # подписаны здесь же, рядом с `RUN.DATA`, а не в прокрутке терминала.
+    note = tmp_path / "out" / "fluids.source.txt"
+    assert note.is_file(), printed
+    assert "прогноз цикла считался одной плотностью" in note.read_text(encoding="utf-8")
+    assert "на каких плотностях:" in printed
+
     monkeypatch.setattr(run_cycle.summary, "sanity_problems", lambda _rows: ["отрицательный объём"])
     code = run_cycle.main([
         "--from", str(source.parent), "--confirm", str(tmp_path / "out"),
