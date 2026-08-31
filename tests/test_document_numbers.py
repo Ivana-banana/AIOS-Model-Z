@@ -5,6 +5,8 @@ import math
 import statistics
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -500,3 +502,132 @@ def test_handoff_opens_with_the_current_submission_before_historical_snapshots()
     assert "runs/matched-0995/wells_schedule.inc" in opening
     assert "41d813345e95f9d484c792ee6312a270" in opening
     assert "submit-2026-08-24.1" in opening
+
+
+# --- Числа сверки 30–31.08: документ против пересчёта ------------------------
+#
+# Найдено 31.08 при подготовке к КТ-2: три величины блока 2 плана защиты стояли
+# в документах не теми, какими их печатает расчёт. Доля нефти в расхождении
+# (86 % против настоящих 90,7 %), счётчик насосов без флага (99 против 55) и
+# заявка на базе 1991 (5 486,5 — отсечённая десятая вместо 5 486,6). Ни одно из
+# них не влияет на заявляемый ЧДД, но каждое произносится вслух и проверяется
+# делением в уме. Поэтому теперь они не переписываются из документа в документ,
+# а пересчитываются здесь из тех же выгрузок.
+
+RUNS = ROOT / "runs"
+
+
+def _npv(run: str, year: int, *, initial_pump: bool):
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from aios import economics
+    from scripts.compare_reference import norms_with_initial_pump
+
+    norms = norms_with_initial_pump() if initial_pump else economics.NORMS_FILE
+    return economics.compute_npv_from_file(
+        RUNS / run / "rows.csv", start_date=f"{year}-01-01", norms_file=norms
+    )
+
+
+@pytest.fixture(scope="module")
+def four_reference_systems() -> dict[tuple[str, int, bool], object]:
+    """Одно расписание в четырёх системах отсчёта — как в плане защиты."""
+    if not (RUNS / "base" / "rows.csv").is_file():
+        pytest.skip("нет выгрузок runs/ — пересчитывать нечего")
+    return {
+        (run, year, pump): _npv(run, year, initial_pump=pump)
+        for run in ("base", "matched-0995")
+        for year in (2007, 1991)
+        for pump in (False, True)
+    }
+
+
+def test_four_reference_systems_in_documents_match_a_fresh_recomputation(
+    four_reference_systems,
+):
+    """Таблица «четыре системы отсчёта» обязана печататься расчётом, а не памятью."""
+    values = {key: result.chdd_m for key, result in four_reference_systems.items()}
+
+    def shown(key: tuple[str, int, bool]) -> str:
+        return f"{values[key]:,.1f}".replace(",", " ").replace(".", ",")
+
+    rows = {
+        "2007 / НЕТ": (shown(("base", 2007, False)), shown(("matched-0995", 2007, False))),
+        "2007 / ДА": (shown(("base", 2007, True)), shown(("matched-0995", 2007, True))),
+        "1991 / НЕТ": (shown(("base", 1991, False)), shown(("matched-0995", 1991, False))),
+        "1991 / ДА": (shown(("base", 1991, True)), shown(("matched-0995", 1991, True))),
+    }
+    assert rows["2007 / НЕТ"] == ("11 851,8", "13 133,8"), "изменилась сама заявка"
+    assert rows["1991 / ДА"] == ("5 207,7", "5 486,6")
+
+    for name in ("docs/kt2-plan.md", "docs/kt2-explained.md", "docs/experiments.md",
+                 "docs/decisions.md"):
+        text = _read(name)
+        for base, case in rows.values():
+            assert base in text and case in text, f"{name} потерял строку {base} / {case}"
+
+    # усечённая десятая не должна вернуться туда, где число называют заявкой
+    for name in ("docs/kt2-plan.md", "docs/kt2-explained.md"):
+        assert "5 486,5" not in _read(name), f"{name} снова округляет вниз"
+
+
+def test_pump_counter_without_the_flag_is_the_one_documents_name(
+    four_reference_systems,
+):
+    """«145 против 55» — счётчик, которым доказан включённый chargeInitialPump."""
+    without = four_reference_systems[("base", 1991, False)].pump_changes
+    with_flag = four_reference_systems[("base", 1991, True)].pump_changes
+
+    assert (without, with_flag) == (55.0, 145.0)
+    for name in ("docs/kt2-plan.md", "docs/kt2-explained.md", "docs/experiments.md",
+                 "docs/decisions.md"):
+        text = _read(name)
+        assert "145 против 55" in text or "без флага 55" in text or "без флага — 55" in text, (
+            f"{name} называет другой счётчик насосов"
+        )
+        assert "145 против 99" not in text and "без флага 99" not in text
+
+
+def test_oil_share_of_the_remaining_gap_is_recomputed_not_remembered():
+    """86 % было ошибкой деления: 45,98 из 50,71 — это 90,7 %."""
+    if not (RUNS / "base" / "rows.csv").is_file():
+        pytest.skip("нет выгрузок runs/ — пересчитывать нечего")
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from aios import reference
+
+    result = _npv("base", 1991, initial_pump=True)
+    table = reference.load(ROOT / "docs" / "reference"
+                           / "Расчет ЧДД через OPM Flow Model_Z.xlsx")
+    parts = reference.decompose(table, result.annual)
+    gap = result.chdd_m - table.cumulative_chdd_m
+    # выручка и отчисления — одна и та же тонна с двух сторон, налог 25 %
+    oil = (parts["Выручка от основной деятельности"] + parts["Отчисления"]) * 0.75
+
+    assert round(oil, 2) == 45.98
+    assert round(gap, 2) == 50.71
+    assert round(100 * oil / gap, 1) == 90.7
+
+    for name in ("docs/kt2-plan.md", "docs/kt2-explained.md", "docs/experiments.md",
+                 "docs/decisions.md"):
+        text = _read(name)
+        assert "90,7 %" in text, f"{name} не называет пересчитанную долю нефти"
+        assert "то есть 86 %" not in text and "(86 %)" not in text
+
+
+def test_slide_of_what_we_do_not_claim_speaks_the_confirmed_cycle_uplift():
+    """Сторож 26.08 ловил «774,9» и «60,4 %» — но речь слайда писала «775» словами.
+
+    Отозванное число пережило исправление именно потому, что проверялась запись,
+    а не величина. Теперь проверяется и произносимый вариант.
+    """
+    presentation = _read("docs/presentation.md")
+    slide = presentation[presentation.index("## Слайд 7."):]
+    slide = slide[:slide.index("## Слайд 8.")]
+
+    for forbidden in ("774,9", "775", "60,4 %", "шестьдесят процентов"):
+        assert forbidden not in slide, f"слайд 7 снова называет отозванное: {forbidden}"
+    assert "460,8 против 1 281,9" in slide
+    assert "+461 млн, 36 % от простого правила" in slide
