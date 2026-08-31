@@ -543,6 +543,7 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     `run_all.py`.
     """
     import csv
+    import json
 
     from conftest import make_row
     from test_dataset import _tiny_project
@@ -585,6 +586,8 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
 
     assert code == 0, printed
     assert "суррогат:" in printed
+    marker = json.loads((tmp_path / "out" / "cycle.json").read_text(encoding="utf-8"))
+    assert marker["decision_identity"]["tune_rates"] is False
 
     # Хвост Р-47: кейс уезжает считаться на другую машину, а `rows.csv` в его
     # каталоге не появится — его пишет `export_rows.py` уже по результату
@@ -594,6 +597,16 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert note.is_file(), printed
     assert "прогноз цикла считался одной плотностью" in note.read_text(encoding="utf-8")
     assert "на каких плотностях:" in printed
+
+    # Маркер пишется в первом шаге, а сравнение происходит прежде чтения
+    # выгрузки: случайно потерянный `--no-tune-rates` не должен заново запускать
+    # поиск с настройкой дебитов и выдавать его прогноз за старый кейс.
+    code = run_cycle.main([
+        "--from", str(source.parent), "--confirm", str(tmp_path / "out"),
+        "--config", str(config),
+    ])
+    assert code == 1
+    assert "другими параметрами" in capsys.readouterr().err
 
     monkeypatch.setattr(run_cycle.summary, "sanity_problems", lambda _rows: ["отрицательный объём"])
     code = run_cycle.main([
@@ -1000,6 +1013,81 @@ def test_the_cycle_records_which_surrogate_built_the_case(tmp_path):
     assert plain != trained
 
 
+def test_cycle_confirmation_command_reuses_every_decision_option(tmp_path):
+    """Напечатанное подтверждение обязано воспроизвести исходный план буквально.
+
+    Раньше хвост команды содержал только `--confirm` и `--from`. Если первый
+    запуск был с другим набором множителей, без настройки дебитов, опорным
+    расписанием или явным seed, команда из собственного вывода молча собирала
+    другой план и ставила рядом его прогноз с фактом старого кейса.
+    """
+    import shlex
+
+    from scripts import run_cycle
+
+    command = run_cycle.confirmation_command(
+        case_dir=tmp_path / "policy case",
+        source=tmp_path / "base case",
+        config_path=tmp_path / "project config.toml",
+        no_tune_rates=True,
+        surrogate_model=str(tmp_path / "surrogate model.joblib"),
+        base_schedule=str(tmp_path / "starting schedule.inc"),
+        multipliers=(0.75, 1.0, 1.25),
+        search_seed=17,
+    )
+
+    assert shlex.split(command) == [
+        "python", "scripts/run_cycle.py", "--confirm", str(tmp_path / "policy case"),
+        "--from", str(tmp_path / "base case"),
+        "--config", str(tmp_path / "project config.toml"),
+        "--no-tune-rates",
+        "--surrogate-model", str(tmp_path / "surrogate model.joblib"),
+        "--base-schedule", str(tmp_path / "starting schedule.inc"),
+        "--multipliers", "0.75,1.0,1.25",
+        "--search-seed", "17",
+    ]
+
+
+def test_cycle_refuses_confirmation_with_a_different_decision_plan(tmp_path, capsys):
+    """Новый маркер запрещает подтвердить кейс параметрами другого поиска.
+
+    Отказ должен случиться до чтения истории и запуска суррогата: иначе
+    ошибочная команда тратит минуты на пересборку плана, который всё равно не
+    соответствует уже посчитанному кейсу.
+    """
+    import json
+
+    from test_dataset import _tiny_project
+
+    from scripts import run_cycle
+
+    config_path = _tiny_project(tmp_path)
+    source = tmp_path / "runs" / "base"
+    case_dir = tmp_path / "policy"
+    case_dir.mkdir()
+    config = run_cycle.config_module.load(config_path)
+    plan = run_cycle.decision_identity(
+        source=source,
+        config_path=config_path,
+        tune_rates=False,
+        multipliers=None,
+        search_seed=config.run.seed,
+        base_schedule=None,
+    )
+    (case_dir / "cycle.json").write_text(
+        json.dumps({"decision_identity": plan}), encoding="utf-8"
+    )
+
+    code = run_cycle.main([
+        "--from", str(source), "--confirm", str(case_dir), "--config", str(config_path),
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "другими параметрами" in captured.err
+    assert "нет результата расчёта" not in captured.err
+
+
 def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
     """Кейс без `cycle.json` собран до Р-100 — это не повод отказывать."""
     from scripts import run_cycle
@@ -1009,6 +1097,7 @@ def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
     (tmp_path / "cycle.json").write_text('{"surrogate_identity": {"surrogate": "MLP"}}',
                                          encoding="utf-8")
     assert run_cycle.written_identity(tmp_path) == {"surrogate": "MLP"}
+    assert run_cycle.written_decision_identity(tmp_path) is None
 
     (tmp_path / "cycle.json").write_text("не json", encoding="utf-8")
     assert run_cycle.written_identity(tmp_path) is None, "битый файл не должен ронять прогон"
