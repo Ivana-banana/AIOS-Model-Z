@@ -20,6 +20,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+import compare_reference  # noqa: E402
 from compare_reference import report  # noqa: E402
 
 #: BOM, с которого начинается CSV организаторов.
@@ -315,6 +316,40 @@ def test_explained_report_returns_reference_chdd(capsys: pytest.CaptureFixture[s
 
     assert returned == 10.0
     assert "откуда расхождение" in capsys.readouterr().out
+
+
+def test_compare_reference_rejects_a_different_economic_start_year(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Сменить базу без новой раскладки организаторов означает сравнить разное."""
+    rows = tmp_path / "rows.csv"
+    rows.write_text("DATA,well\n", encoding="utf-8")
+
+    def must_not_run(*args, **kwargs):
+        pytest.fail("расчёт не должен запускаться при несовместимой базе эталона")
+
+    monkeypatch.setattr(compare_reference.economics, "compute_npv_from_file", must_not_run)
+
+    assert compare_reference.main(["--rows", str(rows), "--start-year", "2007"]) == 2
+    assert "1991" in capsys.readouterr().err
+
+
+def test_reference_coverage_rejects_a_nonzero_year_missing_from_our_run() -> None:
+    """Итог ЧДД нельзя сравнивать с раскладкой, у которой пропущен живой год."""
+    table = reference.ReferenceTable(
+        path=Path("эталон.xlsx"),
+        sheet="лист",
+        years=(1991, 1992),
+        rows={
+            "ЧДД": {1991: 0.0, 1992: 10.0},
+            "Накопленный ЧДД": {1991: 0.0, 1992: 10.0},
+        },
+    )
+
+    problem = compare_reference.coverage_problem(table, [{"year": 1991}])
+
+    assert problem is not None
+    assert "1992" in problem
 
 
 def test_events_agree_with_both_references_after_2004(

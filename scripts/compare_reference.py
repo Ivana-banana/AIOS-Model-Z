@@ -2,7 +2,7 @@
 
     python scripts/compare_reference.py --charge-initial-pump
     python scripts/compare_reference.py --reference "docs/reference/... .csv"
-    python scripts/compare_reference.py --start-year 2007 --brief
+    python scripts/compare_reference.py --brief
 
 Зачем. КТ-2 требует «расчёт выполнен на базовом сценарии, полученный ЧДД сверен с
 результатом организаторов». 30.08 организаторы опубликовали годовую раскладку по
@@ -27,6 +27,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import openpyxl
 
@@ -75,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rows", type=Path, default=DEFAULT_ROWS,
                         help="наша выгрузка в 14 колонок контракта")
     parser.add_argument("--start-year", type=int, default=None,
-                        help="год базы дисконтирования; по умолчанию — как в книге")
+                        help="год начала экономического расчёта; обязан совпадать с эталоном")
     parser.add_argument("--brief", action="store_true",
                         help="только итоги и ключевые строки, без годовой таблицы")
     parser.add_argument("--charge-initial-pump", action="store_true",
@@ -106,6 +107,39 @@ def norms_with_initial_pump() -> Path:
     raise ValueError(
         f"в {economics.NORMS_FILE.name} не найден параметр chargeInitialPump"
     )
+
+
+def coverage_problem(table: reference.ReferenceTable,
+                     annual: list[dict[str, Any]]) -> str | None:
+    """Вернуть причину, по которой горизонт нашего расчёта не сравним с эталоном.
+
+    Первые пустые годы эталона допустимы: в Модели Z выгрузка начинается лишь
+    в 1994, хотя дисконтирование организаторы ведут с 1991. Но пропуск года с
+    деньгами (или лишний год с нашей стороны) делает итоговую разность ЧДД
+    бессмысленной: `reference.compare` построчно его пропустит, а итог книги —
+    нет. Пересчитывать эталон своей формулой нельзя.
+    """
+
+    reference_years = set(table.years)
+    our_years = {int(item["year"]) for item in annual}
+    extra = sorted(our_years - reference_years)
+    # Коэффициент дисконтирования сам по себе ненулевой до начала выгрузки и
+    # не является денежным потоком. Остальные сопоставляемые строки и
+    # накопленный ЧДД должны быть нулевыми в пропущенном году.
+    checked_rows = (*reference.ROW_TO_ANNUAL, "Накопленный ЧДД")
+    missing_nonzero = [
+        year for year in sorted(reference_years - our_years)
+        if any(abs(table.rows.get(label, {}).get(year, 0.0)) > 1e-12
+               for label in checked_rows
+               if label != "Коэффициент дисконтирования")
+    ]
+    parts = []
+    if extra:
+        parts.append("в нашей выгрузке есть годы вне эталона: " + ", ".join(map(str, extra)))
+    if missing_nonzero:
+        parts.append("в эталоне есть ненулевые годы, которых нет в нашей выгрузке: "
+                     + ", ".join(map(str, missing_nonzero)))
+    return "; ".join(parts) if parts else None
 
 
 def report(
@@ -198,25 +232,35 @@ def main(argv: list[str] | None = None) -> int:
 
     tables = [reference.load(path) for path in references]
     bases = {table.start_year for table in tables}
-    if arguments.start_year is None and len(bases) > 1:
-        print(f"раскладки дисконтируют от разных лет {sorted(bases)} — "
-              "укажите --start-year явно", file=sys.stderr)
+    if len(bases) != 1:
+        print(f"раскладки рассчитаны от разных лет {sorted(bases)} — "
+              "сверять их вместе нельзя, выберите одну через --reference", file=sys.stderr)
         return 2
-    start_year = arguments.start_year or tables[0].start_year
+    reference_start_year = next(iter(bases))
+    if arguments.start_year is not None and arguments.start_year != reference_start_year:
+        print(
+            f"эталон рассчитан с {reference_start_year}, а запрошен {arguments.start_year}: "
+            "для другой даты нужны раскладка или исходные rows организаторов; "
+            "эталон сами не пересчитываем",
+            file=sys.stderr,
+        )
+        return 2
+    start_year = reference_start_year
 
     norms = norms_with_initial_pump() if arguments.charge_initial_pump else economics.NORMS_FILE
     result = economics.compute_npv_from_file(
         arguments.rows, start_date=f"{start_year}-01-01", norms_file=norms
     )
+    for table in tables:
+        problem = coverage_problem(table, result.annual)
+        if problem is not None:
+            print(f"{table.path.name}: {problem}; сверка остановлена", file=sys.stderr)
+            return 2
 
     print(f"наш:       {arguments.rows}")
     print(f"нормативы: {norms.name}"
           f"{' (chargeInitialPump=ДА)' if arguments.charge_initial_pump else ''}")
-    print(f"база дисконтирования: {start_year}")
-    for table in tables:
-        if table.start_year != start_year:
-            print(f"  ВНИМАНИЕ: {table.path.name} дисконтирует от "
-                  f"{table.start_year} — итоги несопоставимы напрямую.")
+    print(f"начало экономического расчёта: {start_year}")
     print()
 
     labels = BRIEF_LABELS if arguments.brief else tuple(reference.ROW_TO_ANNUAL)
