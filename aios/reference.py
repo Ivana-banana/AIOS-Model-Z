@@ -1,22 +1,32 @@
-"""Эталонная годовая раскладка ЧДД, опубликованная организаторами.
+"""Эталонные годовые раскладки ЧДД, опубликованные организаторами.
 
-30.08 организаторы выложили расчёт ЧДД базового сценария по Модели Z в двух
-симуляторах. Файл по OPM Flow — тот же симулятор, которым считаем мы, поэтому
-он годится не как «ориентир по порядку величин», а как построчная сверка нашего
-контура: физика, состав OPEX, события и дисконт проверяются по отдельности.
+30.08 организаторы выложили расчёт ЧДД базового сценария по Модели Z **в двух
+симуляторах**, и это две разные роли:
 
-Здесь только чтение книги в типизированную структуру. Сравнение — в
+- **OPM Flow** — тот же симулятор, которым считаем мы. Годится как построчная
+  сверка нашего контура: физика, состав OPEX, события и дисконт по отдельности.
+- **тНавигатор** — симулятор, которым организаторы будут проверять сдачу. Разница
+  между двумя их файлами и есть тот самый разрыв «наш симулятор ↔ тНавигатор»,
+  который до 30.08 у нас числился неизмеримым своими силами.
+
+Здесь только чтение раскладки в типизированную структуру. Сравнение — в
 `scripts/compare_reference.py`; своей формулы ЧДД тут нет и быть не может
 (`CLAUDE.md`, главное правило проекта).
 
-Книга устроена как «показатель × год»: первая колонка — название строки, вторая —
-единица измерения, дальше по колонке на год. Названия строк совпадают с шапкой
-годового отчёта эталонного расчётчика, поэтому сопоставление с нашей выгрузкой
-идёт по словарю `ROW_TO_ANNUAL`, а не по порядку строк.
+Раскладка устроена как «показатель × год»: первая колонка — название строки,
+вторая — единица измерения, дальше по колонке на год. Названия строк совпадают с
+шапкой годового отчёта эталонного расчётчика, поэтому сопоставление с нашей
+выгрузкой идёт по словарю `ROW_TO_ANNUAL`, а не по порядку строк.
+
+Форматов пришло два — `.xlsx` и `.csv`, — и различаются они не только разделителем:
+в CSV десятичная запятая, а точки в подписях («Ед. изм.») заменены на запятые.
+Поэтому названия строк при чтении **нормализуются**, а не сравниваются буквально;
+иначе один и тот же показатель из двух файлов не сошёлся бы сам с собой.
 """
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -58,6 +68,64 @@ ROW_TO_ANNUAL: dict[str, str] = {
 #: Заголовок первой колонки — им опознаётся строка с годами.
 HEADER_LABEL = "Показатель"
 
+#: Разделитель колонок в CSV-выгрузке организаторов.
+CSV_DELIMITER = ";"
+
+
+def normalize_label(label: str) -> str:
+    """Привести подпись строки к виду, одинаковому для `.xlsx` и `.csv`.
+
+    В CSV точки в подписях заменены запятыми («Ед, изм.», «млн руб,»), а сами
+    названия показателей совпадают. Схлопываем пробелы и убираем хвостовую
+    пунктуацию — сравнивать подписи буквально нельзя.
+    """
+
+    return " ".join(label.replace(" ", " ").split()).strip(" .,;")
+
+
+def _to_float(value: Any) -> float:
+    """Число из ячейки. В CSV десятичный разделитель — запятая."""
+
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, int | float):
+        return float(value)
+    return float(str(value).replace(" ", "").replace(" ", "").replace(",", "."))
+
+
+def _table_from_grid(grid: list[list[Any]], *, path: Path, sheet: str) -> ReferenceTable:
+    """Собрать раскладку из уже прочитанной сетки «строка × колонка»."""
+
+    if not grid:
+        raise ValueError(f"{path}: пустая раскладка")
+
+    header = grid[0]
+    if normalize_label(str(header[0] or "")) != HEADER_LABEL:
+        raise ValueError(
+            f"{path}: первая ячейка {header[0]!r}, ожидалось {HEADER_LABEL!r} — "
+            "формат раскладки изменился, сверку нельзя считать корректной."
+        )
+    years = tuple(int(value) for value in header[2:] if value not in (None, ""))
+
+    rows: dict[str, dict[int, float]] = {}
+    for line in grid[1:]:
+        if not line or line[0] in (None, ""):
+            continue
+        label = normalize_label(str(line[0]))
+        values = line[2 : 2 + len(years)]
+        rows[label] = {
+            year: _to_float(value)
+            for year, value in zip(years, values, strict=False)
+        }
+
+    missing = sorted(set(ROW_TO_ANNUAL) - set(rows))
+    if missing:
+        raise ValueError(
+            f"{path}: в раскладке не найдены строки {missing} — "
+            "сопоставление с нашей выгрузкой неполно."
+        )
+    return ReferenceTable(path=path, sheet=sheet, years=years, rows=rows)
+
 
 @dataclass(frozen=True)
 class ReferenceTable:
@@ -95,41 +163,23 @@ class ReferenceTable:
 
 
 def load(path: Path) -> ReferenceTable:
-    """Прочитать книгу организаторов. Значения берутся посчитанные, не формулы."""
+    """Прочитать раскладку организаторов: `.xlsx` или `.csv`.
+
+    Из книги берутся посчитанные значения, а не формулы.
+    """
+
+    if path.suffix.lower() == ".csv":
+        # utf-8-sig: файл приходит с BOM, иначе первая подпись не опознаётся
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            grid = [list(row) for row in csv.reader(handle, delimiter=CSV_DELIMITER)]
+        return _table_from_grid(grid, path=path, sheet=path.stem)
 
     book = openpyxl.load_workbook(path, data_only=True, read_only=True)
     sheet = book.worksheets[0]
     grid = [list(row) for row in sheet.iter_rows(values_only=True)]
+    title = sheet.title
     book.close()
-    if not grid:
-        raise ValueError(f"{path}: пустой лист")
-
-    header = grid[0]
-    if header[0] != HEADER_LABEL:
-        raise ValueError(
-            f"{path}: первая ячейка {header[0]!r}, ожидалось {HEADER_LABEL!r} — "
-            "формат книги изменился, сверку нельзя считать корректной."
-        )
-    years = tuple(int(value) for value in header[2:] if value is not None)
-
-    rows: dict[str, dict[int, float]] = {}
-    for line in grid[1:]:
-        label = line[0]
-        if label is None:
-            continue
-        values = line[2 : 2 + len(years)]
-        rows[str(label)] = {
-            year: float(value if value is not None else 0.0)
-            for year, value in zip(years, values, strict=False)
-        }
-
-    missing = sorted(set(ROW_TO_ANNUAL) - set(rows))
-    if missing:
-        raise ValueError(
-            f"{path}: в книге не найдены строки {missing} — "
-            "сопоставление с нашей выгрузкой неполно."
-        )
-    return ReferenceTable(path=path, sheet=sheet.title, years=years, rows=rows)
+    return _table_from_grid(grid, path=path, sheet=title)
 
 
 @dataclass(frozen=True)
@@ -151,6 +201,51 @@ class YearDiff:
         if abs(self.reference) <= 1e-12:
             return None
         return self.delta / abs(self.reference)
+
+
+#: Слагаемые FCF и их знак в нём. Сумма вкладов этих строк, взвешенная
+#: коэффициентом дисконтирования, обязана в точности дать расхождение по ЧДД —
+#: `decompose` это и проверяет, а не предполагает.
+FCF_TERMS: dict[str, int] = {
+    "Выручка от основной деятельности": +1,
+    "Полный OPEX": -1,
+    "CAPEX новых ЭЦН": -1,
+    "Отчисления": -1,
+    "Налог на прибыль": -1,
+}
+
+
+def decompose(
+    table: ReferenceTable,
+    annual: list[dict[str, Any]],
+    *,
+    terms: dict[str, int] | None = None,
+) -> dict[str, float]:
+    """Разложить расхождение по ЧДД на дисконтированные вклады слагаемых FCF.
+
+    Зачем. Итоговая разница ЧДД сама по себе не говорит, что именно разошлось:
+    объём добычи, её распределение по годам, состав затрат или события. Здесь
+    каждое слагаемое умножается на коэффициент дисконтирования **того же года**,
+    поэтому «одна и та же тонна в 1995 и в 2020» перестаёт быть одной и той же
+    величиной — а разница между эталоном и нами обычно именно в этом.
+
+    Возвращает `{название строки: вклад в млн руб.}`. Сумма значений совпадает с
+    разностью ЧДД с точностью до ошибки округления.
+    """
+
+    wanted = terms if terms is not None else FCF_TERMS
+    factors = table.series("Коэффициент дисконтирования")
+    ours = {int(item["year"]): item for item in annual}
+    result: dict[str, float] = {}
+    for label, sign in wanted.items():
+        key = ROW_TO_ANNUAL[label]
+        reference_row = table.series(label)
+        result[label] = sum(
+            sign * (float(ours[year][key]) - reference_row[year]) * factors[year]
+            for year in table.years
+            if year in ours
+        )
+    return result
 
 
 def compare(

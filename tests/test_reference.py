@@ -14,15 +14,22 @@ import pytest
 
 from aios import reference
 
-REFERENCE_FILE = (
-    Path(__file__).resolve().parent.parent
-    / "docs"
-    / "reference"
-    / "Расчет ЧДД через OPM Flow Model_Z.xlsx"
-)
+#: BOM, с которого начинается CSV организаторов.
+BOM = "\ufeff"
 
-#: ЧДД базового сценария Модели Z по OPM Flow, опубликованный организаторами 30.08.
+LINE_END = "\n"
+
+REFERENCE_DIR = Path(__file__).resolve().parent.parent / "docs" / "reference"
+REFERENCE_FILE = REFERENCE_DIR / "Расчет ЧДД через OPM Flow Model_Z.xlsx"
+TNAVIGATOR_FILE = REFERENCE_DIR / "Расчет ЧДД через тНавигатор Model_Z.csv"
+
+#: ЧДД базового сценария Модели Z, опубликованный организаторами 30.08:
+#: два симулятора, один и тот же сценарий.
 REFERENCE_CHDD_M = 5157.016329811206
+TNAVIGATOR_CHDD_M = 5218.9449080841405
+
+#: Разрыв между симуляторами по ЧДД — то, что наш стенд измерить не может.
+SIMULATOR_GAP_SHARE = (TNAVIGATOR_CHDD_M - REFERENCE_CHDD_M) / REFERENCE_CHDD_M
 
 
 @pytest.fixture(scope="module")
@@ -125,7 +132,7 @@ def test_load_rejects_foreign_layout(tmp_path: Path) -> None:
     sheet["A1"] = "Что-то другое"
     path = tmp_path / "чужая.xlsx"
     book.save(path)
-    with pytest.raises(ValueError, match="формат книги изменился"):
+    with pytest.raises(ValueError, match="формат раскладки изменился"):
         reference.load(path)
 
 
@@ -138,3 +145,154 @@ def test_load_reports_missing_rows(tmp_path: Path) -> None:
     book.save(path)
     with pytest.raises(ValueError, match="не найдены строки"):
         reference.load(path)
+
+
+@pytest.fixture(scope="module")
+def tnavigator() -> reference.ReferenceTable:
+    return reference.load(TNAVIGATOR_FILE)
+
+
+def test_tnavigator_file_present() -> None:
+    assert TNAVIGATOR_FILE.is_file(), "раскладка тНавигатора пропала из репозитория"
+
+
+def test_csv_reference_parses(tnavigator: reference.ReferenceTable) -> None:
+    """CSV читается тем же кодом: BOM, точка с запятой, десятичная запятая."""
+    assert abs(tnavigator.cumulative_chdd_m - TNAVIGATOR_CHDD_M) <= 1e-9
+    assert tnavigator.years[0] == 1991
+    assert tnavigator.years[-1] == 2025
+
+
+def test_csv_reference_skips_empty_years(tnavigator: reference.ReferenceTable) -> None:
+    """В CSV нет колонок 1992 и 1993 — раскладка короче на два года."""
+    assert 1992 not in tnavigator.years
+    assert len(tnavigator.years) == 33
+
+
+def test_both_references_share_discount_base(
+    table: reference.ReferenceTable, tnavigator: reference.ReferenceTable
+) -> None:
+    """Оба симулятора дисконтируют от одного года — иначе итоги несопоставимы."""
+    assert table.start_year == tnavigator.start_year == 1991
+
+
+def test_simulator_gap_is_measured_and_small(
+    table: reference.ReferenceTable, tnavigator: reference.ReferenceTable
+) -> None:
+    """Разрыв тНавигатор ↔ OPM Flow на одном сценарии — 1,2 % по ЧДД.
+
+    Сторож на число, которое мы выносим в отчёт как измеренное. Совпадение
+    физики (закачка сходится в ноль) отличает разрыв численных схем от
+    расхождения сценариев.
+    """
+    assert abs(SIMULATOR_GAP_SHARE - 0.0120) < 0.0005
+    assert abs(tnavigator.total("Закачка") - table.total("Закачка")) < 1.0
+    oil_gap = tnavigator.total("Добыча нефти") / table.total("Добыча нефти") - 1
+    assert abs(oil_gap - 0.0050) < 0.0005
+
+
+def test_labels_are_normalised_across_formats(
+    table: reference.ReferenceTable, tnavigator: reference.ReferenceTable
+) -> None:
+    """Подписи из xlsx и csv совпадают после нормализации, а не буквально."""
+    for label in reference.ROW_TO_ANNUAL:
+        assert label in table.rows
+        assert label in tnavigator.rows
+
+
+def test_normalize_label_strips_csv_punctuation() -> None:
+    assert reference.normalize_label(" Показатель ") == "Показатель"
+    assert reference.normalize_label("Ед, изм.") == "Ед, изм"
+    assert reference.normalize_label("Добыча  нефти") == "Добыча нефти"
+
+
+def test_csv_reader_handles_decimal_comma(tmp_path: Path) -> None:
+    path = tmp_path / "раскладка.csv"
+    body = [
+        f"{reference.HEADER_LABEL};Ед, изм.;1991;1992",
+        *(f"{label};ед;1,5;2,5" for label in reference.ROW_TO_ANNUAL),
+    ]
+    path.write_text(BOM + LINE_END.join(body), encoding="utf-8")
+    loaded = reference.load(path)
+    assert loaded.series("ЧДД") == {1991: 1.5, 1992: 2.5}
+
+
+def test_csv_reader_rejects_foreign_layout(tmp_path: Path) -> None:
+    path = tmp_path / "чужая.csv"
+    path.write_text("Что-то другое;ед;1991" + LINE_END, encoding="utf-8")
+    with pytest.raises(ValueError, match="формат раскладки изменился"):
+        reference.load(path)
+
+
+def test_decompose_sums_to_chdd_gap() -> None:
+    """Сумма вкладов слагаемых обязана дать разницу ЧДД, а не «примерно».
+
+    Это сторож на само разложение: если знак или состав `FCF_TERMS` разъедется,
+    невязка перестанет быть нулевой, и объяснение расхождения станет вымыслом.
+    """
+    table = reference.ReferenceTable(
+        path=Path("нет"),
+        sheet="лист",
+        years=(1991, 1992),
+        rows={
+            "Коэффициент дисконтирования": {1991: 1.0, 1992: 0.5},
+            "Выручка от основной деятельности": {1991: 100.0, 1992: 200.0},
+            "Полный OPEX": {1991: 10.0, 1992: 20.0},
+            "CAPEX новых ЭЦН": {1991: 1.0, 1992: 2.0},
+            "Отчисления": {1991: 70.0, 1992: 140.0},
+            "Налог на прибыль": {1991: 5.0, 1992: 10.0},
+            "ЧДД": {1991: 14.0, 1992: 14.0},
+        },
+    )
+    annual = [
+        {"year": 1991, "revenueM": 110.0, "opexM": 10.0, "capexM": 1.0,
+         "deductionsM": 70.0, "profitTaxM": 5.0, "chddM": 24.0},
+        {"year": 1992, "revenueM": 200.0, "opexM": 24.0, "capexM": 2.0,
+         "deductionsM": 140.0, "profitTaxM": 10.0, "chddM": 12.0},
+    ]
+    parts = reference.decompose(table, annual)
+    # выручка выросла на 10 в год с коэффициентом 1, OPEX — на 4 в год с 0,5
+    assert parts["Выручка от основной деятельности"] == pytest.approx(10.0)
+    assert parts["Полный OPEX"] == pytest.approx(-2.0)
+    ours_chdd = sum(item["chddM"] for item in annual)
+    gap = ours_chdd - sum(table.series("ЧДД").values())
+    assert sum(parts.values()) == pytest.approx(gap)
+
+
+def test_decompose_skips_years_absent_from_our_run() -> None:
+    table = reference.ReferenceTable(
+        path=Path("нет"),
+        sheet="лист",
+        years=(1991, 1992),
+        rows={
+            "Коэффициент дисконтирования": {1991: 1.0, 1992: 0.5},
+            "Выручка от основной деятельности": {1991: 100.0, 1992: 200.0},
+        },
+    )
+    parts = reference.decompose(
+        table,
+        [{"year": 1992, "revenueM": 210.0}],
+        terms={"Выручка от основной деятельности": +1},
+    )
+    assert parts["Выручка от основной деятельности"] == pytest.approx(5.0)
+
+
+def test_events_agree_with_both_references_after_2004(
+    table: reference.ReferenceTable, tnavigator: reference.ReferenceTable
+) -> None:
+    """С 2004 счётчик остановок-пусков у обоих симуляторов один и тот же.
+
+    Всё расхождение по событиям живёт в 1994–2003, когда фонд вводился в
+    работу. Там сами эталоны расходятся между собой на 35 % — то есть счётчик
+    событий в этот период неустойчив у организаторов, а не только у нас.
+    """
+    key = "Количество остановок или запусков"
+    late = [year for year in table.years if year >= 2004]
+    assert sum(table.rows[key][y] for y in late) == 23
+    assert sum(tnavigator.rows[key][y] for y in late) == 23
+
+    early = [year for year in table.years if 1994 <= year <= 2003]
+    opm_early = sum(table.rows[key][y] for y in early)
+    tn_early = sum(tnavigator.rows[key][y] for y in early)
+    assert opm_early == 108
+    assert tn_early == 80
