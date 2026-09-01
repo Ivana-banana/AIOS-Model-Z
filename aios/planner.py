@@ -59,9 +59,18 @@ class Limits:
     max_external_water_m3_per_day: float | None = None
     """Мощность стороннего водоисточника, м³/сут. None — число неизвестно.
 
-    Нужна только правилу `external_water`. Значение по умолчанию для конкретного
-    объекта выводится из его же истории — `aios.balance.historic_external_water`
-    даёт максимум, который источник заведомо выдавал.
+    Действует **при любом правиле**, а не только при `external_water`: норма
+    («сколько закачивать относительно отбора») и физика («откуда взять воду») —
+    разные ограничения, и кейс задаёт оба сразу. Трекер на КТ-2 назвала второе
+    «докачкой дополнительного объёма воды в размере N»
+    (`docs/kt2-feedback-2026-08-31.md`, запись 00:16).
+
+    До 01.09 ключ жил внутри одного правила и в рабочей конфигурации
+    (`compensation`) не работал вовсе.
+
+    Значение по умолчанию для конкретного объекта выводится из его же истории —
+    `aios.balance.historic_external_water` даёт максимум, который источник
+    заведомо выдавал.
     """
 
     water_balance_rule: str = "produced_water"
@@ -265,24 +274,19 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         )
 
     if limits.enforce_water_balance:
-        if limits.water_balance_rule == "compensation":
-            result, water = _fit_injection_to_compensation(result, forecast, fluids,
-                                                           limits.water_tolerance)
-        elif limits.water_balance_rule == "external_water":
+        if limits.water_balance_rule == "external_water":
             result, water = _fit_injection_to_external_water(
                 result, forecast, fluids, limits.max_external_water_m3_per_day
             )
         else:
-            result, water = _fit_injection_to_available_water(result, forecast, fluids,
-                                                              limits.water_tolerance)
-        decisions.extend(water)
-
-        if limits.water_tolerance_min is not None:
-            result, floor = _raise_injection_to_floor(
-                result, forecast, fluids, limits.water_tolerance_min,
-                limits.water_balance_rule,
+            result, water = _fit_injection_to_water_corridor(
+                result, forecast, fluids,
+                rule=limits.water_balance_rule,
+                ceiling=limits.water_tolerance,
+                floor=limits.water_tolerance_min,
+                source_m3_per_day=limits.max_external_water_m3_per_day,
             )
-            decisions.extend(floor)
+        decisions.extend(water)
 
     if limits.max_field_liquid_m3_per_day is not None:
         result, liquid = _fit_liquid_to_capacity(result, forecast, norms,
@@ -790,30 +794,6 @@ def explain(decisions: list[Allocation]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _fit_injection_to_available_water(steps: list[ScheduleStep],
-                                      forecast: list[dict[str, Any]],
-                                      fluids: Fluids,
-                                      tolerance: float) -> tuple[list[ScheduleStep], list[Allocation]]:
-    """Ужать закачку до объёма добытой воды."""
-    produced = 0.0
-    planned = 0.0
-    for row in forecast:
-        oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
-        if liquid_t > 0 and 0 <= oil_t <= liquid_t:
-            produced += (liquid_t - oil_t) * 1000.0 / fluids.water_density
-        planned += max(row["WWIT_Diff"], 0.0)
-
-    allowed = produced * tolerance
-    if planned <= allowed or planned <= 0:
-        return steps, []
-
-    return _scale_injection(
-        steps, allowed / planned,
-        f"закачка {planned:,.0f} м³ превышает добытую воду "
-        f"{produced:,.0f} м³; источника сверх неё нет",
-    )
-
-
 def _fit_injection_to_external_water(
     steps: list[ScheduleStep],
     forecast: list[dict[str, Any]],
@@ -869,76 +849,99 @@ def _fit_injection_to_external_water(
     )
 
 
-def _fit_injection_to_compensation(steps: list[ScheduleStep],
-                                   forecast: list[dict[str, Any]],
-                                   fluids: Fluids,
-                                   ceiling: float) -> tuple[list[ScheduleStep], list[Allocation]]:
-    """Ужать закачку до компенсации отобранного объёма в пластовых условиях.
+def _fit_injection_to_water_corridor(
+    steps: list[ScheduleStep],
+    forecast: list[dict[str, Any]],
+    fluids: Fluids,
+    *,
+    rule: str,
+    ceiling: float,
+    floor: float | None,
+    source_m3_per_day: float | None,
+) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Привести закачку к коридору нормы и к тому, сколько воды физически есть.
 
-    База — нефть вместе с водой, а не одна вода: закачка при заводнении возмещает
-    отобранную пустотность, иначе поддерживать пластовое давление было бы нечем.
-    Объёмные коэффициенты Модели Z измерены по деку (`Bв = 1,0000`,
-    `Bн` = 0,9862…1,0078), то есть поверхностные объёмы здесь практически равны
-    пластовым; на другом кейсе это нужно будет пересчитать (Р-61).
+    Один шаг вместо трёх, и это не стилистика. Каждая срезка здесь **умножает**
+    текущие расходы, а базу берёт из прогноза — того самого, который срезки уже
+    не отражают. Две срезки подряд поэтому дают произведение множителей, то есть
+    «двойную экономию», которой в пласте нет; ровно об этом предупреждает
+    комментарий о порядке в `enforce`. Сложить в одном шаге срезку сверху, добор
+    снизу и предел источника — единственный способ не считать одно и то же
+    дважды.
 
-    Ужимаем пропорционально по всем нагнетательным — по той же причине, что и в
-    `_fit_injection_to_available_water`: чья закачка полезнее, тривиальный
-    суррогат сказать не может.
-    """
-    withdrawn = 0.0
-    planned = 0.0
-    for row in forecast:
-        oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
-        if liquid_t > 0 and 0 <= oil_t <= liquid_t:
-            withdrawn += oil_t * 1000.0 / fluids.oil_density
-            withdrawn += (liquid_t - oil_t) * 1000.0 / fluids.water_density
-        planned += max(row["WWIT_Diff"], 0.0)
+    Три границы, из которых собирается итог:
 
-    allowed = withdrawn * ceiling
-    if planned <= allowed or planned <= 0:
-        return steps, []
+    * **верхняя граница нормы** — `база × ceiling`. База зависит от правила:
+      отобранная пустотность (нефть вместе с водой) у `compensation`, добытая
+      вода у `produced_water`;
+    * **нижняя граница нормы** — `база × floor`, если коридор двусторонний;
+    * **физика источника** — попутная вода плюс `source_m3_per_day × сутки`.
 
-    return _scale_injection(
-        steps, allowed / planned,
-        f"закачка {planned:,.0f} м³ даёт компенсацию {planned / withdrawn:.2f} "
-        f"от отобранных {withdrawn:,.0f} м³ при потолке {ceiling:.2f}",
-    )
+    Приоритет между ними один и он не обсуждается: **воды, которой нет, никакая
+    норма не создаёт.** Поэтому предел источника режет и верхнюю границу, и
+    добор: если водозабора не хватает на нижнюю границу коридора, расписание
+    останется ниже нормы, и это правильный исход, а не ошибка. Назвать
+    несоответствие — работа аудита по факту
+    (`aios.balance.compensation_problems`, `aios.balance.external_water_problems`).
 
-
-def _raise_injection_to_floor(steps: list[ScheduleStep],
-                              forecast: list[dict[str, Any]],
-                              fluids: Fluids,
-                              floor: float,
-                              rule: str) -> tuple[list[ScheduleStep], list[Allocation]]:
-    """Добрать закачку до нижней границы коридора баланса воды.
-
-    Зеркало срезки сверху: та же база, тот же пропорциональный множитель, только
-    в другую сторону. База зависит от правила ровно так же, как у верхней
-    границы — отобранная пустотность у `compensation`, добытая вода у
-    `produced_water`.
-
-    **Добор идёт первым в цепочке ограничений, и это осознанно.** Дальше по
-    порядку стоят физические пределы: приёмистость скважины, мощность ППД,
-    годовой объём. Любой из них может снять часть добора обратно, и тогда
-    расписание останется ниже коридора. Это правильная приоритетность — водовод
-    важнее нормы, — но она означает, что планировщик **не гарантирует** попадание
-    в коридор, а только двигает к нему. Ловит несоответствие аудит по факту
-    (`aios.balance.compensation_problems` с тем же `floor`), и он же —
-    единственный, кто увидит случай «нагнетательных нет вовсе»: домножать нечего,
-    расписанием такое не лечится.
+    Правило `external_water` сюда не попадает: оно целиком про источник и
+    обслуживается `_fit_injection_to_external_water`.
     """
     base = 0.0
+    produced_water = 0.0
     planned = 0.0
+    stamps: set[str] = set()
     for row in forecast:
         oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
         if liquid_t > 0 and 0 <= oil_t <= liquid_t:
-            base += (liquid_t - oil_t) * 1000.0 / fluids.water_density
+            water_m3 = (liquid_t - oil_t) * 1000.0 / fluids.water_density
+            produced_water += water_m3
+            base += water_m3
             if rule == "compensation":
                 base += oil_t * 1000.0 / fluids.oil_density
         planned += max(row["WWIT_Diff"], 0.0)
+        stamp = str(row.get("DATA", ""))[:7]
+        if len(stamp) == 7:
+            stamps.add(stamp)
 
-    required = base * floor
-    if required <= 0 or planned >= required or planned <= 0:
+    if planned <= 0 or base <= 0:
+        return steps, []
+
+    allowed = base * ceiling
+    reason = (
+        f"закачка {planned:,.0f} м³ даёт компенсацию {planned / base:.2f} "
+        f"от отобранных {base:,.0f} м³ при потолке {ceiling:.2f}"
+        if rule == "compensation" else
+        f"закачка {planned:,.0f} м³ превышает добытую воду "
+        f"{base:,.0f} м³; источника сверх неё нет"
+    )
+
+    if source_m3_per_day is not None:
+        if not stamps:
+            # Тихо подставить 365 нельзя: на длинном горизонте это занизило бы
+            # доступную воду в разы и срезало бы закачку без всякой причины.
+            raise ValueError(
+                "лимиту стороннего источника нужна колонка DATA в прогнозе: он "
+                "задан в м³/сут, и без календаря его не с чем сравнивать"
+            )
+        days = balance.days_of(stamps)
+        by_source = produced_water + source_m3_per_day * days
+        if by_source < allowed:
+            allowed = by_source
+            reason = (
+                f"закачке нужно {(planned - produced_water) / days:,.0f} м³/сут воды "
+                f"со стороны при мощности источника {source_m3_per_day:,.10g} м³/сут"
+            )
+
+    if planned > allowed:
+        return _scale_injection(steps, allowed / planned, reason)
+
+    if floor is None:
+        return steps, []
+
+    # Добор ограничен той же доступной водой: `allowed` уже её учитывает.
+    required = min(base * floor, allowed)
+    if planned >= required:
         return steps, []
 
     return _scale_injection(
