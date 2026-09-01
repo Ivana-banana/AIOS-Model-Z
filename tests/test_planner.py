@@ -1037,3 +1037,67 @@ def test_quota_still_cancels_what_the_cycle_asked_for(norms):
 
     assert statuses == ["OPEN", "SHUT"], "одна остановка проходит по квоте, вторая отменяется"
     assert any("отменён: квота мероприятий" in decision.reason for decision in decisions)
+def test_a_group_cut_to_zero_shuts_the_well_instead_of_leaving_it_open(norms):
+    """Открытая запись с нулевым дебитом делает расписание непригодным целиком.
+
+    Найдено критиком 01.09: объектный предел в этом положении ставил SHUT, а
+    групповой оставлял OPEN с нулём — `schedule.validate` такое расписание
+    отвергает, а проверка условий при этом говорила «соблюдено».
+    """
+    from aios.schedule import validate
+
+    steps = [month_step(2027, 1, producers=[prod("W1", 60.0), prod("W2", 60.0)])]
+    forecast = [produced("2027-01-01", "W1", 2.0, 998.0, rate=60.0),
+                produced("2027-01-01", "W2", 200.0, 800.0, rate=60.0)]
+    limits = planner.Limits(
+        enforce_water_balance=False,
+        well_groups={"куст-1": frozenset({"W1", "W2"})},
+        group_liquid_caps_m3_per_day={"куст-1": 10.0},
+    )
+
+    result, _ = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+    shut = [control for control in result[0].producers if control.status == "SHUT"]
+
+    assert shut and shut[0].liquid_rate is None
+    assert not [problem for problem in validate(result)
+                if "нулевой дебит" in problem.reason]
+
+
+def test_a_zero_well_cap_shuts_the_well(norms):
+    """Адресный потолок ноль означает «не давать работать», а не «открыта с нулём»."""
+    from aios.schedule import validate
+
+    steps = [month_step(2027, 1, producers=[prod("W1", 60.0), prod("W2", 60.0)])]
+    limits = planner.Limits(enforce_water_balance=False,
+                            well_caps_m3_per_day={"W1": 0.0})
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+    rates = {control.well: (control.status, control.liquid_rate)
+             for control in result[0].producers}
+
+    assert rates["W1"] == ("SHUT", None)
+    assert rates["W2"] == ("OPEN", 60.0)
+    assert not [problem for problem in validate(result)
+                if "нулевой дебит" in problem.reason]
+def test_phase_limit_does_not_cut_a_month_another_limit_already_fixed(norms):
+    """Фаза считается по текущим уставкам, а не по сырому прогнозу.
+
+    Найдено критиком 01.09: на репетиции предел по воде (1400 т/сут) был уже
+    соблюдён после объектной срезки — фактические 1203, — а планировщик всё равно
+    сделал 33 срезки и снял 471 939 м³ жидкости за горизонт.
+    """
+    steps = [month_step(2007, 1, producers=[prod("1", 100.0)])]
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0, rate=100.0)]
+    oil_t = 100.0 * FLUIDS.oil_density / 1000
+    # предел ровно вдвое ниже прогноза, но объектный предел уже урезал уставку
+    # вдвое — значит фаза в него укладывается и резать нечего
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_liquid_m3_per_day=50.0,
+                            max_field_oil_t_per_day=oil_t / 31 / 2)
+
+    result, decisions = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    assert result[0].producers[0].liquid_rate == pytest.approx(50.0)
+    assert not [one for one in decisions if "нефть" in one.resource], (
+        "месяц, приведённый чужой срезкой, фазовый предел резать не должен"
+    )

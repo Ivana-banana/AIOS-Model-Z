@@ -470,14 +470,15 @@ def _achieved_rates(forecast: list[dict[str, Any]]) -> dict[str, dict[str, float
     return rates
 
 
-def _phase_by_month(forecast: list[dict[str, Any]], phase: str) -> dict[str, float]:
-    """Тонны фазы за месяц по объекту: `{"2007-01": 12345.0}`.
+def _phase_by_well(forecast: list[dict[str, Any]],
+                   phase: str) -> dict[str, dict[str, float]]:
+    """Тонны фазы за месяц по скважинам: `{"2007-01": {"скв": 123.0}}`.
 
-    Считается по прогнозу, потому что расписание фаз не содержит вовсе: там
-    уставки по жидкости и по закачке. Строки, исключённые методикой, не считаются
-    — тем же правилом, что и везде в проекте.
+    Поскважинно, а не суммой по объекту: фаза месяца считается по **текущим**
+    уставкам расписания, а для этого надо знать, чья именно это тонна. Строки,
+    исключённые методикой, не считаются — тем же правилом, что и везде в проекте.
     """
-    totals: dict[str, float] = {}
+    totals: dict[str, dict[str, float]] = {}
     for row in forecast:
         if not counted_by_methodology(row):
             continue
@@ -485,7 +486,9 @@ def _phase_by_month(forecast: list[dict[str, Any]], phase: str) -> dict[str, flo
         liquid_t = max(row["WLPT_Diff"], 0.0)
         value = oil_t if phase == "нефть" else max(liquid_t - oil_t, 0.0)
         stamp = str(row["DATA"])[:7]
-        totals[stamp] = totals.get(stamp, 0.0) + value
+        well = str(row["well"])
+        month = totals.setdefault(stamp, {})
+        month[well] = month.get(well, 0.0) + value
     return totals
 
 
@@ -511,7 +514,7 @@ def _fit_phase_to_capacity(steps: list[ScheduleStep],
             "не получить, там только уставки по жидкости"
         )
 
-    monthly = _phase_by_month(forecast, phase)
+    monthly = _phase_by_well(forecast, phase)
     reference = _achieved_rates(forecast)
     decisions: list[Allocation] = []
     reported: set[str] = set()
@@ -520,10 +523,24 @@ def _fit_phase_to_capacity(steps: list[ScheduleStep],
     for step in steps:
         stamp = f"{step.date.year:04d}-{step.date.month:02d}"
         days = monthrange(step.date.year, step.date.month)[1]
-        produced_t = monthly.get(stamp)
-        if produced_t is None:
+        by_well = monthly.get(stamp)
+        if by_well is None:
             result.append(step)
             continue
+        achieved = reference.get(stamp, {})
+
+        # Фаза считается **по текущим уставкам**, а не по сырому прогнозу: к этому
+        # месту расписание уже прошло объектные пределы, и месяц мог перестать
+        # нарушать фазовый предел сам собой. До 02.09 срезка этого не видела и
+        # резала повторно: на репетиции при пределе воды 1400 т/сут и фактическом
+        # 1203 планировщик сделал 33 срезки и снял 471 939 м³ жидкости.
+        planned = {control.well: control.liquid_rate or 0.0 for control in step.producers
+                   if control.status == "OPEN"}
+        produced_t = sum(
+            tonnes * min(1.0, planned.get(well, 0.0) / achieved[well])
+            for well, tonnes in by_well.items()
+            if achieved.get(well, 0.0) > 0
+        )
         rate = produced_t / days
         if rate <= capacity_t_per_day:
             result.append(step)
@@ -635,8 +652,15 @@ def _fit_groups(steps: list[ScheduleStep],
                         before=control.liquid_rate or 0.0, after=cuts[control.well],
                         reason=(f"группа «{group}»: {total:,.1f} > потолка {cap:,.1f} м³/сут"),
                     ))
-                producers[index] = ProducerControl(control.well, control.status, control.mode,
-                                                   cuts[control.well], control.bhp)
+                # ноль означает остановку, а не «открыта и ничего не даёт»: открытая
+                # запись с нулевым дебитом делает расписание непригодным целиком
+                # (`schedule.validate`), и до 02.09 групповой потолок именно её и
+                # ставил — в отличие от объектного, который закрывал скважину
+                rate = cuts[control.well]
+                producers[index] = ProducerControl(
+                    control.well, "SHUT" if rate <= 0 else control.status,
+                    control.mode, rate or None, control.bhp,
+                )
 
         for group, cap in sorted(injection_caps.items()):
             members = groups[group]
@@ -660,8 +684,11 @@ def _fit_groups(steps: list[ScheduleStep],
                         before=control.rate, after=reduced,
                         reason=(f"группа «{group}»: {total:,.1f} > потолка {cap:,.1f} м³/сут"),
                     ))
-                injectors[index] = InjectorControl(control.well, control.fluid, control.status,
-                                                   control.mode, reduced, control.bhp)
+                injectors[index] = InjectorControl(
+                    control.well, control.fluid,
+                    "SHUT" if reduced <= 0 else control.status,
+                    control.mode, reduced or None, control.bhp,
+                )
 
         result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
     return result, decisions
@@ -853,8 +880,13 @@ def _fit_wells_to_caps(steps: list[ScheduleStep],
                     before=rate, after=cap,
                     reason=f"отбор {rate:,.10g} > потолка скважины {cap:,.10g} м³/сут",
                 ))
-            producers.append(ProducerControl(control.well, control.status, control.mode,
-                                             cap, control.bhp))
+            # потолок ноль — это остановка: адресный ноль конфигурация принимает
+            # («не давать этой скважине работать»), а открытая запись с нулевым
+            # дебитом делает расписание непригодным
+            producers.append(ProducerControl(
+                control.well, "SHUT" if cap <= 0 else control.status,
+                control.mode, cap or None, control.bhp,
+            ))
         injectors = []
         for control in step.injectors:
             cap = cap_for(control.well, limits.max_well_injection_m3_per_day)
@@ -869,8 +901,10 @@ def _fit_wells_to_caps(steps: list[ScheduleStep],
                     before=rate, after=cap,
                     reason=f"закачка {rate:,.10g} > потолка скважины {cap:,.10g} м³/сут",
                 ))
-            injectors.append(InjectorControl(control.well, control.fluid, control.status,
-                                             control.mode, cap, control.bhp))
+            injectors.append(InjectorControl(
+                control.well, control.fluid, "SHUT" if cap <= 0 else control.status,
+                control.mode, cap or None, control.bhp,
+            ))
         result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
     return result, decisions
 
