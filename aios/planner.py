@@ -1480,11 +1480,17 @@ def _hold_regimes(steps: list[ScheduleStep], months: int,
     held_since: dict[str, int] = {}
     current: dict[str, float | None] = {}
 
-    for index, step in enumerate(steps):
+    for step in steps:
+        # календарные месяцы, а не номера шагов: шаг отчётности в кейсе задают
+        # организаторы (ТЗ п. 4.3), и на квартальном расписании счёт по шагам
+        # отменял бы смену через девять месяцев как «раньше срока» при пороге
+        # шесть (ревизия 02.09). `max_events_per_month` рядом считает по календарю
+        # — две ручки одного коммита не должны читать время по-разному.
+        moment = step.date.year * 12 + step.date.month
         producers, injectors = [], []
         for control in step.producers:
             rate, kept = _hold_one(control.well, control.liquid_rate, control.status,
-                                   index, months, held_since, current,
+                                   moment, months, held_since, current,
                                    (control.well, step.date) in protected)
             if kept and rate != control.liquid_rate:
                 decisions.append(Allocation(
@@ -1497,7 +1503,7 @@ def _hold_regimes(steps: list[ScheduleStep], months: int,
             producers.append(control)
         for control in step.injectors:
             rate, kept = _hold_one(control.well, control.rate, control.status,
-                                   index, months, held_since, current,
+                                   moment, months, held_since, current,
                                    (control.well, step.date) in protected)
             if kept and rate != control.rate:
                 decisions.append(Allocation(
@@ -1512,24 +1518,30 @@ def _hold_regimes(steps: list[ScheduleStep], months: int,
     return result, decisions
 
 
-def _hold_one(well: str, asked: float | None, status: str, index: int, months: int,
+def _hold_one(well: str, asked: float | None, status: str, moment: int, months: int,
               held_since: dict[str, int], current: dict[str, float | None],
               protected: bool) -> tuple[float | None, bool]:
-    """Какую уставку оставить скважине и было ли удержание."""
+    """Какую уставку оставить скважине и было ли удержание.
+
+    `moment` — календарный месяц как число (`год × 12 + месяц`), а не номер шага:
+    расписание кейса может идти кварталами.
+    """
     if status != "OPEN":
-        # смена статуса — мероприятие, а не режим: держать её нечем
+        # смена статуса — мероприятие, а не режим: держать её нечем. Сброс
+        # состояния обязателен: иначе первая уставка после возврата в работу
+        # удерживалась бы на доостановочной
         current[well] = None
-        held_since[well] = index
+        held_since[well] = moment
         return asked, False
     if well not in current or current[well] is None:
         current[well] = asked
-        held_since[well] = index
+        held_since[well] = moment
         return asked, False
     if asked == current[well]:
         return asked, False
-    if protected or index - held_since[well] >= months:
+    if protected or moment - held_since[well] >= months:
         current[well] = asked
-        held_since[well] = index
+        held_since[well] = moment
         return asked, False
     return current[well], True
 

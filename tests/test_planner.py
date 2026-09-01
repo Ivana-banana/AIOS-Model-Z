@@ -1305,29 +1305,49 @@ def test_a_regime_is_held_for_the_declared_number_of_months(norms):
 
 
 def test_holding_a_regime_does_not_block_a_shutdown(norms):
-    """Смена статуса — мероприятие, а не режим: удержание её не касается."""
+    """Смена статуса — мероприятие, а не режим: удержание её не касается.
+
+    Проверяется не статус (он остался бы верным и со сломанной веткой), а то, что
+    после остановки состояние сбрасывается: первая уставка после возврата в работу
+    не должна удерживаться на доостановочной (ревизия 02.09).
+    """
     steps = [
         month_step(2027, 1, producers=[prod("W", 30.0)]),
         month_step(2027, 2, producers=[ProducerControl("W", "SHUT", "LRAT", None, 50.0)]),
+        month_step(2027, 3, producers=[prod("W", 12.0)]),
     ]
     limits = planner.Limits(enforce_water_balance=False, min_regime_months=6)
 
     result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+    rates = [(control.status, control.liquid_rate)
+             for step_ in result for control in step_.producers]
 
-    assert [control.status for step_ in result for control in step_.producers] == ["OPEN", "SHUT"]
+    assert rates == [("OPEN", 30.0), ("SHUT", None), ("OPEN", 12.0)], (
+        "пуск после остановки задаёт новый режим, а не возвращается к прежнему"
+    )
 
 
 def test_a_limit_cut_beats_the_regime_hold(norms):
-    """Ограничение важнее длительности: иначе удержание заставляло бы нарушать предел."""
-    steps = [month_step(2027, month, producers=[prod("W", rate)])
-             for month, rate in ((1, 30.0), (2, 30.0))]
+    """Ограничение важнее длительности: иначе удержание заставляло бы нарушать предел.
+
+    Ставки на шагах обязаны различаться, иначе удержание просто не наступает и
+    тест проходит с выключенным механизмом (ревизия 02.09 поймала ровно это).
+    """
+    steps = [month_step(2027, 1, producers=[prod("W", 30.0)]),
+             month_step(2027, 2, producers=[prod("W", 40.0)])]
     limits = planner.Limits(enforce_water_balance=False, min_regime_months=6,
                             max_field_liquid_m3_per_day=10.0)
 
+    held, decisions = planner.enforce(steps, [], norms,
+                                      planner.Limits(enforce_water_balance=False,
+                                                     min_regime_months=6), FLUIDS)
     result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
     rates = [control.liquid_rate for step_ in result for control in step_.producers]
 
-    assert rates == [10.0, 10.0], "срезка проходит, несмотря на удержание режима"
+    assert [control.liquid_rate for step_ in held for control in step_.producers] == \
+        [30.0, 30.0], "без предела удержание оставляет прежнюю уставку"
+    assert any("длительность режима" in decision.resource for decision in decisions)
+    assert rates == [10.0, 10.0], "с пределом срезка проходит, несмотря на удержание"
 def test_a_well_below_the_minimum_rate_is_shut_not_raised(norms):
     """«Минимальная рентабельная добыча»: ниже порога скважина стоит, а не поднимается.
 
@@ -1427,3 +1447,18 @@ def test_enforce_returns_a_full_schedule_even_after_the_quota_cancels(norms):
     february = sum(control.liquid_rate or 0.0 for control in result[1].producers
                    if control.status == "OPEN")
     assert february <= 250.0
+def test_regime_hold_counts_calendar_months_not_steps(norms):
+    """Шаг отчётности в кейсе задают организаторы: на кварталах счёт по шагам врёт.
+
+    Ревизия 02.09: смена через девять месяцев отменялась как «раньше срока» при
+    пороге шесть, потому что считались номера шагов, а не календарь.
+    """
+    steps = [month_step(2027, month, producers=[prod("W", rate)])
+             for month, rate in ((1, 30.0), (4, 30.0), (7, 30.0), (10, 60.0))]
+    limits = planner.Limits(enforce_water_balance=False, min_regime_months=6)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    rates = [control.liquid_rate for step_ in result for control in step_.producers]
+
+    assert rates == [30.0, 30.0, 30.0, 60.0], "девять месяцев больше шести — смена законна"
+    assert not [one for one in decisions if "длительность режима" in one.resource]
