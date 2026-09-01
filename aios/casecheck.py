@@ -339,7 +339,15 @@ def _well_caps(steps: list[ScheduleStep], caps: dict[str, float]) -> LimitCheck:
         rates = _rates(step, producers=True) | _rates(step, producers=False)
         for well, cap in caps.items():
             rate = rates.get(well)
-            if rate is None or cap <= 0:
+            if rate is None:
+                continue
+            if cap <= 0:
+                # потолок ноль означает «не давать работать»: любая работа его
+                # нарушает. Прежняя редакция такую скважину пропускала — то есть
+                # не проверяла единственный случай, когда потолок абсолютен
+                if rate > 0 and worst_ratio < float("inf"):
+                    worst_ratio = float("inf")
+                    worst, where, limit_of_worst = rate, f"скв. {well}, {_stamp(step)}", 0.0
                 continue
             ratio = rate / cap
             if ratio > worst_ratio:

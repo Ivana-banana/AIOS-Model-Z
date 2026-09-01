@@ -155,8 +155,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"--- итоги по всей выгрузке ({dates[0]} — {dates[-1]}) ---")
     print(f"нефть:     {oil_kt:11.1f} тыс. т")
     for name, value in reference_oil_kt():
+        # нулевой ориентир — испорченная или чужая книга; печатаем её и не делим,
+        # иначе ZeroDivisionError убьёт вывод после одиннадцати минут счёта
+        share = f"{100.0 * (oil_kt - value) / value:+.2f} % к нему" if value else "делить не на что"
         print(f"           {value:11.1f} тыс. т   {name} "
-              f"({100.0 * (oil_kt - value) / value:+.2f} % к нему; сравнимо только с историей)")
+              f"({share}; сравнимо только с историей)")
     print(f"жидкость:  {liquid_kt:11.1f} тыс. т")
     print(f"закачка:   {injection_km3:11.1f} тыс. м3")
 

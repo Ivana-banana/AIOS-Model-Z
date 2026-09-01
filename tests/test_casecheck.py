@@ -316,3 +316,30 @@ def test_active_wells_and_forced_shut_count_injectors_too():
 
     assert active.value == 3.0 and not active.satisfied
     assert forced.value == 1.0 and forced.where == "скв. 9, 2007-01"
+def test_a_zero_cap_is_violated_by_any_work():
+    """Потолок ноль абсолютен: «не давать работать». Раньше он единственный не проверялся."""
+    steps = [step(2007, 1, producers=[prod("W", 5.0)])]
+
+    check = casecheck.check(steps, [], planner.Limits(well_caps_m3_per_day={"W": 0.0}))[0]
+
+    assert not check.satisfied
+    assert check.value == 5.0 and check.limit == 0.0
+
+
+def test_field_limits_see_wells_that_keep_running_from_an_earlier_step():
+    """Дек несёт дельты: скважина без записи на шаге продолжает работать.
+
+    Ревизия 02.09: пределы объекта, группы и фонда суммировали только записи
+    шага, поэтому три нагнетателя по 400 м³/сут, открытые в три разных месяца,
+    не нарушали предела 800 — и проверка соглашалась.
+    """
+    steps = [
+        step(2027, 1, injectors=[inj("A", 400.0)]),
+        step(2027, 2, injectors=[inj("B", 400.0)]),
+        step(2027, 3, injectors=[inj("C", 400.0)]),
+    ]
+    limits = planner.Limits(max_field_injection_m3_per_day=800.0)
+
+    check = casecheck.check(planner.expand_deltas(steps), [], limits)[0]
+
+    assert check.value == pytest.approx(1200.0) and not check.satisfied

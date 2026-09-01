@@ -157,13 +157,19 @@ def main(argv: list[str] | None = None) -> int:
         # первая редакция скрипта звала `problems` всегда и печатала 29 нарушений
         # на сценарии, который выбранное правило проходит целиком
         if limits.water_balance_rule == "compensation":
-            water = balance.compensation_problems(forecast, config.fluids,
-                                                  limits.water_tolerance)
+            # нижняя граница коридора передаётся тоже: без неё скрипт печатал
+            # «объявлено» и не проверял её вовсе — ровно мёртвая ручка, ради
+            # поиска которых репетиция и написана (ревизия 02.09, находка 5)
+            water = balance.compensation_problems(
+                forecast, config.fluids, limits.water_tolerance,
+                floor=limits.water_tolerance_min,
+            )
         elif limits.water_balance_rule == "external_water":
             water = balance.external_water_problems(forecast, config.fluids,
                                                     limits.max_external_water_m3_per_day)
         else:
-            water = balance.problems(forecast, config.fluids, limits.water_tolerance)
+            water = balance.problems(forecast, config.fluids, limits.water_tolerance,
+                                     floor=limits.water_tolerance_min)
         print(f"--- баланс воды ({limits.water_balance_rule}): "
               f"{'нарушений нет' if not water else len(water)} ---")
         for line in water[:5]:
@@ -195,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Квота мероприятий — единственное условие, которое планировщик нарушает
     # осознанно: мероприятие, порождённое жёстким ограничением, не отменяется
-    # (Р-138), потому что его отмена вернула бы расписание в недопустимое
+    # (Р-139), потому что его отмена вернула бы расписание в недопустимое
     # состояние. Такая уступка печатается отдельно и провалом не считается — но
     # только если планировщик её объявил; молчаливое превышение остаётся дефектом.
     conceded = [check for check in left if check.key == "max_events_per_year"

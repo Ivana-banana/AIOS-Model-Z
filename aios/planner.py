@@ -352,7 +352,9 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     """
     fluids = fluids or Fluids()
     forecast = _with_string_wells(forecast)
-    result = list(steps)
+    # расписание разворачивается в полные шаги: см. `expand_deltas` — без этого
+    # все пределы объекта, группы и фонда считают не тот фонд
+    result = expand_deltas(steps)
     decisions: list[Allocation] = []
 
     if limits.water_balance_rule not in ("produced_water", "compensation", "external_water"):
@@ -592,12 +594,23 @@ def _fit_phase_to_capacity(steps: list[ScheduleStep],
             if achieved_rate is None or achieved_rate <= 0:
                 producers.append(control)
                 continue
-            reduced = min(control.liquid_rate, achieved_rate * factor)
+            # Масштабируется **действующий** поток, а не достигнутый дебит:
+            # уставка ниже факта уже сама по себе срезала отклик, и умножать на
+            # factor надо именно её. Прежняя редакция ставила `achieved × factor`
+            # всем подряд, и скважина, у которой доля уже была ниже factor,
+            # оставалась нетронутой — предел после «успешной» срезки оставался
+            # нарушенным (ревизия 02.09, находка 1).
+            reduced = min(control.liquid_rate, achieved_rate) * factor
             if reduced >= control.liquid_rate:
                 producers.append(control)
                 continue
-            if stamp not in reported:
-                reported.add(stamp)
+            # решение печатается каждой срезанной скважине, а не первой за месяц:
+            # ключ по месяцу оставлял четыре изменённые уставки из пяти без
+            # единого объяснения — а объяснимость здесь требование регламента,
+            # и она же кормит отчёт репетиции (ревизия 02.09, находка 7)
+            mark = f"{stamp}:{control.well}"
+            if mark not in reported:
+                reported.add(mark)
                 decisions.append(Allocation(
                     well=control.well, resource=f"{phase}, {stamp}",
                     before=control.liquid_rate, after=reduced,
@@ -812,6 +825,7 @@ def _fit_fund(steps: list[ScheduleStep],
     # туда же (найдено репетицией приёмки).
     working: dict[str, tuple[bool, bool]] = {}
     rates: dict[str, tuple[str, float, float | None]] = {}
+    fluids_of: dict[str, str] = {}
 
     for step in steps:
         producers = list(step.producers)
@@ -890,6 +904,7 @@ def _fit_fund(steps: list[ScheduleStep],
                                      and not injecting, injecting)
             if injecting:
                 rates[control.well] = ("injector", control.rate or 0.0, control.bhp)
+            fluids_of[control.well] = control.fluid
 
         # скважина, которую надо закрыть, но записи о ней на шаге нет: дописываем
         # её сами — иначе ограничение фонда не действует вовсе
@@ -903,7 +918,10 @@ def _fit_fund(steps: list[ScheduleStep],
             if kind == "producer":
                 producers.append(ProducerControl(well, "SHUT", "LRAT", None, bhp))
             else:
-                injectors.append(InjectorControl(well, "WATER", "SHUT", "RATE", None, bhp))
+                # фаза берётся из последней записи скважины, а не выдумывается:
+                # «WATER» верно на Модели Z и неверно вообще (ревизия 02.09)
+                injectors.append(InjectorControl(well, fluids_of.get(well, "WATER"),
+                                                 "SHUT", "RATE", None, bhp))
             working[well] = (False, False)
 
         result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
@@ -1169,6 +1187,43 @@ def _fit_liquid_to_annual_volume(
                                              reduced, control.bhp))
         result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
     return result, decisions
+
+
+def expand_deltas(steps: list[ScheduleStep] | tuple[ScheduleStep, ...]
+                  ) -> list[ScheduleStep]:
+    """Развернуть расписание-дельты в полные шаги: каждый шаг несёт весь фонд.
+
+    В деке запись действует до следующей записи по той же скважине, поэтому шаг,
+    где скважина не упомянута, означает «режим не менялся». Расписание Модели Z
+    именно такое: 84…103 записи при 103 скважинах. Все ограничения объекта,
+    группы и фонда считались **по записям шага** — то есть не видели скважину,
+    которая работает с прошлого шага. Три «high» из ревизии 02.09 — это одна и та
+    же ошибка в шести функциях: предел по закачке 800 м³/сут не срабатывал на трёх
+    нагнетателях по 400, открытых в три разных месяца, и проверка соглашалась.
+
+    Чинится не в шести местах, а здесь: на вход планировщика приходит полное
+    расписание, и дальше вся арифметика по шагу верна сама собой. Развёрнутое
+    расписание эквивалентно исходному по смыслу (то же состояние фонда в каждый
+    месяц) и явнее его: режим каждой скважины виден в каждом шаге.
+    """
+    result: list[ScheduleStep] = []
+    producers: dict[str, ProducerControl] = {}
+    injectors: dict[str, InjectorControl] = {}
+    for step in steps:
+        for control in step.producers:
+            producers[control.well] = control
+            if control.status == "OPEN":
+                injectors.pop(control.well, None)
+        for control in step.injectors:
+            injectors[control.well] = control
+            if control.status == "OPEN":
+                producers.pop(control.well, None)
+        result.append(ScheduleStep(
+            step.date,
+            tuple(producers[well] for well in sorted(producers)),
+            tuple(injectors[well] for well in sorted(injectors)),
+        ))
+    return result
 
 
 def fund_states(steps: list[ScheduleStep]) -> list[dict[str, tuple[bool, bool]]]:

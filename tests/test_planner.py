@@ -1190,3 +1190,45 @@ def test_quota_works_on_a_schedule_where_steps_carry_only_changes(norms):
     assert state["A"] == (False, False), "первая остановка проходит по квоте"
     assert state["B"] == (True, False), "вторая отменена: квота исчерпана"
     assert any("отменён: квота" in one.reason for one in decisions)
+def test_field_limit_sees_the_whole_running_fund_not_just_this_step(norms):
+    """Три нагнетателя по 400, открытые в три месяца, против предела 800 м³/сут.
+
+    Ревизия 02.09 (три находки «high» из одной причины): все пределы объекта,
+    группы и фонда считали только записи шага, а дек несёт дельты — скважина,
+    работающая с прошлого шага, была невидима и срезке, и проверке.
+    """
+    steps = [
+        month_step(2027, 1, injectors=[inj("A", 400.0)]),
+        month_step(2027, 2, injectors=[inj("B", 400.0)]),
+        month_step(2027, 3, injectors=[inj("C", 400.0)]),
+    ]
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_injection_m3_per_day=800.0)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    march = sum(control.rate or 0.0 for control in result[2].injectors
+                if control.status == "OPEN")
+
+    assert march == pytest.approx(800.0)
+    assert decisions
+
+
+def test_phase_cut_scales_the_flow_that_is_actually_running(norms):
+    """Скважина с уставкой ниже факта уже срезала отклик — её тоже надо масштабировать.
+
+    Ревизия 02.09, находка 1: прежняя редакция ставила всем `факт × k`, и
+    скважина, чья доля уже была ниже k, оставалась нетронутой — предел после
+    срезки оставался нарушенным.
+    """
+    steps = [month_step(2007, 1, producers=[prod("A", 10.0), prod("B", 200.0)])]
+    forecast = [produced("2007-01-01", "A", 100.0, 900.0, rate=100.0),
+                produced("2007-01-01", "B", 100.0, 900.0, rate=100.0)]
+    oil_t = 100.0 * FLUIDS.oil_density / 1000
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_oil_t_per_day=oil_t * 0.5 / 31)
+
+    result, _ = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+    rates = {control.well: control.liquid_rate for control in result[0].producers}
+
+    assert rates["A"] < 10.0, "скважину с малой уставкой тоже надо срезать"
+    assert rates["B"] < 100.0
