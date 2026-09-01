@@ -1232,3 +1232,31 @@ def test_phase_cut_scales_the_flow_that_is_actually_running(norms):
 
     assert rates["A"] < 10.0, "скважину с малой уставкой тоже надо срезать"
     assert rates["B"] < 100.0
+def test_expand_deltas_carries_every_running_well_into_every_step():
+    """Развёртывание дельт: состояние фонда то же, записи — полные."""
+    steps = [
+        month_step(2027, 1, producers=[prod("A", 10.0)], injectors=[inj("W", 40.0)]),
+        month_step(2027, 2, producers=[prod("B", 20.0)]),
+        month_step(2027, 3, producers=[ProducerControl("A", "SHUT", "LRAT", None, 50.0)]),
+    ]
+
+    full = planner.expand_deltas(steps)
+
+    assert [len(step_.producers) for step_ in full] == [1, 2, 2]
+    assert all(len(step_.injectors) == 1 for step_ in full), "закачка не теряется"
+    # состояние фонда обязано совпасть с исходным: развёртывание ничего не решает
+    assert planner.fund_states(full) == planner.fund_states(list(steps))
+
+
+def test_expand_deltas_switches_a_well_between_roles():
+    """Перевод под закачку снимает запись добычи, и обратно — тоже."""
+    steps = [
+        month_step(2027, 1, producers=[prod("A", 10.0)]),
+        month_step(2027, 2, injectors=[inj("A", 40.0)]),
+        month_step(2027, 3, producers=[prod("A", 15.0)]),
+    ]
+
+    full = planner.expand_deltas(steps)
+
+    assert [len(step_.producers) for step_ in full] == [1, 0, 1]
+    assert [len(step_.injectors) for step_ in full] == [0, 1, 0]
