@@ -106,6 +106,8 @@ def check(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         checks.append(_events_per_period(steps, limits.max_events_per_year, period="year"))
     if limits.max_events_per_month is not None:
         checks.append(_events_per_period(steps, limits.max_events_per_month, period="month"))
+    if limits.min_producer_rate_m3_per_day is not None:
+        checks.append(_minimum_rate(steps, limits.min_producer_rate_m3_per_day))
     if limits.max_active_wells is not None:
         checks.append(_active_wells(steps, limits.max_active_wells))
     if limits.forced_shut_wells:
@@ -251,6 +253,23 @@ def _phase(steps: list[ScheduleStep], forecast: list[dict[str, Any]], limit: flo
         if rate > best:
             best, where = rate, stamp
     return LimitCheck(key=key, limit=limit, value=best, where=where, unit="т/сут")
+
+
+def _minimum_rate(steps: list[ScheduleStep], minimum: float) -> LimitCheck:
+    """Наименьший режим работающей добывающей против минимального рентабельного.
+
+    Единственная проверка «снизу»: у всех остальных нарушение — превышение, здесь
+    наоборот. Поэтому значение и предел переставлены местами так, чтобы `satisfied`
+    читалось тем же правилом «значение ≤ предел»: сравнивается недобор до порога.
+    """
+    worst, where = 0.0, "—"
+    for step in steps:
+        for well, rate in _rates(step, producers=True).items():
+            gap = minimum - rate
+            if rate > 0 and gap > worst:
+                worst, where = gap, f"скв. {well}, {_stamp(step)} ({rate:,.4g} м³/сут)"
+    return LimitCheck(key="min_producer_rate_m3_per_day", limit=0.0, value=worst,
+                      where=where, unit="м³/сут недобора")
 
 
 def _events_per_period(steps: list[ScheduleStep], limit: int, *, period: str) -> LimitCheck:

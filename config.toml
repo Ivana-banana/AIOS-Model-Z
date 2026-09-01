@@ -121,6 +121,7 @@ water_tolerance = 1.3
 #   max_events_per_year = 12             # остановки, пуски, переводы под закачку
 #   max_events_per_month = 3             # тот же счёт, но за календарный месяц
 #   min_regime_months = 3                # режим скважины держится не меньше трёх месяцев
+#   min_producer_rate_m3_per_day = 5     # ниже порога скважина не работает, а стоит
 #
 # Адресные потолки и группы:
 #   [limits.well_caps_m3_per_day]

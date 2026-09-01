@@ -172,6 +172,8 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
                                                  "limits", source),
             min_regime_months=_optional_count(limits, "min_regime_months",
                                               "limits", source),
+            min_producer_rate_m3_per_day=_optional_positive(
+                limits, "min_producer_rate_m3_per_day", "limits", source),
         ),
         policy=PolicyConfig(
             lookback_months=_at_least_one(policy, "lookback_months", "policy", source),

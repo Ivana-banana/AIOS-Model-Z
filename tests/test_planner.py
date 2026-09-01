@@ -1328,3 +1328,20 @@ def test_a_limit_cut_beats_the_regime_hold(norms):
     rates = [control.liquid_rate for step_ in result for control in step_.producers]
 
     assert rates == [10.0, 10.0], "срезка проходит, несмотря на удержание режима"
+def test_a_well_below_the_minimum_rate_is_shut_not_raised(norms):
+    """«Минимальная рентабельная добыча»: ниже порога скважина стоит, а не поднимается.
+
+    Поднять уставку до порога значило бы пообещать дебит, которого пласт может не
+    дать, — ровно то, за что в проекте забракован форсаж на суррогате.
+    """
+    steps = [month_step(2027, 1, producers=[prod("мало", 2.0), prod("много", 40.0)])]
+    limits = planner.Limits(enforce_water_balance=False,
+                            min_producer_rate_m3_per_day=5.0)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    state = {control.well: (control.status, control.liquid_rate)
+             for control in result[0].producers}
+
+    assert state["мало"] == ("SHUT", None)
+    assert state["много"] == ("OPEN", 40.0)
+    assert "минимальный дебит" in decisions[0].resource

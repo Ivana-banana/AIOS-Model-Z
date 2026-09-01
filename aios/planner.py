@@ -304,6 +304,20 @@ class Limits:
     календарный год, а не к каждому месяцу.
     """
 
+    min_producer_rate_m3_per_day: float | None = None
+    """Минимальный дебит работающей добывающей, м³/сут. None — предела нет.
+
+    Форма «минимальная рентабельная добыча» (п. 20 чек-листа приёмки): скважина
+    либо даёт не меньше порога, либо стоит. У нас до 02.09 было только правило
+    «`[policy].lookback_months` убыточных месяцев подряд — остановка», а это
+    другое: оно про деньги за период, а не про режим в моменте, и кейс может
+    задать именно второе.
+
+    Скважина ниже порога **останавливается**, а не поднимается до него: поднять
+    уставку значит пообещать дебит, которого пласт может не дать — ровно то, за
+    что в этом проекте забракован форсаж на суррогате.
+    """
+
     min_regime_months: int | None = None
     """Сколько месяцев режим скважины нельзя менять после изменения. None — можно.
 
@@ -460,6 +474,10 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # сначала объектные пределы (выше), потом скважинные, потом состав фонда,
     # потом годовой объём. Обратный порядок дал бы срезку по объекту поверх уже
     # срезанных скважин и «двойную» экономию, которой в пласте нет.
+    if limits.min_producer_rate_m3_per_day is not None:
+        result, small = _shut_below_minimum(result, limits.min_producer_rate_m3_per_day)
+        decisions.extend(small)
+
     result, per_well = _fit_wells_to_caps(result, limits)
     decisions.extend(per_well)
 
@@ -1316,6 +1334,40 @@ def events_of(steps: list[ScheduleStep]) -> set[tuple[str, Any]]:
             if _event_kind(before.get(well, (False, False)), state) is not None:
                 events.add((well, step.date))
     return events
+
+
+def _shut_below_minimum(steps: list[ScheduleStep],
+                        minimum: float) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Остановить добывающие, чей режим ниже минимального рентабельного.
+
+    Останавливаем, а не поднимаем до порога: поднятая уставка — обещание дебита,
+    которого пласт может не дать. Нагнетательных правило не касается: у закачки
+    своя экономика, и «минимальная рентабельная приёмистость» — не та же форма.
+    """
+    decisions: list[Allocation] = []
+    result: list[ScheduleStep] = []
+    reported: set[str] = set()
+
+    for step in steps:
+        producers = []
+        for control in step.producers:
+            rate = control.liquid_rate or 0.0
+            if control.status != "OPEN" or rate >= minimum:
+                producers.append(control)
+                continue
+            if control.well not in reported:
+                reported.add(control.well)
+                decisions.append(Allocation(
+                    well=control.well, resource="минимальный дебит",
+                    before=rate, after=0.0,
+                    reason=(f"режим {rate:,.4g} < минимального рентабельного "
+                            f"{minimum:,.4g} м³/сут — скважина останавливается, "
+                            "а не поднимается до порога"),
+                ))
+            producers.append(ProducerControl(control.well, "SHUT", control.mode,
+                                             None, control.bhp))
+        result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
+    return result, decisions
 
 
 def _changed_wells(result: list[ScheduleStep],

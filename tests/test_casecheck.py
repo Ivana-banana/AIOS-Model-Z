@@ -356,3 +356,13 @@ def test_monthly_event_quota_is_checked_separately_from_the_annual_one():
     assert checks["max_events_per_year"].satisfied
     assert not checks["max_events_per_month"].satisfied
     assert checks["max_events_per_month"].where == "2027-02"
+def test_minimum_rate_is_the_only_check_that_looks_downward():
+    """У всех проверок нарушение — превышение; у этой наоборот, недобор до порога."""
+    steps = [step(2007, 1, producers=[prod("мало", 2.0), prod("много", 40.0)])]
+
+    check = casecheck.check(steps, [], planner.Limits(
+        min_producer_rate_m3_per_day=5.0))[0]
+
+    assert not check.satisfied
+    assert check.value == pytest.approx(3.0), "недобор 5 − 2"
+    assert "скв. мало" in check.where
