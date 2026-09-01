@@ -165,6 +165,27 @@ def test_a_well_absent_from_the_forecast_does_not_invent_a_response():
     assert checks[0].value == pytest.approx(91.3 / 31, rel=1e-6)
 
 
+def test_well_caps_report_the_worst_offender_against_its_own_cap():
+    """Адресные потолки: у каждой скважины свой предел, и назван должен быть худший."""
+    steps = [step(2007, 1, producers=[prod("1", 300.0), prod("2", 120.0)])]
+    limits = planner.Limits(well_caps_m3_per_day={"1": 250.0, "2": 100.0})
+
+    checks = casecheck.check(steps, [], limits)
+
+    assert checks[0].key == "well_caps_m3_per_day"
+    assert checks[0].value == 300.0 and checks[0].limit == 250.0
+    assert checks[0].where == "скв. 1, 2007-01"
+    assert not checks[0].satisfied
+
+
+def test_well_caps_are_satisfied_when_every_well_is_under_its_own():
+    """Соблюдение считается по своему потолку, а не по чужому."""
+    steps = [step(2007, 1, producers=[prod("1", 200.0), prod("2", 90.0)])]
+    limits = planner.Limits(well_caps_m3_per_day={"1": 250.0, "2": 100.0})
+
+    assert casecheck.check(steps, [], limits)[0].satisfied
+
+
 def test_violations_lists_only_the_broken_ones():
     steps = [step(2007, 1, producers=[prod("1", 120.0)], injectors=[inj("9", 10.0)])]
     limits = planner.Limits(max_field_liquid_m3_per_day=100.0,

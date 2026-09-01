@@ -56,6 +56,24 @@ CHECKED_ELSEWHERE = {
 }
 
 
+#: Чем в решениях планировщика называется срезка каждого ключа. Нужно, чтобы
+#: отличить «условие выполнено своим механизмом» от «выполнено попутно чужим».
+_MARKS = {
+    "max_field_liquid_m3_per_day": ("жидкость", "среднесуточный отбор за год"),
+    "max_field_injection_m3_per_day": ("закачка", "среднесуточная закачка за год"),
+    "max_well_liquid_m3_per_day": ("потолок скважины", "жидкость"),
+    "max_well_injection_m3_per_day": ("потолок скважины", "закачка"),
+    "max_field_liquid_m3_per_year": ("годовой объём отбора жидкости",),
+    "max_field_injection_m3_per_year": ("годовой объём закачки",),
+    "max_field_oil_t_per_day": ("нефть",),
+    "max_field_water_t_per_day": ("попутная вода",),
+    "max_active_wells": ("предел числа действующих",),
+    "forced_shut_wells": ("обязательная остановка",),
+    "forced_shut_windows": ("обязательная остановка в окне",),
+    "well_caps_m3_per_day": ("потолок скважины",),
+}
+
+
 def declared(limits: planner.Limits) -> list[str]:
     """Ключи, реально объявленные в конфигурации: не None, не пусто, не False."""
     names = []
@@ -165,6 +183,31 @@ def main(argv: list[str] | None = None) -> int:
               "(проверены, но ничего не доказывают о механизме):")
         for key in untouched:
             print(f"  {key}")
+
+    # «Нарушалось до, соблюдено после» ещё не значит, что сработал механизм именно
+    # этого условия: предел мог быть выполнен чужой срезкой. Найдено критиком
+    # 01.09 на `max_active_wells` — отчёт печатал «103 → 95 соблюдено», а решений
+    # по числу действующих скважин не было ни одного.
+    worked = {decision.resource.split(",")[0].split("[")[0].strip() for decision in decisions}
+    def marks_of(key: str) -> tuple[str, ...]:
+        if key.startswith("group_liquid_caps"):
+            return ("жидкость группы",)
+        if key.startswith("group_injection_caps"):
+            return ("закачка группы",)
+        return _MARKS.get(key, (key,))
+
+    silent = [
+        one.key for one in before
+        if not one.satisfied and not any(mark in resource for resource in worked
+                                         for mark in marks_of(one.key))
+    ]
+    if silent:
+        print()
+        print("условия, выполнившиеся без собственных решений — их механизм "
+              "репетиция НЕ проверила (предел выполнен другой срезкой):")
+        for key in silent:
+            print(f"  {key}")
+
     print("репетиция пройдена: каждое объявленное числом условие соблюдено")
     return 0
 
