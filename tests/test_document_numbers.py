@@ -655,3 +655,77 @@ def test_slide_of_what_we_do_not_claim_speaks_the_confirmed_cycle_uplift():
         assert forbidden not in slide, f"слайд 7 снова называет отозванное: {forbidden}"
     assert "460,8 против 1 281,9" in slide
     assert "+461 млн, 36 % от простого правила" in slide
+
+
+# --- Сверка с эталонами организаторов: документы против самих файлов ---------
+#
+# Найдено 01.09: числа сверки 30–31.08 стояли только в `kt2-plan.md`,
+# `kt2-explained.md`, `experiments.md` и журнале, а отчёт, README, презентация,
+# заявка, ответы защиты и матрица ТЗ продолжали называть отозванное «5,0 % по
+# накопленной нефти». Раскладки организаторов лежат в репозитории, поэтому эти
+# величины пересчитываются здесь, а не переписываются из документа в документ.
+
+REFERENCE_DIR = ROOT / "docs" / "reference"
+#: Документы, которые читает жюри и в которых сверка обязана быть названа числом.
+JURY_DOCUMENTS = (
+    "docs/report.md",
+    "README.md",
+    "docs/presentation.md",
+    "docs/submission.md",
+    "docs/defence-qa.md",
+    "docs/explained.md",
+)
+
+
+def _ru(value: float) -> str:
+    """Число в том виде, в каком оно печатается в документах: 5 218,9."""
+    return f"{value:,.1f}".replace(",", " ").replace(".", ",")
+
+
+@pytest.fixture(scope="module")
+def published_references():
+    """Обе раскладки организаторов по базовому сценарию."""
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from aios import reference
+
+    return (
+        reference.load(REFERENCE_DIR / "Расчет ЧДД через OPM Flow Model_Z.xlsx"),
+        reference.load(REFERENCE_DIR / "Расчет ЧДД через тНавигатор Model_Z.csv"),
+    )
+
+
+def test_jury_documents_name_the_reference_numbers_the_files_give(published_references):
+    """5 157,0, 5 218,9 и разрыв 1,20 % — из файлов, а не из памяти."""
+    opm, tnavigator = published_references
+    gap_share = tnavigator.cumulative_chdd_m / opm.cumulative_chdd_m - 1
+
+    assert _ru(opm.cumulative_chdd_m) == "5 157,0"
+    assert _ru(tnavigator.cumulative_chdd_m) == "5 218,9"
+    assert f"{100 * gap_share:.2f}".replace(".", ",") == "1,20"
+
+    for name in JURY_DOCUMENTS:
+        document = _read(name)
+        assert _ru(opm.cumulative_chdd_m) in document, f"{name} не называет эталон OPM Flow"
+        assert _ru(tnavigator.cumulative_chdd_m) in document, f"{name} не называет эталон тНавигатора"
+        assert "1,20 %" in document, f"{name} не называет разрыв симуляторов"
+
+
+def test_withdrawn_oil_gap_is_marked_as_withdrawn_wherever_it_appears():
+    """Отозванные «5,0 %» и ориентир 4 771 могут встречаться только как отозванные.
+
+    Число получено сравнением нашей истории с их `OPTIMIZED`-сценарием, то есть с
+    другим управлением (Р-120). Запрещать саму строку нельзя — документы обязаны
+    объяснять, что именно отменено; проверяется абзац, в котором она стоит.
+    """
+    excuses = ("отозв", "отмен", "OPTIMIZED", "оптимизирован", "прежн",
+               "некорректн", "не измеряло", "не то")
+    for name in JURY_DOCUMENTS + ("docs/tz-compliance.md", "docs/onboarding-team.md"):
+        document = _read(name)
+        for paragraph in document.split("\n\n"):
+            if "4 771" not in paragraph and "5,0 %" not in paragraph:
+                continue
+            assert any(word in paragraph for word in excuses), (
+                f"{name}: отозванное число подано как действующее:\n{paragraph[:400]}"
+            )
