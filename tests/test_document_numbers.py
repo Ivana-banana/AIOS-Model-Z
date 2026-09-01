@@ -602,6 +602,42 @@ def test_pump_counter_without_the_flag_is_the_one_documents_name(
         assert "145 против 99" not in text and "без флага 99" not in text
 
 
+def test_the_fixture_requires_every_export_it_reads():
+    """Дефект 01.09 был не в пропуске, а в рассогласовании: читала две, требовала одну.
+
+    Проверять поведение `_require_rows` мало — он и до правки был бы верен. Здесь
+    сверяются два места одной функции: имена прогонов, которые фикстура читает в
+    своём генераторе, и имена, которые она объявляет обязательными. Разъехались —
+    значит на машине без второй выгрузки снова будет ошибка сбора вместо пропуска.
+    """
+    import ast
+
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    fixture = next(node for node in ast.walk(tree)
+                   if isinstance(node, ast.FunctionDef) and node.name == "four_reference_systems")
+
+    required = {
+        argument.value
+        for call in ast.walk(fixture)
+        if isinstance(call, ast.Call) and getattr(call.func, "id", "") == "_require_rows"
+        for argument in call.args
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+    }
+    read = {
+        element.value
+        for comprehension in ast.walk(fixture)
+        if isinstance(comprehension, ast.comprehension) and getattr(
+            comprehension.target, "id", "") == "run"
+        for element in getattr(comprehension.iter, "elts", [])
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    }
+
+    assert read, "в фикстуре не нашлось перечня прогонов — проверка потеряла смысл"
+    assert required == read, (
+        f"фикстура читает выгрузки {sorted(read)}, а требует {sorted(required)}"
+    )
+
+
 def test_missing_export_skips_the_check_instead_of_erroring():
     """Найдено 01.09: фикстура читала две выгрузки, а проверяла наличие одной.
 
@@ -676,6 +712,19 @@ JURY_DOCUMENTS = (
     "docs/explained.md",
 )
 
+#: Все действующие документы, где отозванное число не имеет права стоять как живое.
+#: Шире `JURY_DOCUMENTS`: сценарий защиты чисел сверки не называет — он их
+#: проговаривает словами, — но именно в нём 01.09 нашлось «5 процентов при допуске
+#: в пару», пережившее правку presentation.md.
+LIVE_DOCUMENTS = JURY_DOCUMENTS + (
+    "docs/defence-final.md",
+    "docs/tz-compliance.md",
+    "docs/onboarding-team.md",
+    "docs/architecture.md",
+    "docs/surrogate.md",
+    "docs/submission-day.md",
+)
+
 
 def _ru(value: float) -> str:
     """Число в том виде, в каком оно печатается в документах: 5 218,9."""
@@ -719,12 +768,18 @@ def test_withdrawn_oil_gap_is_marked_as_withdrawn_wherever_it_appears():
     другим управлением (Р-120). Запрещать саму строку нельзя — документы обязаны
     объяснять, что именно отменено; проверяется абзац, в котором она стоит.
     """
-    excuses = ("отозв", "отмен", "OPTIMIZED", "оптимизирован", "прежн",
-               "некорректн", "не измеряло", "не то")
-    for name in JURY_DOCUMENTS + ("docs/tz-compliance.md", "docs/onboarding-team.md"):
+    # слова, которыми документ признаёт число отменённым. Список намеренно узкий:
+    # «прежн» и «не то» отсюда убраны 01.09 — они встречаются в обычном тексте и
+    # пропускали бы абзац почти любого содержания
+    excuses = ("отозв", "отмен", "OPTIMIZED", "оптимизирован", "прежние редакции",
+               "прежнее число", "прежние «5", "некорректн", "не измеряло", "измеряла не то")
+    # число живёт и цифрами, и прописью: правка 01.09 вычистила «5,0 %» из
+    # презентации, а «5 процентов» в сценарии защиты пережила её
+    withdrawn = ("4 771", "5,0 %", "5 процентов", "пять процентов")
+    for name in LIVE_DOCUMENTS:
         document = _read(name)
         for paragraph in document.split("\n\n"):
-            if "4 771" not in paragraph and "5,0 %" not in paragraph:
+            if not any(one in paragraph for one in withdrawn):
                 continue
             assert any(word in paragraph for word in excuses), (
                 f"{name}: отозванное число подано как действующее:\n{paragraph[:400]}"

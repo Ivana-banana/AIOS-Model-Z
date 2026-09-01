@@ -322,15 +322,47 @@ def test_export_rows_names_no_model_z_file(monkeypatch, tmp_path):
     assert export_rows.reference_oil_kt() == []
 
 
-def test_export_rows_survives_an_unreadable_reference(monkeypatch, tmp_path, capsys):
-    """Нечитаемая книга в каталоге печатает строку, а не роняет выгрузку."""
+@pytest.mark.parametrize("name, content", [
+    ("битая.csv", "не тот формат вовсе"),
+    ("пустая.csv", ""),
+    ("подделка.xlsx", "это не zip, а текст"),
+])
+def test_export_rows_survives_an_unreadable_reference(monkeypatch, tmp_path, capsys,
+                                                      name, content):
+    """Нечитаемая книга печатает строку, а не роняет выгрузку.
+
+    Три случая, а не один: разбор ломается по-разному, и до 01.09 перехват знал
+    только `OSError/KeyError/ValueError` — пустой `.csv` (`IndexError`) и не-zip
+    под именем `.xlsx` (`BadZipFile`) прошли бы мимо и убили бы результат прогона
+    до записи `rows.csv`.
+    """
     from scripts import export_rows
 
-    (tmp_path / "битая.csv").write_text("не тот формат вовсе", encoding="utf-8")
+    (tmp_path / name).write_text(content, encoding="utf-8")
     monkeypatch.setattr(export_rows, "REFERENCE_DIR", tmp_path)
 
     assert export_rows.reference_oil_kt() == []
-    assert "битая.csv" in capsys.readouterr().err
+    assert name in capsys.readouterr().err
+
+
+def test_reference_directory_holds_only_base_scenarios():
+    """В каталог эталонов не кладутся оптимизированные сценарии организаторов.
+
+    Ориентиром печатается любая книга оттуда, и отличить базовый сценарий от
+    чужой оптимизации код не может. Именно такое сравнение дало отозванное «5,0 %»
+    (Р-120), поэтому договорённость закреплена тестом, а не комментарием.
+    """
+    from scripts import export_rows
+
+    suspicious = [
+        path.name for path in export_rows.REFERENCE_DIR.iterdir()
+        if path.suffix.lower() in export_rows.REFERENCE_SUFFIXES
+        and ("OPTIMIZED" in path.name.upper() or "ОПТИМ" in path.name.upper())
+    ]
+
+    assert not suspicious, (
+        "в docs/reference/ попал оптимизированный сценарий: " + ", ".join(suspicious)
+    )
 
 
 def test_export_rows_says_whether_the_run_obeys_our_own_water_rule(tmp_path, monkeypatch,
