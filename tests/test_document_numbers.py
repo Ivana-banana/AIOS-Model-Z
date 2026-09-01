@@ -517,6 +517,20 @@ def test_handoff_opens_with_the_current_submission_before_historical_snapshots()
 RUNS = ROOT / "runs"
 
 
+def _require_rows(*runs: str) -> None:
+    """Пропустить проверку, если хоть одной из нужных выгрузок нет.
+
+    Проверять один `base` было мало: фикстура ниже читает и `matched-0995`, и на
+    машине, где базовый прогон есть, а заявка не пересчитана, отсутствие второй
+    выгрузки роняло сбор **ошибкой**, а не пропуском. `docs/submission-day.md`
+    требует в день отправки «0 failed, 0 errors» — то есть паспорт блокировал бы
+    пакет по ложной причине.
+    """
+    missing = [run for run in runs if not (RUNS / run / "rows.csv").is_file()]
+    if missing:
+        pytest.skip("нет выгрузок runs/: " + ", ".join(missing))
+
+
 def _npv(run: str, year: int, *, initial_pump: bool):
     import sys
 
@@ -533,8 +547,7 @@ def _npv(run: str, year: int, *, initial_pump: bool):
 @pytest.fixture(scope="module")
 def four_reference_systems() -> dict[tuple[str, int, bool], object]:
     """Одно расписание в четырёх системах отсчёта — как в плане защиты."""
-    if not (RUNS / "base" / "rows.csv").is_file():
-        pytest.skip("нет выгрузок runs/ — пересчитывать нечего")
+    _require_rows("base", "matched-0995")
     return {
         (run, year, pump): _npv(run, year, initial_pump=pump)
         for run in ("base", "matched-0995")
@@ -589,10 +602,21 @@ def test_pump_counter_without_the_flag_is_the_one_documents_name(
         assert "145 против 99" not in text and "без флага 99" not in text
 
 
+def test_missing_export_skips_the_check_instead_of_erroring():
+    """Найдено 01.09: фикстура читала две выгрузки, а проверяла наличие одной.
+
+    Машина с базовым прогоном, но без пересчитанной заявки получала на сборе
+    `FileNotFoundError` из вендоренного расчётчика — в паспорте дня отправки это
+    выглядит как «есть ошибки, пакет не отправлять».
+    """
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        _require_rows("base", "нет-такого-прогона")
+    assert "нет-такого-прогона" in str(skipped.value)
+
+
 def test_oil_share_of_the_remaining_gap_is_recomputed_not_remembered():
     """86 % было ошибкой деления: 45,98 из 50,71 — это 90,7 %."""
-    if not (RUNS / "base" / "rows.csv").is_file():
-        pytest.skip("нет выгрузок runs/ — пересчитывать нечего")
+    _require_rows("base")
     import sys
 
     sys.path.insert(0, str(ROOT))
