@@ -167,14 +167,14 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
             field_limits_are_annual_average=bool(
                 limits.get("field_limits_are_annual_average", False)),
             max_events_per_year=_optional_count(limits, "max_events_per_year",
-                                                "limits", source),
+                                                "limits", source, zero_is_a_limit=True),
             max_events_per_month=_optional_count(limits, "max_events_per_month",
-                                                 "limits", source),
+                                                 "limits", source, zero_is_a_limit=True),
             min_regime_months=_optional_count(limits, "min_regime_months",
                                               "limits", source),
             min_producer_rate_m3_per_day=_optional_positive(
                 limits, "min_producer_rate_m3_per_day", "limits", source),
-            max_watercut=_optional_positive(limits, "max_watercut", "limits", source),
+            max_watercut=_share(limits, "max_watercut", source),
             max_field_liquid_m3_total=_optional_positive(
                 limits, "max_field_liquid_m3_total", "limits", source),
             max_field_injection_m3_total=_optional_positive(
@@ -209,8 +209,15 @@ def _optional_positive(section: dict, key: str, name: str, source: Path) -> floa
     return value or None
 
 
-def _optional_count(section: dict, key: str, name: str, source: Path) -> int | None:
-    """То же для счётчика: скважин, мероприятий."""
+def _optional_count(section: dict, key: str, name: str, source: Path,
+                    *, zero_is_a_limit: bool = False) -> int | None:
+    """То же для счётчика: скважин, мероприятий.
+
+    `zero_is_a_limit` — для квот, где ноль осмыслен сам по себе: «мероприятий в
+    этом году не делать» это условие, а не его отсутствие. Без флага ноль читается
+    как «предела нет», и `max_events_per_year = 0` молча разрешал бы всё
+    (ревизия 02.09).
+    """
     if key not in section:
         return None
     value = int(section[key])
@@ -219,7 +226,27 @@ def _optional_count(section: dict, key: str, name: str, source: Path) -> int | N
             f"В {source} значение {key} в секции [{name}] не может быть отрицательным "
             f"(получено {value})"
         )
+    if zero_is_a_limit:
+        return value
     return value or None
+
+
+def _share(section: dict, key: str, source: Path) -> float | None:
+    """Доля в диапазоне (0, 1]: обводнённость и всё, что задаётся долей.
+
+    Проверка диапазона обязательна: `max_watercut = 90` вместо `0.9` — обычная
+    описка, и без неё она молча отключает ограничение (никакая обводнённость не
+    бывает больше 90).
+    """
+    if key not in section:
+        return None
+    value = float(section[key])
+    if not 0 < value <= 1:
+        raise ValueError(
+            f"В {source} значение {key} в секции [limits] задаётся долей в диапазоне "
+            f"(0, 1], получено {value:g}. Обводнённость 90 % записывается как 0.9"
+        )
+    return value
 
 
 def _well_set(section: dict, key: str, source: Path) -> frozenset[str] | None:

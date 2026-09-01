@@ -355,11 +355,13 @@ def test_an_export_without_our_summary_section_is_refused_not_read_as_zeros(tmp_
 
     with pytest.raises(ValueError, match="SUMMARY"):
         summary.monthly_rows(tmp_path / "CASE", wells=["1"])
-def test_watercut_limit_is_checked_on_the_export_not_in_the_planner():
-    """Обводнённость — отклик пласта: предел кейса проверяется по факту.
+def test_watercut_limit_lives_apart_from_the_physical_sanity_checks():
+    """Обводнённость — условие кейса, а не физика, и считается отдельной функцией.
 
-    Пункт 28 чек-листа приёмки. Санитарный диапазон «∈ [0, 1]» остаётся про
-    физику; здесь речь про условие, которое может прийти с кейсом.
+    Пункт 28 чек-листа приёмки. Смешение стоило бы дорого: `run_cycle --confirm`
+    отказывается подтверждать ЧДД по непустым санити-чекам («выгрузка
+    нефизична»), и предел обводнённости закрывал бы путь получения заявляемого
+    числа ровно тогда, когда кейс его назовёт (ревизия 02.09).
     """
     from conftest import make_row
 
@@ -368,9 +370,13 @@ def test_watercut_limit_is_checked_on_the_export_not_in_the_planner():
         make_row("2007-02-01", "мокрая", wlpr=30.0, womr=1.0, liquid=1000.0, oil=50.0),
     ]
 
-    assert summary.sanity_problems(rows) == [], "без ключа предела нет"
+    assert summary.sanity_problems(rows) == [], "физика этих строк в порядке"
+    assert summary.case_problems(rows) == [], "без ключа условия нет"
 
-    problems = summary.sanity_problems(rows, max_watercut=0.9)
+    problems = summary.case_problems(rows, max_watercut=0.9)
 
     assert len(problems) == 1
     assert "мокрая" in problems[0] and "обводнённость" in problems[0]
+    assert summary.sanity_problems(rows) == [], (
+        "условие кейса не имеет права попасть в физический страж"
+    )

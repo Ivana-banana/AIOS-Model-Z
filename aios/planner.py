@@ -725,8 +725,10 @@ def _fit_phase_to_capacity(steps: list[ScheduleStep],
                     reason=(f"{phase} {rate:,.1f} > мощности {capacity_t_per_day:,.1f} т/сут; "
                             "уставка опущена до той же доли от достигнутого дебита"),
                 ))
-            producers.append(ProducerControl(control.well, control.status, control.mode,
-                                             reduced, control.bhp))
+            producers.append(ProducerControl(
+                control.well, "SHUT" if reduced <= 0 else control.status,
+                control.mode, reduced or None, control.bhp,
+            ))
         result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
     return result, decisions
 
@@ -1261,8 +1263,11 @@ def _fit_injection_to_annual_budget(
                     reason=(f"за {step.date.year} закачка {over[step.date.year]:,.0f} > "
                             f"нормы {budget_m3[step.date.year]:,.0f} м³"),
                 ))
-            injectors.append(InjectorControl(control.well, control.fluid, control.status,
-                                             control.mode, reduced, control.bhp))
+            injectors.append(InjectorControl(
+                control.well, control.fluid,
+                "SHUT" if reduced <= 0 else control.status,
+                control.mode, reduced or None, control.bhp,
+            ))
         result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
     return result, decisions
 
@@ -1316,8 +1321,10 @@ def _fit_liquid_to_annual_volume(
                     reason=(f"за {step.date.year} отбор жидкости {over[step.date.year]:,.0f} > "
                             f"нормы {budget_m3[step.date.year]:,.0f} м³"),
                 ))
-            producers.append(ProducerControl(control.well, control.status, control.mode,
-                                             reduced, control.bhp))
+            producers.append(ProducerControl(
+                control.well, "SHUT" if reduced <= 0 else control.status,
+                control.mode, reduced or None, control.bhp,
+            ))
         result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
     return result, decisions
 

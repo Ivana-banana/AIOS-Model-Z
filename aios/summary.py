@@ -193,11 +193,40 @@ def monthly_rows(case: str | Path,
     return rows
 
 
+def case_problems(rows: list[dict[str, Any]],
+                  max_watercut: float | None = None) -> list[str]:
+    """Нарушения **условий кейса**, которые видны только по выгрузке.
+
+    Отдельно от `sanity_problems` намеренно. Тот — физический страж границы
+    «симулятор → экономика»: отрицательные приращения, дебит выше 500 м³/сут,
+    одновременная добыча и закачка. Его непустой список означает «выгрузка
+    нефизична, считать по ней ЧДД нельзя», и `run_cycle --confirm` на этом
+    останавливается.
+
+    Обводнённость выше предела кейса — не нефизичность. Выгрузка верна, нарушено
+    условие задачи, и вывод из этого другой: менять сценарий, а не отказываться
+    от числа. Смешение двух смыслов закрывало бы путь получения заявляемого ЧДД
+    ровно тогда, когда кейс назовёт предел (ревизия 02.09).
+    """
+    problems: list[str] = []
+    if max_watercut is None:
+        return problems
+    for row in rows:
+        if row["WLPT_Diff"] <= 0:
+            continue
+        watercut = 1.0 - row["WOMT_Diff"] / row["WLPT_Diff"]
+        if watercut > max_watercut:
+            problems.append(
+                f"{row['DATA']} скв. {row['well']}: обводнённость {watercut:.4g} > "
+                f"{max_watercut:g}"
+            )
+    return problems
+
+
 def sanity_problems(rows: list[dict[str, Any]],
                     max_liquid_rate: float = 500.0,
                     min_reservoir_pressure: float | None = None,
-                    max_reservoir_pressure: float | None = None,
-                    max_watercut: float | None = None) -> list[str]:
+                    max_reservoir_pressure: float | None = None) -> list[str]:
     """Санити-чеки на границе «симулятор → экономика».
 
     Симулятор и суррогат не падают, а тихо врут, поэтому физический диапазон
@@ -245,15 +274,6 @@ def sanity_problems(rows: list[dict[str, Any]],
                 f"{where}: пластовое давление {row['THP']:.6g} > "
                 f"{max_reservoir_pressure:g} атм у нагнетательной"
             )
-        # Предел обводнённости — тоже проверка по факту, а не срезка: обводнённость
-        # это отклик пласта, расписанием её не задать. Считается из тех же двух
-        # колонок, что и везде в проекте: (жидкость − нефть) / жидкость по массе.
-        if max_watercut is not None and row["WLPT_Diff"] > 0:
-            watercut = 1.0 - row["WOMT_Diff"] / row["WLPT_Diff"]
-            if watercut > max_watercut:
-                problems.append(
-                    f"{where}: обводнённость {watercut:.4g} > {max_watercut:g}"
-                )
 
         last = previous.get(well)
         if last is not None:

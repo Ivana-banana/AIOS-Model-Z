@@ -283,9 +283,12 @@ def _minimum_rate(steps: list[ScheduleStep], minimum: float) -> LimitCheck:
     """
     worst, where = 0.0, "—"
     for step in steps:
+        # открытая запись с нулевым (или пустым) дебитом тоже нарушает минимум:
+        # такие производят объёмные срезки, и до 02.09 проверка их пропускала —
+        # ровно то состояние, которое создаёт планировщик, оставалось невидимым
         for well, rate in _rates(step, producers=True).items():
             gap = minimum - rate
-            if rate > 0 and gap > worst:
+            if gap > worst:
                 worst, where = gap, f"скв. {well}, {_stamp(step)} ({rate:,.4g} м³/сут)"
     return LimitCheck(key="min_producer_rate_m3_per_day", limit=0.0, value=worst,
                       where=where, unit="м³/сут недобора")

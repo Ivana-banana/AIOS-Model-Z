@@ -172,8 +172,18 @@ def main(argv: list[str] | None = None) -> int:
         rows,
         min_reservoir_pressure=config.limits.min_reservoir_pressure_atm,
         max_reservoir_pressure=config.limits.max_reservoir_pressure_atm,
-        max_watercut=config.limits.max_watercut,
     )
+    # Условия кейса печатаются отдельно от санити-чеков: первое — «сценарий не
+    # годится», второе — «выгрузка нефизична, считать нельзя». Смешивать нельзя
+    # (ревизия 02.09).
+    case = summary.case_problems(rows, max_watercut=config.limits.max_watercut)
+    if config.limits.max_watercut is not None:
+        print()
+        print(f"--- условия кейса по выгрузке: "
+              f"{'нарушений нет' if not case else f'нарушений {len(case)}'} ---")
+        for line in case[:5]:
+            print(f"  {line}")
+
     print()
     print(f"--- санити-чеки: {'нарушений нет' if not problems else f'нарушений {len(problems)}'} ---")
     for line in problems[:15]:

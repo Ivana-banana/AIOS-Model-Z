@@ -375,3 +375,16 @@ def test_horizon_volume_is_one_basket_not_yearly_ones():
 
     assert check.value == pytest.approx(6_200.0)
     assert not check.satisfied and "2027-01 … 2028-01" in check.where
+def test_minimum_rate_sees_an_open_well_with_zero_rate():
+    """Открытая запись с нулём — то состояние, которое производят объёмные срезки.
+
+    Ревизия 02.09: проверка пропускала `rate == 0` и `None`, то есть была слепа
+    ровно к тому, что создаёт планировщик.
+    """
+    steps = [step(2007, 1, producers=[prod("нуль", 0.0), prod("норма", 40.0)])]
+
+    check = casecheck.check(steps, [], planner.Limits(
+        min_producer_rate_m3_per_day=5.0))[0]
+
+    assert not check.satisfied
+    assert "скв. нуль" in check.where and check.value == pytest.approx(5.0)

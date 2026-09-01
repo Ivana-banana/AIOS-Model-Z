@@ -369,3 +369,22 @@ def test_every_key_of_the_repository_config_is_known():
     loaded = config.load()
 
     assert loaded.limits is not None
+def test_zero_event_quota_is_a_limit_not_its_absence(tmp_path):
+    """«Мероприятий в этом году не делать» — условие, а не отсутствие условия."""
+    text = MINIMAL.replace("water_tolerance = 1.0",
+                           "water_tolerance = 1.0\nmax_events_per_year = 0")
+
+    assert config.load(_written(tmp_path, text)).limits.max_events_per_year == 0
+
+
+def test_a_share_outside_zero_to_one_is_refused(tmp_path):
+    """`max_watercut = 90` вместо `0.9` молча отключало бы ограничение."""
+    text = MINIMAL.replace("water_tolerance = 1.0",
+                           "water_tolerance = 1.0\nmax_watercut = 90")
+
+    with pytest.raises(ValueError, match="долей в диапазоне"):
+        config.load(_written(tmp_path, text))
+
+    good = MINIMAL.replace("water_tolerance = 1.0",
+                           "water_tolerance = 1.0\nmax_watercut = 0.9")
+    assert config.load(_written(tmp_path, good)).limits.max_watercut == 0.9

@@ -188,9 +188,8 @@ def main(argv: list[str] | None = None) -> int:
                 forecast,
                 min_reservoir_pressure=limits.min_reservoir_pressure_atm,
                 max_reservoir_pressure=limits.max_reservoir_pressure_atm,
-                max_watercut=limits.max_watercut,
-            ) if "пластовое" in line or "обводнённость" in line
-        ]
+            ) if "пластовое" in line
+        ] + summary.case_problems(forecast, max_watercut=limits.max_watercut)
         print(f"--- отклик пласта (давление, обводнённость): "
               f"{'нарушений нет' if not response else len(response)} ---")
         for line in response[:5]:
