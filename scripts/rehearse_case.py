@@ -74,6 +74,7 @@ _MARKS = {
     "forced_shut_wells": ("обязательная остановка",),
     "forced_shut_windows": ("обязательная остановка в окне",),
     "well_caps_m3_per_day": ("потолок скважины",),
+    "max_events_per_year": ("квота мероприятий",),
 }
 
 
@@ -191,6 +192,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"срезка:       {enforced_at - read_at:.1f} с")
     print(f"всего:        {time.monotonic() - started:.1f} с")
     print()
+
+    # Квота мероприятий — единственное условие, которое планировщик нарушает
+    # осознанно: мероприятие, порождённое жёстким ограничением, не отменяется
+    # (Р-138), потому что его отмена вернула бы расписание в недопустимое
+    # состояние. Такая уступка печатается отдельно и провалом не считается — но
+    # только если планировщик её объявил; молчаливое превышение остаётся дефектом.
+    conceded = [check for check in left if check.key == "max_events_per_year"
+                and any("вопреки квоте" in decision.reason for decision in decisions)]
+    left = [check for check in left if check not in conceded]
+
+    if conceded:
+        print("УСТУПКА ПО ПРАВИЛУ (не провал): квота мероприятий превышена "
+              "обязательными мероприятиями —")
+        for check in conceded:
+            print(f"  {check}")
+        for decision in decisions:
+            if "вопреки квоте" in decision.reason:
+                print(f"  {decision}")
+        print()
 
     if left:
         print("НАРУШЕНИЯ ОСТАЛИСЬ ПОСЛЕ СРЕЗКИ — условие объявлено, но не применяется:")

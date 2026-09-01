@@ -805,6 +805,13 @@ def _fit_fund(steps: list[ScheduleStep],
     decisions: list[Allocation] = []
     reported: set[str] = set()
     result: list[ScheduleStep] = []
+    # Накопительное состояние фонда: в деке шаг несёт только изменившиеся
+    # скважины, и та, что на этом шаге не упомянута, продолжает работать. До
+    # 02.09 ограничения фонда правили только записи шага — то есть скважина без
+    # записи оставалась вне контроля, а проверка соглашалась, потому что смотрела
+    # туда же (найдено репетицией приёмки).
+    working: dict[str, tuple[bool, bool]] = {}
+    rates: dict[str, tuple[str, float, float | None]] = {}
 
     for step in steps:
         producers = list(step.producers)
@@ -868,6 +875,36 @@ def _fit_fund(steps: list[ScheduleStep],
                         injectors[index] = InjectorControl(control.well, control.fluid,
                                                            "SHUT", control.mode, None,
                                                            control.bhp)
+
+        # обновляем состояние по записям шага
+        for control in producers:
+            producing = control.status == "OPEN"
+            working[control.well] = (producing,
+                                     working.get(control.well, (False, False))[1]
+                                     and not producing)
+            if producing:
+                rates[control.well] = ("producer", control.liquid_rate or 0.0, control.bhp)
+        for control in injectors:
+            injecting = control.status == "OPEN"
+            working[control.well] = (working.get(control.well, (False, False))[0]
+                                     and not injecting, injecting)
+            if injecting:
+                rates[control.well] = ("injector", control.rate or 0.0, control.bhp)
+
+        # скважина, которую надо закрыть, но записи о ней на шаге нет: дописываем
+        # её сами — иначе ограничение фонда не действует вовсе
+        named = {control.well for control in producers} | {control.well for control in injectors}
+        silent = {well for well, (producing, injecting) in working.items()
+                  if (producing or injecting) and well not in named and well in shut_now}
+        for well in sorted(silent):
+            kind, rate, bhp = rates.get(well, ("producer", 0.0, None))
+            shut(well, *_shut_reason(well, forced, active_windows), rate,
+                 _shut_mark(well, forced, active_windows))
+            if kind == "producer":
+                producers.append(ProducerControl(well, "SHUT", "LRAT", None, bhp))
+            else:
+                injectors.append(InjectorControl(well, "WATER", "SHUT", "RATE", None, bhp))
+            working[well] = (False, False)
 
         result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
     return result, decisions

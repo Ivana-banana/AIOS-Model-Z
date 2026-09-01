@@ -717,7 +717,12 @@ def test_the_event_quota_is_enforced_and_not_only_parsed():
         steps, _forecast(), Norms.from_file(), _limits(max_events_per_year=1),
     )
 
-    assert [step.producers[0].status for step in fitted] ==         ["OPEN", "SHUT", "SHUT", "SHUT"]
+    # Состояние фонда, а не состав шага: с 02.09 отмена мероприятия снимает
+    # запись с шага, а не подставляет запись предыдущего. В деке отсутствие
+    # записи означает «режим не менялся», и прежняя редакция на настоящем
+    # расписании (шаг несёт только изменившиеся скважины) не срабатывала вовсе.
+    assert [state["P1"] for state in planner.fund_states(fitted)] == [
+        (True, False), (False, False), (False, False), (False, False)]
     assert len(decisions) == 1
     assert decisions[0].well == "P1"
     assert "2014" in decisions[0].resource
@@ -746,7 +751,9 @@ def test_the_event_quota_counts_a_conversion_once():
     reverted, decisions = planner.enforce(
         spent, _forecast(), Norms.from_file(), _limits(max_events_per_year=1),
     )
-    assert [step.producers[0].status for step in reverted] == ["SHUT", "OPEN", "OPEN"]
+    # та же смена системы отсчёта: смотрим состояние фонда, а не записи
+    assert [state["P1"] for state in planner.fund_states(reverted)] == [
+        (False, False), (True, False), (True, False)]
     assert [len(step.injectors) for step in reverted] == [0, 0, 0]
     assert len(decisions) == 1
     assert "перевод под закачку" in decisions[0].reason

@@ -30,7 +30,7 @@ from typing import Any
 
 from aios.deck import ScheduleStep
 from aios.margin import counted_by_methodology
-from aios.planner import Limits, events_of
+from aios.planner import Limits, events_of, fund_states
 
 
 @dataclass(frozen=True)
@@ -275,40 +275,54 @@ def _events_per_year(steps: list[ScheduleStep], limit: int) -> LimitCheck:
 
 
 def _active_wells(steps: list[ScheduleStep], limit: int) -> LimitCheck:
+    """Действующий фонд по накопительному состоянию, а не по составу шага.
+
+    В деке шаг несёт только изменившиеся скважины (`planner.fund_states`), поэтому
+    считать открытые записи шага значит считать не фонд, а список изменений. На
+    Модели Z разница невелика — шаги плотные, — но именно «невелика» и опасно:
+    ограничение выглядело бы соблюдённым потому, что половина фонда в шаг не попала.
+    """
     best, where = 0, "—"
-    for step in steps:
-        active = len(_rates(step, producers=True)) + len(_rates(step, producers=False))
+    for step, state in zip(steps, fund_states(steps), strict=True):
+        active = sum(1 for producing, injecting in state.values() if producing or injecting)
         if active > best:
             best, where = active, _stamp(step)
     return LimitCheck(key="max_active_wells", limit=float(limit), value=float(best),
                       where=where, unit="скважин")
 
 
+def _open_wells(state: dict[str, tuple[bool, bool]]) -> set[str]:
+    return {well for well, (producing, injecting) in state.items() if producing or injecting}
+
+
 def _forced_shut(steps: list[ScheduleStep], wells: frozenset[str]) -> LimitCheck:
-    """Сколько раз обязательно остановленная скважина осталась открытой."""
+    """Сколько раз обязательно остановленная скважина осталась в работе.
+
+    По накопительному состоянию: скважина, не упомянутая на шаге, продолжает
+    работать, и до 02.09 это считалось соблюдением.
+    """
     breaches, where = 0, "—"
-    for step in steps:
-        open_now = set(_rates(step, producers=True)) | set(_rates(step, producers=False))
-        left = sorted(wells & open_now)
+    for step, state in zip(steps, fund_states(steps), strict=True):
+        left = sorted(wells & _open_wells(state))
         if left:
             breaches += len(left)
             if where == "—":
                 where = f"скв. {left[0]}, {_stamp(step)}"
     return LimitCheck(key="forced_shut_wells", limit=0.0, value=float(breaches),
-                      where=where, unit="открытых шагов")
+                      where=where, unit="месяцев в работе")
 
 
 def _forced_windows(steps: list[ScheduleStep], windows) -> LimitCheck:
     breaches, where = 0, "—"
-    for step in steps:
-        open_now = set(_rates(step, producers=True)) | set(_rates(step, producers=False))
+    for step, state in zip(steps, fund_states(steps), strict=True):
+        working = _open_wells(state)
         for window in windows:
-            if window.covers(step.date) and window.well in open_now:
+            if window.covers(step.date) and window.well in working:
                 breaches += 1
                 if where == "—":
                     where = f"скв. {window.well}, {_stamp(step)}"
     return LimitCheck(key="forced_shut_windows", limit=0.0, value=float(breaches),
-                      where=where, unit="открытых шагов")
+                      where=where, unit="месяцев в работе")
 
 
 def _well_caps(steps: list[ScheduleStep], caps: dict[str, float]) -> LimitCheck:
