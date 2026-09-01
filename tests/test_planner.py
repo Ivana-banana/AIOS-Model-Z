@@ -1129,3 +1129,18 @@ def test_a_window_that_only_touches_the_edge_of_a_month_shuts_it(norms):
 
     assert window.covers(date(2027, 1, 1)) and window.covers(date(2027, 2, 1))
     assert not window.covers(date(2026, 12, 1)) and not window.covers(date(2027, 3, 1))
+def test_a_month_missing_from_the_forecast_is_named_not_skipped_silently(norms):
+    """Пустой прогноз отвергается вслух — половинчатый не должен молчать.
+
+    Найдено критиком 01.09: месяц, которого нет в прогнозе, выпадал из проверки
+    предела по фазе бесследно, хотя докстринг обещал отказ.
+    """
+    steps = [month_step(2007, 1, producers=[prod("1", 100.0)]),
+             month_step(2007, 2, producers=[prod("1", 100.0)])]
+    forecast = [produced("2007-01-01", "1", 1.0, 999.0, rate=100.0)]
+    limits = planner.Limits(enforce_water_balance=False, max_field_oil_t_per_day=1000.0)
+
+    _, decisions = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    assert any("месяца нет в прогнозе" in one.reason and "2007-02" in one.resource
+               for one in decisions)

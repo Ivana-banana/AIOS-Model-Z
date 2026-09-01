@@ -248,3 +248,71 @@ def test_a_schedule_fixed_by_the_planner_passes_the_check():
 
     assert decisions
     assert casecheck.violations(casecheck.check(fixed, forecast, limits)) == []
+def test_events_per_year_is_checked_and_can_be_exceeded_visibly():
+    """Ключ, который проверка не знала вовсе, — и который назван причиной модуля.
+
+    После Р-138 квота может быть превышена законно: мероприятие, порождённое
+    жёстким ограничением, не отменяется. Значит превышение обязано быть видно.
+    """
+    steps = [
+        step(2027, 1, producers=[prod("A", 50.0), prod("B", 50.0)]),
+        step(2027, 2, producers=[prod("A", None, "SHUT"), prod("B", None, "SHUT")]),
+    ]
+
+    checks = casecheck.check(steps, [], planner.Limits(max_events_per_year=1))
+
+    assert checks[0].key == "max_events_per_year"
+    assert checks[0].value == 2.0 and checks[0].where == "2027"
+    assert not checks[0].satisfied
+
+
+def test_events_per_year_counts_the_same_events_the_planner_does():
+    """Два счётчика одной величины разъезжаются молча — поэтому код один."""
+    steps = [
+        step(2027, 1, producers=[prod("A", 50.0)]),
+        step(2027, 2, producers=[prod("A", None, "SHUT")]),
+        step(2027, 3, producers=[prod("A", 50.0)]),
+    ]
+
+    checks = casecheck.check(steps, [], planner.Limits(max_events_per_year=5))
+
+    assert checks[0].value == float(len(planner.events_of(steps)))
+    assert checks[0].value == 2.0, "остановка и пуск — два мероприятия"
+
+
+def test_annual_average_divides_by_the_days_present_not_by_365():
+    """Мутация `/365` вместо `/дни года` не должна выживать: год бывает неполным."""
+    steps = [step(2007, 11, producers=[prod("1", 100.0)]),
+             step(2007, 12, producers=[prod("1", 100.0)])]
+    limits = planner.Limits(max_field_liquid_m3_per_day=100.0,
+                            field_limits_are_annual_average=True)
+
+    check = casecheck.check(steps, [], limits)[0]
+
+    assert check.value == pytest.approx(100.0), (
+        "два месяца по 100 м³/сут дают среднесуточное 100, а не 100 × 61 / 365"
+    )
+    assert check.satisfied
+
+
+def test_annual_volume_sums_the_months_instead_of_taking_the_largest():
+    """Мутация `max(...)` вместо `+=` не должна выживать: объём — сумма."""
+    steps = [step(2007, month, injectors=[inj("9", 10.0)]) for month in (1, 2, 3)]
+
+    check = casecheck.check(steps, [], planner.Limits(
+        max_field_injection_m3_per_year=1_000.0))[0]
+
+    assert check.value == pytest.approx(10.0 * (31 + 28 + 31))
+
+
+def test_active_wells_and_forced_shut_count_injectors_too():
+    """Нагнетательные — часть действующего фонда и часть обязательных остановок."""
+    steps = [step(2007, 1, producers=[prod("1", 50.0)],
+                  injectors=[inj("9", 40.0), inj("8", 40.0)])]
+
+    active = casecheck.check(steps, [], planner.Limits(max_active_wells=2))[0]
+    forced = casecheck.check(steps, [], planner.Limits(
+        forced_shut_wells=frozenset({"9"})))[0]
+
+    assert active.value == 3.0 and not active.satisfied
+    assert forced.value == 1.0 and forced.where == "скв. 9, 2007-01"

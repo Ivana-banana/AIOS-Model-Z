@@ -468,7 +468,7 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         # квоту расходуют, но не отменяются — найдено критиком 01.09 (Р-138).
         result, events = _fit_events_to_annual_quota(
             result, limits.max_events_per_year,
-            protected=_events_of(result) - _events_of(list(steps)),
+            protected=events_of(result) - events_of(list(steps)),
         )
         decisions.extend(events)
 
@@ -541,6 +541,19 @@ def _fit_phase_to_capacity(steps: list[ScheduleStep],
         days = monthrange(step.date.year, step.date.month)[1]
         by_well = monthly.get(stamp)
         if by_well is None:
+            # Месяца нет в прогнозе — фазу этого месяца посчитать нечем. Молчать
+            # нельзя (докстринг обещает отказ на пустом прогнозе, и половинчатый
+            # прогноз ничем не лучше), падать посреди срезки тоже нельзя: месяцы
+            # за пределами горизонта прогноза законны. Поэтому месяц проходит без
+            # срезки, но факт печатается решением — найдено критиком 01.09.
+            if stamp not in reported:
+                reported.add(stamp)
+                decisions.append(Allocation(
+                    well="—", resource=f"{phase}, {stamp}",
+                    before=0.0, after=0.0,
+                    reason=(f"месяца нет в прогнозе: предел по фазе «{phase}» за {stamp} "
+                            "не проверен и не применён"),
+                ))
             result.append(step)
             continue
         achieved = reference.get(stamp, {})
@@ -1121,7 +1134,7 @@ def _fit_liquid_to_annual_volume(
     return result, decisions
 
 
-def _events_of(steps: list[ScheduleStep]) -> set[tuple[str, Any]]:
+def events_of(steps: list[ScheduleStep]) -> set[tuple[str, Any]]:
     """Мероприятия расписания: `{(скважина, дата шага)}`.
 
     Нужно, чтобы отличить мероприятие, которое предложил цикл, от мероприятия,
