@@ -1286,7 +1286,7 @@ def test_monthly_event_quota_limits_a_burst_the_annual_one_allows(norms):
                if state == (False, False)) == 3, "годовая квота 12 три остановки пропускает"
     assert sum(1 for state in planner.fund_states(cut)[1].values()
                if state == (False, False)) == 1, "месячная квота 1 оставляет одну"
-    assert any("период 2027-02" in decision.reason for decision in decisions)
+    assert any("месяц 2027-02" in decision.reason for decision in decisions)
 def test_a_regime_is_held_for_the_declared_number_of_months(norms):
     """«Минимальная длительность режима» — форма, которую квота мероприятий не выражает.
 

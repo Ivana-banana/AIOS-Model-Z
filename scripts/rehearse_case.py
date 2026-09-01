@@ -207,7 +207,8 @@ def main(argv: list[str] | None = None) -> int:
     # (Р-139), потому что его отмена вернула бы расписание в недопустимое
     # состояние. Такая уступка печатается отдельно и провалом не считается — но
     # только если планировщик её объявил; молчаливое превышение остаётся дефектом.
-    conceded = [check for check in left if check.key == "max_events_per_year"
+    conceded = [check for check in left
+                if check.key in ("max_events_per_year", "max_events_per_month")
                 and any("вопреки квоте" in decision.reason for decision in decisions)]
     left = [check for check in left if check not in conceded]
 

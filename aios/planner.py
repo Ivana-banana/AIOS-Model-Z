@@ -495,10 +495,6 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # сначала объектные пределы (выше), потом скважинные, потом состав фонда,
     # потом годовой объём. Обратный порядок дал бы срезку по объекту поверх уже
     # срезанных скважин и «двойную» экономию, которой в пласте нет.
-    if limits.min_producer_rate_m3_per_day is not None:
-        result, small = _shut_below_minimum(result, limits.min_producer_rate_m3_per_day)
-        decisions.extend(small)
-
     result, per_well = _fit_wells_to_caps(result, limits)
     decisions.extend(per_well)
 
@@ -549,22 +545,25 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # Месячная квота идёт первой: она строже по локальности, и год, приведённый
     # ею, годовой квоте резать уже нечего. Обратный порядок оставил бы месяц с
     # двенадцатью переключениями внутри годового лимита двенадцать.
+    # Минимальный рентабельный дебит проверяется **после** всех срезок: любая из
+    # них может опустить скважину ниже порога, и репетиция на реальных данных это
+    # показала — после «успешной» срезки оставалась скважина на 3,4 м³/сут при
+    # пороге 5 (02.09).
+    if limits.min_producer_rate_m3_per_day is not None:
+        result, small = _shut_below_minimum(result, limits.min_producer_rate_m3_per_day)
+        decisions.extend(small)
+
     if limits.min_regime_months is not None:
         result, held = _hold_regimes(result, limits.min_regime_months,
                                      protected=_changed_wells(result, expand_deltas(steps)))
         decisions.extend(held)
 
-    if limits.max_events_per_month is not None:
-        result, monthly_events = _fit_events_to_quota(
-            result, limits.max_events_per_month,
-            protected=events_of(result) - events_of(list(steps)), period="month",
-        )
-        decisions.extend(monthly_events)
-
-    if limits.max_events_per_year is not None:
+    if limits.max_events_per_month is not None or limits.max_events_per_year is not None:
         result, events = _fit_events_to_quota(
-            result, limits.max_events_per_year,
-            protected=events_of(result) - events_of(list(steps)),
+            result,
+            per_month=limits.max_events_per_month,
+            per_year=limits.max_events_per_year,
+            protected=events_of(result) - events_of(expand_deltas(steps)),
         )
         decisions.extend(events)
 
@@ -1518,9 +1517,9 @@ def _hold_one(well: str, asked: float | None, status: str, index: int, months: i
 
 
 def _fit_events_to_quota(
-    steps: list[ScheduleStep], limit: int,
+    steps: list[ScheduleStep],
+    *, per_month: int | None = None, per_year: int | None = None,
     protected: set[tuple[str, Any]] | None = None,
-    *, period: str = "year",
 ) -> tuple[list[ScheduleStep], list[Allocation]]:
     """Квота платных мероприятий на календарный год.
 
@@ -1563,12 +1562,21 @@ def _fit_events_to_quota(
     """
     decisions: list[Allocation] = []
     result: list[ScheduleStep] = []
-    spent: dict[int, int] = {}
+    spent: dict[str, int] = {}
     state: dict[str, tuple[bool, bool]] = {}
     rates: dict[str, float] = {}
 
+    def buckets(moment) -> list[tuple[str, int]]:
+        """Корзины квот, которые расходует мероприятие этого шага."""
+        out: list[tuple[str, int]] = []
+        if per_year is not None:
+            out.append((f"год {moment.year}", per_year))
+        if per_month is not None:
+            out.append((f"месяц {moment:%Y-%m}", per_month))
+        return out
+
     for index, step in enumerate(steps):
-        year = step.date.year if period == "year" else f"{step.date:%Y-%m}"
+        step_buckets = buckets(step.date)
         after = dict(state)
         for control in step.producers:
             producing = control.status == "OPEN"
@@ -1591,28 +1599,37 @@ def _fit_events_to_quota(
                                after.get(well, (False, False)))
             if kind is None:
                 continue
-            if spent.get(year, 0) < limit:
-                spent[year] = spent.get(year, 0) + 1
+            # мероприятие проходит, только если укладывается **во все** корзины:
+            # месячная и годовая квоты считаются одним проходом, иначе отмена одной
+            # переносит событие на другой месяц и ломает вторую (найдено репетицией
+            # на реальных данных 02.09)
+            full = [(name, limit) for name, limit in step_buckets
+                    if spent.get(name, 0) >= limit]
+            if not full:
+                for name, _ in step_buckets:
+                    spent[name] = spent.get(name, 0) + 1
                 continue
             if (well, step.date) in (protected or set()):
-                spent[year] = spent.get(year, 0) + 1
+                for name, _ in step_buckets:
+                    spent[name] = spent.get(name, 0) + 1
+                name, limit = full[0]
                 decisions.append(Allocation(
-                    well=well, resource=f"квота мероприятий, {year}",
+                    well=well, resource=f"квота мероприятий, {name}",
                     before=0.0, after=0.0,
-                    reason=(f"{kind} оставлен вопреки квоте {limit}: он порождён "
-                            f"ограничением объекта, и его отмена нарушила бы это "
-                            f"ограничение. Мероприятий за период {year} уже "
-                            f"{spent[year]}"),
+                    reason=(f"{kind} оставлен вопреки квоте {limit} на {name}: он "
+                            f"порождён ограничением объекта, и его отмена нарушила бы "
+                            f"это ограничение. Мероприятий уже {spent[name]}"),
                 ))
                 continue
             cancelled.add(well)
             asked = next((c for c in step.producers if c.well == well), None) \
                 or next((c for c in step.injectors if c.well == well), None)
+            name, limit = full[0]
             decisions.append(Allocation(
-                well=well, resource=f"квота мероприятий, {year}",
+                well=well, resource=f"квота мероприятий, {name}",
                 before=_rate_of(asked), after=rates.get(well, 0.0),
-                reason=(f"{kind} отменён: квота мероприятий на период {year} "
-                        f"исчерпана (предел {limit}); скважина остаётся как была"),
+                reason=(f"{kind} отменён: квота мероприятий на {name} исчерпана "
+                        f"(предел {limit}); скважина остаётся как была"),
             ))
 
         if cancelled:
