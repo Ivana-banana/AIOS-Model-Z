@@ -135,7 +135,16 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
                 limits, "max_well_injection_m3_per_day", "limits", source),
             max_well_liquid_m3_per_day=_optional_positive(
                 limits, "max_well_liquid_m3_per_day", "limits", source),
-            well_caps_m3_per_day=_well_caps(limits, source),
+            well_caps_m3_per_day=_caps(limits, "well_caps_m3_per_day", "скважина", source),
+            well_groups=_well_groups(limits, source),
+            group_liquid_caps_m3_per_day=_caps(
+                limits, "group_liquid_caps_m3_per_day", "группа", source),
+            group_injection_caps_m3_per_day=_caps(
+                limits, "group_injection_caps_m3_per_day", "группа", source),
+            max_field_oil_t_per_day=_optional_positive(
+                limits, "max_field_oil_t_per_day", "limits", source),
+            max_field_water_t_per_day=_optional_positive(
+                limits, "max_field_water_t_per_day", "limits", source),
             controllable_wells=_well_set(limits, "controllable_wells", source),
             forced_shut_wells=_well_set(limits, "forced_shut_wells", source),
             forced_shut_windows=_shut_windows(limits, source),
@@ -252,26 +261,63 @@ def _shut_windows(section: dict, source: Path) -> tuple[ShutWindow, ...] | None:
     return tuple(windows) or None
 
 
-def _well_caps(section: dict, source: Path) -> dict[str, float] | None:
-    """Карта «скважина → потолок, м³/сут». Пустая таблица — ограничения нет."""
-    key = "well_caps_m3_per_day"
+def _caps(section: dict, key: str, whose: str, source: Path) -> dict[str, float] | None:
+    """Карта «имя → потолок, м³/сут». Пустая таблица — ограничения нет.
+
+    Одна функция на скважинные и групповые потолки: разница между ними только в
+    том, чьё имя стоит слева, а проверки и способ ошибиться одни и те же.
+    """
     if key not in section:
         return None
     table = section[key]
     if not isinstance(table, dict):
         raise ValueError(
             f"В {source} значение {key} в секции [limits] должно быть таблицей "
-            "вида {скважина = потолок}"
+            f"вида {{{whose} = потолок}}"
         )
     caps: dict[str, float] = {}
-    for well, cap in table.items():
+    for name, cap in table.items():
         value = float(cap)
         if value < 0:
             raise ValueError(
-                f"В {source} потолок скважины {well} отрицателен ({value:g})"
+                f"В {source} потолок ({whose} {name}) отрицателен ({value:g})"
             )
-        caps[str(well)] = value
+        caps[str(name)] = value
     return caps or None
+
+
+def _well_groups(section: dict, source: Path) -> dict[str, frozenset[str]] | None:
+    """Группы скважин: `{"куст-1" = ["102", "305"]}`. Пустая таблица — групп нет.
+
+    Скважина может входить в несколько групп: куст и блок заводнения — разные
+    разрезы одного фонда, и запрещать пересечения значило бы выражать не тот
+    объект. Имена приводятся к строкам по той же причине, что и везде: номер
+    скважины в TOML легко написать числом.
+    """
+    key = "well_groups"
+    if key not in section:
+        return None
+    table = section[key]
+    if not isinstance(table, dict):
+        raise ValueError(
+            f"В {source} значение {key} в секции [limits] должно быть таблицей "
+            "вида {группа = [скважины]}"
+        )
+    groups: dict[str, frozenset[str]] = {}
+    for name, wells in table.items():
+        if not isinstance(wells, list):
+            raise ValueError(
+                f"В {source} состав группы {name} должен быть списком скважин, "
+                f"получено {wells!r}"
+            )
+        members = frozenset(str(well) for well in wells)
+        if not members:
+            raise ValueError(
+                f"В {source} группа {name} пуста: пустая группа не выражает ограничения, "
+                "а прячет его"
+            )
+        groups[str(name)] = members
+    return groups or None
 
 
 def _positive(section: dict, key: str, name: str, source: Path) -> float:

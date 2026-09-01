@@ -608,3 +608,126 @@ def test_annual_average_applies_to_injection_too(norms):
     result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
 
     assert result == steps and decisions == []
+def test_field_oil_limit_cuts_liquid_in_the_same_share(norms):
+    """Мощность УПН выражается по нефти, и объектным пределом по жидкости не заменяется."""
+    steps = [month_step(2007, 1, producers=[prod("1", 100.0)])]
+    # 100 м³ нефти за месяц ≈ 91,3 т, то есть 2,94 т/сут при 31 дне
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0)]
+    limits = planner.Limits(enforce_water_balance=False, max_field_oil_t_per_day=1.47)
+
+    result, decisions = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    assert result[0].producers[0].liquid_rate == pytest.approx(50.0, rel=1e-2)
+    assert "нефть" in decisions[0].resource
+    assert "жидкость срезана в той же доле" in decisions[0].reason
+
+
+def test_field_water_limit_uses_liquid_minus_oil(norms):
+    """Отдельной колонки воды в контракте расчётчика нет — вода это жидкость минус нефть."""
+    steps = [month_step(2007, 1, producers=[prod("1", 100.0)])]
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0)]
+    water_t = 900.0 * FLUIDS.water_density / 1000
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_water_t_per_day=water_t / 31 / 2)
+
+    result, decisions = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    assert result[0].producers[0].liquid_rate == pytest.approx(50.0, rel=1e-6)
+    assert "попутная вода" in decisions[0].resource
+
+
+def test_phase_limit_without_a_forecast_is_refused(norms):
+    """Объявленное ограничение, которое нечем посчитать, хуже отсутствующего."""
+    steps = [month_step(2007, 1, producers=[prod("1", 100.0)])]
+    limits = planner.Limits(enforce_water_balance=False, max_field_oil_t_per_day=1.0)
+
+    with pytest.raises(ValueError, match="прогноза нет"):
+        planner.enforce(steps, [], norms, limits, FLUIDS)
+
+
+def test_group_liquid_cap_cuts_the_worst_by_margin_inside_the_group(norms):
+    """Между объектом и скважиной не было ничего, а «по кусту не более» — обычная форма."""
+    steps = [month_step(2007, 1, producers=[prod("1", 60.0), prod("2", 60.0), prod("3", 60.0)])]
+    forecast = [
+        produced("2007-01-01", "1", 200.0, 800.0),   # богатая нефтью
+        produced("2007-01-01", "2", 5.0, 995.0),     # почти вода
+        produced("2007-01-01", "3", 200.0, 800.0),   # вне группы
+    ]
+    limits = planner.Limits(
+        enforce_water_balance=False,
+        well_groups={"куст-1": frozenset({"1", "2"})},
+        group_liquid_caps_m3_per_day={"куст-1": 80.0},
+    )
+
+    result, decisions = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+    rates = {control.well: control.liquid_rate for control in result[0].producers}
+
+    assert rates["3"] == 60.0, "скважина вне группы не трогается"
+    assert rates["1"] + rates["2"] == pytest.approx(80.0)
+    assert rates["2"] < rates["1"], "первой режется худшая по деньгам на кубометр"
+    assert decisions and "куст-1" in decisions[0].resource
+
+
+def test_group_injection_cap_is_shared_proportionally(norms):
+    """У нагнетательных приоритета нет — по той же причине, что и в балансе воды."""
+    steps = [month_step(2007, 1, injectors=[inj("9", 60.0), inj("8", 40.0)])]
+    limits = planner.Limits(
+        enforce_water_balance=False,
+        well_groups={"кнс-1": frozenset({"9", "8"})},
+        group_injection_caps_m3_per_day={"кнс-1": 50.0},
+    )
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+    rates = {control.well: control.rate for control in result[0].injectors}
+
+    assert rates["9"] == pytest.approx(30.0) and rates["8"] == pytest.approx(20.0)
+
+
+def test_a_well_can_belong_to_two_groups(norms):
+    """Куст и блок заводнения — разные разрезы одного фонда, пересечение законно.
+
+    Действует наименьший потолок, и объясняет срезку та группа, которая её
+    фактически сделала: группы применяются по очереди, и после срезки до 20 м³/сут
+    потолок 50 уже не нарушен — писать про него решение значило бы отчитаться о
+    срезке, которой не было.
+    """
+    steps = [month_step(2007, 1, injectors=[inj("9", 60.0)])]
+    limits = planner.Limits(
+        enforce_water_balance=False,
+        well_groups={"куст-1": frozenset({"9"}), "блок-А": frozenset({"9"})},
+        group_injection_caps_m3_per_day={"куст-1": 50.0, "блок-А": 20.0},
+    )
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert result[0].injectors[0].rate == pytest.approx(20.0), "действует наименьший потолок"
+    assert [decision.resource for decision in decisions] == ["закачка группы «блок-А»"]
+
+
+def test_group_order_does_not_change_the_result(norms):
+    """Порядок групп в конфигурации не должен менять числа: он алфавитный и стабильный."""
+    steps = [month_step(2007, 1, injectors=[inj("9", 60.0)])]
+    tight = planner.Limits(
+        enforce_water_balance=False,
+        well_groups={"куст-1": frozenset({"9"}), "блок-А": frozenset({"9"})},
+        group_injection_caps_m3_per_day={"блок-А": 20.0, "куст-1": 50.0},
+    )
+    loose = planner.Limits(
+        enforce_water_balance=False,
+        well_groups={"блок-А": frozenset({"9"}), "куст-1": frozenset({"9"})},
+        group_injection_caps_m3_per_day={"куст-1": 50.0, "блок-А": 20.0},
+    )
+
+    first, _ = planner.enforce(steps, [], norms, tight, FLUIDS)
+    second, _ = planner.enforce(steps, [], norms, loose, FLUIDS)
+
+    assert first == second
+
+
+def test_group_cap_without_the_group_is_refused(norms):
+    """Потолок группы, которой нет в составе, — опечатка кейса, а не пустое условие."""
+    limits = planner.Limits(enforce_water_balance=False,
+                            group_liquid_caps_m3_per_day={"куст-7": 10.0})
+
+    with pytest.raises(ValueError, match="куст-7"):
+        planner.enforce([month_step(2007, 1)], [], norms, limits, FLUIDS)

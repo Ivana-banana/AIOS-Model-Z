@@ -245,3 +245,44 @@ def test_annual_liquid_volume_and_average_reading_are_read(tmp_path):
 
     assert loaded.limits.max_field_liquid_m3_per_year == 1_000_000.0
     assert loaded.limits.field_limits_are_annual_average is True
+GROUPS = """
+[limits.well_groups]
+"куст-1" = ["102", 305]
+
+[limits.group_liquid_caps_m3_per_day]
+"куст-1" = 400
+
+[limits.group_injection_caps_m3_per_day]
+"куст-1" = 300
+"""
+
+
+def test_well_groups_and_caps_are_read(tmp_path):
+    loaded = config.load(_written(tmp_path, MINIMAL + GROUPS))
+
+    assert loaded.limits.well_groups == {"куст-1": frozenset({"102", "305"})}
+    assert loaded.limits.group_liquid_caps_m3_per_day == {"куст-1": 400.0}
+    assert loaded.limits.group_injection_caps_m3_per_day == {"куст-1": 300.0}
+
+
+def test_empty_group_is_refused(tmp_path):
+    """Пустая группа не выражает ограничения, а прячет его."""
+    text = MINIMAL + GROUPS.replace('"куст-1" = ["102", 305]', '"куст-1" = []')
+
+    with pytest.raises(ValueError, match="пуста"):
+        config.load(_written(tmp_path, text))
+
+
+def test_phase_limits_are_optional_and_read(tmp_path):
+    """Мощность УПН и УПСВ: пределы по фазе, а не по жидкости."""
+    assert config.load(_written(tmp_path, MINIMAL)).limits.max_field_oil_t_per_day is None
+
+    text = MINIMAL.replace(
+        "water_tolerance = 1.0",
+        "water_tolerance = 1.0\nmax_field_oil_t_per_day = 1200\n"
+        "max_field_water_t_per_day = 9000",
+    )
+    loaded = config.load(_written(tmp_path, text))
+
+    assert loaded.limits.max_field_oil_t_per_day == 1200.0
+    assert loaded.limits.max_field_water_t_per_day == 9000.0

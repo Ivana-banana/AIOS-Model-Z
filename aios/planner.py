@@ -180,6 +180,36 @@ class Limits:
     месяцам.
     """
 
+    max_field_oil_t_per_day: float | None = None
+    """Предел по нефти на объекте, т/сут. None — предела нет.
+
+    Мощность УПН выражается по нефти, а не по жидкости, и объектным пределом по
+    жидкости не заменяется: одна и та же жидкость при обводнённости 50 % и 90 %
+    даёт вчетверо разную нефть. Проверяется по прогнозу — без него фазу из
+    расписания не получить, там только уставки по жидкости.
+    """
+
+    max_field_water_t_per_day: float | None = None
+    """Предел по попутной воде на объекте, т/сут. None — предела нет.
+
+    Мощность УПСВ и утилизации. Вода считается как жидкость минус нефть по тому
+    же прогнозу: отдельной колонки воды в контракте расчётчика нет.
+    """
+
+    well_groups: dict[str, frozenset[str]] | None = None
+    """Группы скважин: куст, блок, ДНС. None — групп нет.
+
+    Между объектом и скважиной у нас до 01.09 не было ничего, а «по кусту не
+    более» — обычная форма ограничения. Скважина может входить в несколько групп:
+    куст и блок заводнения это разные разрезы одного фонда.
+    """
+
+    group_liquid_caps_m3_per_day: dict[str, float] | None = None
+    """Потолок отбора жидкости по группе, м³/сут. None — предела нет."""
+
+    group_injection_caps_m3_per_day: dict[str, float] | None = None
+    """Потолок закачки по группе, м³/сут. None — предела нет."""
+
     forced_shut_windows: tuple[ShutWindow, ...] | None = None
     """Обязательные остановки с окном дат. None — таких нет.
 
@@ -297,6 +327,23 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             )
         decisions.extend(injection)
 
+    if limits.max_field_oil_t_per_day is not None:
+        result, oil = _fit_phase_to_capacity(result, forecast,
+                                             limits.max_field_oil_t_per_day, phase="нефть")
+        decisions.extend(oil)
+
+    if limits.max_field_water_t_per_day is not None:
+        result, water_phase = _fit_phase_to_capacity(
+            result, forecast, limits.max_field_water_t_per_day, phase="попутная вода"
+        )
+        decisions.extend(water_phase)
+
+    # Групповой уровень стоит между объектом и скважиной — там же, где он стоит
+    # в самой иерархии ограничений. Считать его после скважинных потолков значило
+    # бы резать уже срезанное и объяснять группе то, что сделал паспорт насоса.
+    result, groups = _fit_groups(result, forecast, norms, limits, fluids)
+    decisions.extend(groups)
+
     # Ручки под валидационный кейс идут последними и в этом порядке намеренно:
     # сначала объектные пределы (выше), потом скважинные, потом состав фонда,
     # потом годовой объём. Обратный порядок дал бы срезку по объекту поверх уже
@@ -332,6 +379,188 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         result, events = _fit_events_to_annual_quota(result, limits.max_events_per_year)
         decisions.extend(events)
 
+    return result, decisions
+
+
+def _phase_by_month(forecast: list[dict[str, Any]], phase: str) -> dict[str, float]:
+    """Тонны фазы за месяц по объекту: `{"2007-01": 12345.0}`.
+
+    Считается по прогнозу, потому что расписание фаз не содержит вовсе: там
+    уставки по жидкости и по закачке. Строки, исключённые методикой, не считаются
+    — тем же правилом, что и везде в проекте.
+    """
+    totals: dict[str, float] = {}
+    for row in forecast:
+        if not counted_by_methodology(row):
+            continue
+        oil_t = max(row["WOMT_Diff"], 0.0)
+        liquid_t = max(row["WLPT_Diff"], 0.0)
+        value = oil_t if phase == "нефть" else max(liquid_t - oil_t, 0.0)
+        stamp = str(row["DATA"])[:7]
+        totals[stamp] = totals.get(stamp, 0.0) + value
+    return totals
+
+
+def _fit_phase_to_capacity(steps: list[ScheduleStep],
+                           forecast: list[dict[str, Any]],
+                           capacity_t_per_day: float,
+                           *, phase: str) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Уложить фазу — нефть или попутную воду — в мощность подготовки.
+
+    Расписание задаёт жидкость, а ограничена фаза, поэтому срезка идёт через
+    допущение: **при неизменной обводнённости срез жидкости на k срезает фазу на
+    то же k**. Допущение названо здесь, а не спрятано: обводнённость от срезки
+    меняется, и проверять результат надо по факту полного расчёта, как и баланс
+    воды.
+
+    Без прогноза ограничение не проверяемо ничем — это отказ, а не молчаливый
+    пропуск: объявленное ограничение, которое никак не считается, хуже
+    отсутствующего.
+    """
+    if not forecast:
+        raise ValueError(
+            f"предел по фазе «{phase}» задан, но прогноза нет: из расписания фазу "
+            "не получить, там только уставки по жидкости"
+        )
+
+    monthly = _phase_by_month(forecast, phase)
+    decisions: list[Allocation] = []
+    reported: set[str] = set()
+    result: list[ScheduleStep] = []
+
+    for step in steps:
+        stamp = f"{step.date.year:04d}-{step.date.month:02d}"
+        days = monthrange(step.date.year, step.date.month)[1]
+        produced_t = monthly.get(stamp)
+        if produced_t is None:
+            result.append(step)
+            continue
+        rate = produced_t / days
+        if rate <= capacity_t_per_day:
+            result.append(step)
+            continue
+
+        factor = capacity_t_per_day / rate
+        producers = []
+        for control in step.producers:
+            if control.status != "OPEN" or not control.liquid_rate:
+                producers.append(control)
+                continue
+            reduced = control.liquid_rate * factor
+            if stamp not in reported:
+                reported.add(stamp)
+                decisions.append(Allocation(
+                    well=control.well, resource=f"{phase}, {stamp}",
+                    before=control.liquid_rate, after=reduced,
+                    reason=(f"{phase} {rate:,.1f} > мощности {capacity_t_per_day:,.1f} т/сут; "
+                            "жидкость срезана в той же доле"),
+                ))
+            producers.append(ProducerControl(control.well, control.status, control.mode,
+                                             reduced, control.bhp))
+        result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
+    return result, decisions
+
+
+def _fit_groups(steps: list[ScheduleStep],
+                forecast: list[dict[str, Any]],
+                norms: Norms | None,
+                limits: Limits,
+                fluids: Fluids) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Ограничения уровня группы: куст, блок, ДНС.
+
+    Порядок срезки взят тот же, что на уровне объекта, и по той же причине:
+    жидкость режется по возрастанию удельной маржи (первой уходит скважина,
+    приносящая меньше денег на кубометр), закачка — пропорционально, потому что
+    приоритета между нагнетательными у нас нет.
+
+    Скважина может входить в несколько групп; тогда её режут все, чьи пределы она
+    нарушает, а действует наименьший результат — он применяется по очереди.
+    """
+    groups = limits.well_groups or {}
+    liquid_caps = limits.group_liquid_caps_m3_per_day or {}
+    injection_caps = limits.group_injection_caps_m3_per_day or {}
+    if not liquid_caps and not injection_caps:
+        return steps, []
+
+    unknown = sorted((set(liquid_caps) | set(injection_caps)) - set(groups))
+    if unknown:
+        raise ValueError(
+            "потолок задан группам, которых нет в well_groups: " + ", ".join(unknown)
+        )
+    if liquid_caps and norms is None:
+        raise ValueError(
+            "с групповым потолком по жидкости нужны нормативы: резать надо худшие "
+            "по марже, а без неё выбирать не из чего"
+        )
+
+    value = _margin_per_liquid(forecast, norms, fluids) if (liquid_caps and norms) else {}
+    decisions: list[Allocation] = []
+    reported: set[str] = set()
+    result: list[ScheduleStep] = []
+
+    for step in steps:
+        producers = list(step.producers)
+        injectors = list(step.injectors)
+
+        for group, cap in sorted(liquid_caps.items()):
+            members = groups[group]
+            working = [
+                control for control in producers
+                if control.well in members and control.status == "OPEN" and control.liquid_rate
+            ]
+            total = sum(control.liquid_rate or 0.0 for control in working)
+            if total <= cap:
+                continue
+            excess = total - cap
+            order = sorted(working, key=lambda control: value.get(control.well, 0.0))
+            cuts: dict[str, float] = {}
+            for control in order:
+                if excess <= 0:
+                    break
+                rate = control.liquid_rate or 0.0
+                cut = min(rate, excess)
+                cuts[control.well] = rate - cut
+                excess -= cut
+            for index, control in enumerate(producers):
+                if control.well not in cuts:
+                    continue
+                key = f"{group}:{control.well}"
+                if key not in reported:
+                    reported.add(key)
+                    decisions.append(Allocation(
+                        well=control.well, resource=f"жидкость группы «{group}»",
+                        before=control.liquid_rate or 0.0, after=cuts[control.well],
+                        reason=(f"группа «{group}»: {total:,.1f} > потолка {cap:,.1f} м³/сут"),
+                    ))
+                producers[index] = ProducerControl(control.well, control.status, control.mode,
+                                                   cuts[control.well], control.bhp)
+
+        for group, cap in sorted(injection_caps.items()):
+            members = groups[group]
+            working = [
+                control for control in injectors
+                if control.well in members and control.status == "OPEN" and control.rate
+            ]
+            total = sum(control.rate or 0.0 for control in working)
+            if total <= cap:
+                continue
+            factor = cap / total
+            for index, control in enumerate(injectors):
+                if control.well not in members or control.status != "OPEN" or not control.rate:
+                    continue
+                reduced = control.rate * factor
+                key = f"{group}:{control.well}"
+                if key not in reported:
+                    reported.add(key)
+                    decisions.append(Allocation(
+                        well=control.well, resource=f"закачка группы «{group}»",
+                        before=control.rate, after=reduced,
+                        reason=(f"группа «{group}»: {total:,.1f} > потолка {cap:,.1f} м³/сут"),
+                    ))
+                injectors[index] = InjectorControl(control.well, control.fluid, control.status,
+                                                   control.mode, reduced, control.bhp)
+
+        result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
     return result, decisions
 
 
