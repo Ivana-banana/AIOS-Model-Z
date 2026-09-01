@@ -966,3 +966,74 @@ def test_ranking_survives_a_forecast_read_from_csv(norms):
     assert rates["1"] + rates["2"] == pytest.approx(80.0)
     assert rates["2"] < rates["1"], "первой обязана резаться скважина с худшей маржой"
     assert decisions[0].well == "2"
+# ── квота мероприятий против жёстких ограничений (найдено критиком 01.09) ────
+
+def test_quota_does_not_cancel_a_shutdown_it_did_not_ask_for(norms):
+    """Квота отменяла остановку, поставленную ограничением, — и нарушала его.
+
+    `_fit_events_to_annual_quota` идёт последним и при исчерпанной квоте
+    возвращает скважину в состояние предыдущего шага. Остановка, которую только
+    что поставило окно `forced_shut_windows`, для квоты выглядит обычным
+    мероприятием — и отменялась. Скважина снова открыта внутри окна.
+    """
+    steps = [
+        ScheduleStep(date(2027, 1, 1), (prod("A", 50.0), prod("B", 100.0)), ()),
+        # своя остановка A в феврале съедает квоту
+        ScheduleStep(date(2027, 2, 1),
+                     (ProducerControl("A", "SHUT", "LRAT", None, 50.0), prod("B", 100.0)), ()),
+        ScheduleStep(date(2027, 3, 1),
+                     (ProducerControl("A", "SHUT", "LRAT", None, 50.0), prod("B", 100.0)), ()),
+    ]
+    limits = planner.Limits(
+        enforce_water_balance=False, max_events_per_year=1,
+        forced_shut_windows=(planner.ShutWindow("B", date(2027, 3, 1), date(2027, 12, 31)),),
+    )
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    march = result[2]
+
+    assert [c.status for c in march.producers if c.well == "B"] == ["SHUT"]
+    assert any("оставлен вопреки квоте" in decision.reason for decision in decisions), (
+        "превышение квоты обязательным мероприятием обязано быть названо вслух"
+    )
+
+
+def test_quota_does_not_restore_a_rate_the_field_limit_cut_to_zero(norms):
+    """Тот же механизм бил по деньгам: срезка в ноль это «остановка» для квоты.
+
+    Худшая по марже скважина срезается объектным пределом до нуля, то есть до
+    `SHUT`. Квота видит остановку, отменяет её и возвращает скважине режим
+    прошлого шага — объектный предел снова нарушен, и это уже деньги, а не форма.
+    """
+    steps = [
+        ScheduleStep(date(2027, 1, 1), (prod("A", 50.0), prod("B", 50.0)), ()),
+        ScheduleStep(date(2027, 2, 1), (prod("A", 150.0), prod("B", 100.0)), ()),
+    ]
+    forecast = [
+        produced("2027-01-01", "A", 200.0, 800.0, rate=50.0),   # богатая нефтью
+        produced("2027-01-01", "B", 2.0, 998.0, rate=50.0),     # почти вода — режется первой
+    ]
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_liquid_m3_per_day=150.0, max_events_per_year=0)
+
+    result, _ = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+    february = sum(c.liquid_rate or 0.0 for c in result[1].producers if c.status == "OPEN")
+
+    assert february <= 150.0, "квота вернула отбор, который срезал объектный предел"
+
+
+def test_quota_still_cancels_what_the_cycle_asked_for(norms):
+    """Защита не должна отменять саму квоту: предложения цикла режутся как прежде."""
+    steps = [
+        ScheduleStep(date(2027, 1, 1), (prod("A", 50.0), prod("B", 50.0)), ()),
+        ScheduleStep(date(2027, 2, 1),
+                     (ProducerControl("A", "SHUT", "LRAT", None, 50.0),
+                      ProducerControl("B", "SHUT", "LRAT", None, 50.0)), ()),
+    ]
+    limits = planner.Limits(enforce_water_balance=False, max_events_per_year=1)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    statuses = sorted(c.status for c in result[1].producers)
+
+    assert statuses == ["OPEN", "SHUT"], "одна остановка проходит по квоте, вторая отменяется"
+    assert any("отменён: квота мероприятий" in decision.reason for decision in decisions)

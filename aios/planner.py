@@ -447,7 +447,13 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # до нуля, это остановка. Считать квоту раньше значило бы считать не тот
     # график, который в итоге уедет в файл.
     if limits.max_events_per_year is not None:
-        result, events = _fit_events_to_annual_quota(result, limits.max_events_per_year)
+        # Мероприятие, порождённое самой срезкой, отменять нельзя: отмена вернула бы
+        # скважину в состояние, которое нарушает жёсткое ограничение. Такие события
+        # квоту расходуют, но не отменяются — найдено критиком 01.09 (Р-138).
+        result, events = _fit_events_to_annual_quota(
+            result, limits.max_events_per_year,
+            protected=_events_of(result) - _events_of(list(steps)),
+        )
         decisions.extend(events)
 
     return result, decisions
@@ -1065,8 +1071,38 @@ def _fit_liquid_to_annual_volume(
     return result, decisions
 
 
+def _events_of(steps: list[ScheduleStep]) -> set[tuple[str, Any]]:
+    """Мероприятия расписания: `{(скважина, дата шага)}`.
+
+    Нужно, чтобы отличить мероприятие, которое предложил цикл, от мероприятия,
+    порождённого срезкой самого планировщика: предел, доведённый до нуля, — это
+    остановка, и отменять её квотой нельзя, иначе ограничение снова нарушено.
+    """
+    events: set[tuple[str, Any]] = set()
+    previous: ScheduleStep | None = None
+    for step in steps:
+        if previous is None:
+            previous = step
+            continue
+        was_producing = {c.well for c in previous.producers if c.status == "OPEN"}
+        was_injecting = {c.well for c in previous.injectors if c.status == "OPEN"}
+        now_producing = {c.well for c in step.producers if c.status == "OPEN"}
+        now_injecting = {c.well for c in step.injectors if c.status == "OPEN"}
+        known = {c.well for c in previous.producers} | {c.well for c in previous.injectors}
+        for well in known:
+            kind = _event_kind(
+                (well in was_producing, well in was_injecting),
+                (well in now_producing, well in now_injecting),
+            )
+            if kind is not None:
+                events.add((well, step.date))
+        previous = step
+    return events
+
+
 def _fit_events_to_annual_quota(
-    steps: list[ScheduleStep], limit: int
+    steps: list[ScheduleStep], limit: int,
+    protected: set[tuple[str, Any]] | None = None,
 ) -> tuple[list[ScheduleStep], list[Allocation]]:
     """Квота платных мероприятий на календарный год.
 
@@ -1138,6 +1174,20 @@ def _fit_events_to_annual_quota(
                 continue
             if spent.get(year, 0) < limit:
                 spent[year] = spent.get(year, 0) + 1
+                continue
+            if (well, step.date) in (protected or set()):
+                # мероприятие порождено срезкой: отменить его значит вернуть
+                # скважину в состояние, нарушающее жёсткое ограничение. Квоту оно
+                # всё равно расходует — и превышение называется вслух
+                spent[year] = spent.get(year, 0) + 1
+                decisions.append(Allocation(
+                    well=well, resource=f"квота мероприятий, {year}",
+                    before=0.0, after=0.0,
+                    reason=(f"{kind} оставлен вопреки квоте {limit}: он порождён "
+                            f"ограничением объекта, и его отмена нарушила бы это "
+                            f"ограничение. Мероприятий за {year} год уже "
+                            f"{spent[year]}"),
+                ))
                 continue
             cancelled.add(well)
             asked = now_producing.get(well) or now_injecting.get(well)
