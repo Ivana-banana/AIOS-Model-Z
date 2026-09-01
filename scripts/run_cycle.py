@@ -228,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             rows,
             min_reservoir_pressure=config.limits.min_reservoir_pressure_atm,
             max_reservoir_pressure=config.limits.max_reservoir_pressure_atm,
+            max_watercut=config.limits.max_watercut,
         )
         if problems:
             print(f"санити-чеки расчёта: нарушений {len(problems)}")

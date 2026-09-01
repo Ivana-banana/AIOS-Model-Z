@@ -355,3 +355,22 @@ def test_an_export_without_our_summary_section_is_refused_not_read_as_zeros(tmp_
 
     with pytest.raises(ValueError, match="SUMMARY"):
         summary.monthly_rows(tmp_path / "CASE", wells=["1"])
+def test_watercut_limit_is_checked_on_the_export_not_in_the_planner():
+    """Обводнённость — отклик пласта: предел кейса проверяется по факту.
+
+    Пункт 28 чек-листа приёмки. Санитарный диапазон «∈ [0, 1]» остаётся про
+    физику; здесь речь про условие, которое может прийти с кейсом.
+    """
+    from conftest import make_row
+
+    rows = [
+        make_row("2007-01-01", "сухая", wlpr=30.0, womr=20.0, liquid=1000.0, oil=400.0),
+        make_row("2007-02-01", "мокрая", wlpr=30.0, womr=1.0, liquid=1000.0, oil=50.0),
+    ]
+
+    assert summary.sanity_problems(rows) == [], "без ключа предела нет"
+
+    problems = summary.sanity_problems(rows, max_watercut=0.9)
+
+    assert len(problems) == 1
+    assert "мокрая" in problems[0] and "обводнённость" in problems[0]

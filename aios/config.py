@@ -174,6 +174,7 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
                                               "limits", source),
             min_producer_rate_m3_per_day=_optional_positive(
                 limits, "min_producer_rate_m3_per_day", "limits", source),
+            max_watercut=_optional_positive(limits, "max_watercut", "limits", source),
         ),
         policy=PolicyConfig(
             lookback_months=_at_least_one(policy, "lookback_months", "policy", source),

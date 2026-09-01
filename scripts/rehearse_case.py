@@ -56,6 +56,7 @@ CHECKED_ELSEWHERE = {
     "water_tolerance_min": "нижняя граница коридора баланса воды — проверяется отдельно, ниже",
     "min_reservoir_pressure_atm": "пластовое давление — отклик пласта, проверяется по выгрузке",
     "max_reservoir_pressure_atm": "пластовое давление — отклик пласта, проверяется по выгрузке",
+    "max_watercut": "обводнённость — отклик пласта, проверяется по выгрузке",
 }
 
 
@@ -177,20 +178,22 @@ def main(argv: list[str] | None = None) -> int:
         print()
 
     if (limits.min_reservoir_pressure_atm is not None
-            or limits.max_reservoir_pressure_atm is not None):
-        # Пластовое давление расписанием не задать: это отклик пласта. Проверяется
-        # по выгрузке — тем же кодом, который стоит на границе «симулятор →
-        # экономика», и на том же прогнозе, что и остальные условия.
-        pressure = [
+            or limits.max_reservoir_pressure_atm is not None
+            or limits.max_watercut is not None):
+        # Пластовое давление и обводнённость расписанием не задать: это отклик
+        # пласта. Проверяются по выгрузке — тем же кодом, который стоит на границе
+        # «симулятор → экономика», и на том же прогнозе, что и остальные условия.
+        response = [
             line for line in summary.sanity_problems(
                 forecast,
                 min_reservoir_pressure=limits.min_reservoir_pressure_atm,
                 max_reservoir_pressure=limits.max_reservoir_pressure_atm,
-            ) if "пластовое" in line or "атм" in line
+                max_watercut=limits.max_watercut,
+            ) if "пластовое" in line or "обводнённость" in line
         ]
-        print(f"--- пластовое давление: "
-              f"{'нарушений нет' if not pressure else len(pressure)} ---")
-        for line in pressure[:5]:
+        print(f"--- отклик пласта (давление, обводнённость): "
+              f"{'нарушений нет' if not response else len(response)} ---")
+        for line in response[:5]:
             print(f"  {line}")
         print()
 
@@ -256,8 +259,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {key}")
 
     print("репетиция пройдена: каждое условие, выражаемое расписанием, соблюдено.")
-    print("Пластовое давление в этот счёт не входит: оно отклик пласта, а не уставка,")
-    print("и нарушение по нему — повод менять сценарий, а не срезать расписание.")
+    print("Отклик пласта — пластовое давление и обводнённость — в этот счёт не входит:")
+    print("расписанием его не задать, и нарушение по нему повод менять сценарий,")
+    print("а не срезать расписание.")
     return 0
 
 

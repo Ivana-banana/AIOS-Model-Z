@@ -196,7 +196,8 @@ def monthly_rows(case: str | Path,
 def sanity_problems(rows: list[dict[str, Any]],
                     max_liquid_rate: float = 500.0,
                     min_reservoir_pressure: float | None = None,
-                    max_reservoir_pressure: float | None = None) -> list[str]:
+                    max_reservoir_pressure: float | None = None,
+                    max_watercut: float | None = None) -> list[str]:
     """Санити-чеки на границе «симулятор → экономика».
 
     Симулятор и суррогат не падают, а тихо врут, поэтому физический диапазон
@@ -244,6 +245,15 @@ def sanity_problems(rows: list[dict[str, Any]],
                 f"{where}: пластовое давление {row['THP']:.6g} > "
                 f"{max_reservoir_pressure:g} атм у нагнетательной"
             )
+        # Предел обводнённости — тоже проверка по факту, а не срезка: обводнённость
+        # это отклик пласта, расписанием её не задать. Считается из тех же двух
+        # колонок, что и везде в проекте: (жидкость − нефть) / жидкость по массе.
+        if max_watercut is not None and row["WLPT_Diff"] > 0:
+            watercut = 1.0 - row["WOMT_Diff"] / row["WLPT_Diff"]
+            if watercut > max_watercut:
+                problems.append(
+                    f"{where}: обводнённость {watercut:.4g} > {max_watercut:g}"
+                )
 
         last = previous.get(well)
         if last is not None:
