@@ -26,7 +26,11 @@
   section {
     position: relative;
     width: min(1120px, 96vw);
-    aspect-ratio: 16 / 9;
+    /* min-height вместо aspect-ratio: жёсткая пропорция вместе с overflow:hidden
+       молча срезала нижние строки — на «главном» слайде 5 так пропадал целый
+       пункт (найдено критиком 02.09). Пусть лучше слайд станет выше пропорции,
+       чем потеряет текст. */
+    min-height: calc(min(1120px, 96vw) * 9 / 16);
     margin: 0 auto 22px;
     padding: 46px 56px 52px;
     background: var(--bg);
@@ -35,7 +39,6 @@
     box-shadow: 0 1px 3px rgba(0,0,0,.08);
     display: flex;
     flex-direction: column;
-    overflow: hidden;
   }
   h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -.01em; }
   h2 { font-size: 27px; margin: 0 0 18px; letter-spacing: -.01em; }
@@ -67,7 +70,8 @@
     body { background: #fff; }
     .deck { padding: 0; }
     section { margin: 0; border: none; border-radius: 0; box-shadow: none;
-              width: 100%; height: 100vh; aspect-ratio: auto; page-break-after: always; }
+              width: 100%; min-height: 100vh; page-break-after: always; }
+    section:last-child { page-break-after: auto; }
   }
 </style>
 </head>
@@ -104,7 +108,9 @@
     <li>Файл и число получены <b>одним</b> расчётом. Пара «файл от одного прогона,
       число от другого» — самый дешёвый способ разойтись с собственной заявкой.</li>
     <li>Самый доходный посчитанный сценарий даёт 13 645,7 (+15,1 %). Мы его
-      <b>не заявляем</b> — почему, на слайде 7.</li>
+      <b>не заявляем</b>: больше половины его закачки идёт на пределе давления,
+      то есть число определяло бы не наше расписание, а модель околоскважинной
+      зоны (слайд 9).</li>
   </ul>
   <div class="src">Источники: docs/submission.md (разделы 1 и 3), тег submit-2026-08-24.1</div>
 </section>
@@ -137,7 +143,9 @@
   </table>
   <p class="big accent" style="margin-top:10px">78,3 % даёт закачка</p>
   <p class="sub" style="margin-top:10px">Разложение по Шепли: 8 полных гидродинамических
-    расчётов, 1 ч 48 мин. Не оценка по важности признаков, а равенство с проверкой.</p>
+    расчётов, 1 ч 48 мин. Не оценка по важности признаков, а равенство с проверкой.
+    Считалось на сценарии ×1.5/×1.6 (прирост 1 412,8), а не на заявляемом: план
+    коалиций — восемь расчётов, и повторять его под каждую правку заявки не за что.</p>
   <div class="src">Источники: Р-85; docs/experiments.md, «Точный вклад групп в ЧДД»</div>
 </section>
 
@@ -155,7 +163,9 @@
     </div>
   </div>
   <p class="huge warn" style="margin-top:18px">−211,4</p>
-  <p class="sub">синергия двух групп закачки, млн руб. — отрицательная</p>
+  <p class="sub">синергия <b>пары</b> «закачка в обводнённое × закачка в невыработанное»,
+    млн руб. Это не разность двух чисел выше: там сумма всех вкладов, здесь один
+    парный член разложения — и он отрицательный.</p>
   <ul style="margin-top:8px">
     <li>Две группы закачки, работая вместе, дают <b>меньше</b>, чем поодиночке:
       они делят один пласт и мешают друг другу.</li>
@@ -175,10 +185,10 @@
   </table>
   <p class="sub" style="margin-top:6px">Оптимизатор тянет решение туда, где суррогат
     ошибается в нашу пользу. Это механика, а не гипотеза.</p>
-  <p class="big" style="margin-top:16px">200 → <span class="accent">111 отбраковано</span></p>
+  <p class="big" style="margin-top:16px">200 → <span class="accent">116 отбраковано</span></p>
   <ul style="margin-top:10px">
     <li>Покоординатная проверка пропускает все 200 сдвинутых режимов;
-      <b>сценарное расстояние</b> отбраковывает 111.</li>
+      <b>сценарное расстояние</b> отбраковывает 116.</li>
     <li>Кандидат вне области доверия не принимается — он идёт на полный расчёт.</li>
   </ul>
   <div class="src">Источники: Р-111, Р-114; docs/experiments.md (шлюз доверия)</div>
@@ -215,7 +225,7 @@
     <li>Условия кейса выражаются конфигурацией: 27 ключей, приёмка отрепетирована —
       от условий до проверенного расписания 1,6 с.</li>
   </ul>
-  <div class="src">Источники: Р-73, Р-83, Р-134; docs/portability.md, docs/validation-case-rehearsal.md</div>
+  <div class="src">Источники: Р-73, Р-83, Р-135; docs/portability.md, docs/validation-case-rehearsal.md</div>
 </section>
 
 <section>

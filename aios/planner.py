@@ -465,7 +465,7 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     if limits.max_events_per_year is not None:
         # Мероприятие, порождённое самой срезкой, отменять нельзя: отмена вернула бы
         # скважину в состояние, которое нарушает жёсткое ограничение. Такие события
-        # квоту расходуют, но не отменяются — найдено критиком 01.09 (Р-138).
+        # квоту расходуют, но не отменяются — найдено критиком 01.09 (Р-139).
         result, events = _fit_events_to_annual_quota(
             result, limits.max_events_per_year,
             protected=events_of(result) - events_of(list(steps)),
@@ -1265,7 +1265,7 @@ def _fit_events_to_annual_quota(
     `protected` — мероприятия, порождённые срезками самого планировщика. Их
     отмена вернула бы скважину в состояние, нарушающее жёсткое ограничение,
     поэтому они квоту расходуют, но не отменяются, а превышение печатается
-    решением (Р-138).
+    решением (Р-139).
     """
     decisions: list[Allocation] = []
     result: list[ScheduleStep] = []
