@@ -1442,18 +1442,32 @@ def _shut_below_minimum(steps: list[ScheduleStep],
     Останавливаем, а не поднимаем до порога: поднятая уставка — обещание дебита,
     которого пласт может не дать. Нагнетательных правило не касается: у закачки
     своя экономика, и «минимальная рентабельная приёмистость» — не та же форма.
+
+    **Остановка окончательна до конца горизонта.** Без этого скважина у порога
+    дёргается каждый месяц: уставка колеблется вокруг минимума, и каждое
+    пересечение стоит мероприятия — на реальных данных ревизия насчитала
+    одиннадцать пусков и остановок одной скважины за год, то есть 11 млн руб. на
+    ровном месте. Трактовка «дебит ниже рентабельного — скважина выводится»
+    экономически осмысленна и не требует выдуманного коэффициента гистерезиса;
+    если кейс потребует иного, это станет отдельным ключом.
     """
     decisions: list[Allocation] = []
     result: list[ScheduleStep] = []
     reported: set[str] = set()
+    retired: set[str] = set()
 
     for step in steps:
         producers = []
         for control in step.producers:
             rate = control.liquid_rate or 0.0
+            if control.status == "OPEN" and control.well in retired:
+                producers.append(ProducerControl(control.well, "SHUT", control.mode,
+                                                 None, control.bhp))
+                continue
             if control.status != "OPEN" or rate >= minimum:
                 producers.append(control)
                 continue
+            retired.add(control.well)
             if control.well not in reported:
                 reported.add(control.well)
                 decisions.append(Allocation(

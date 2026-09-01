@@ -1526,3 +1526,20 @@ def test_quota_does_not_cancel_a_conversion_that_holds_a_volume_limit(norms):
     february = planner.fund_states(result)[1]
 
     assert february["A"] == (False, True), "перевод под закачку не отменён квотой"
+def test_a_well_retired_by_the_minimum_rate_stays_shut(norms):
+    """Без этого скважина у порога дёргается каждый месяц — и каждое пересечение платное.
+
+    Ревизия 02.09 насчитала на реальных данных одиннадцать пусков и остановок
+    одной скважины за год: 11 млн руб. по методике на ровном месте.
+    """
+    steps = [month_step(2027, month, producers=[prod("W", rate)])
+             for month, rate in ((1, 6.0), (2, 4.0), (3, 6.0), (4, 4.0))]
+    limits = planner.Limits(enforce_water_balance=False,
+                            min_producer_rate_m3_per_day=5.0)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    statuses = [control.status for step_ in result for control in step_.producers]
+
+    assert statuses == ["OPEN", "SHUT", "SHUT", "SHUT"], "остановка окончательна"
+    assert len(planner.events_of(result)) == 1, "одно мероприятие, а не четыре"
+    assert sum(1 for one in decisions if "минимальный дебит" in one.resource) == 1
