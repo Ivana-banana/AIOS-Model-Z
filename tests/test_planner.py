@@ -1467,3 +1467,62 @@ def test_regime_hold_counts_calendar_months_not_steps(norms):
 
     assert rates == [30.0, 30.0, 30.0, 60.0], "девять месяцев больше шести — смена законна"
     assert not [one for one in decisions if "длительность режима" in one.resource]
+def test_expanding_a_schedule_twice_changes_nothing():
+    """Развёртка обязана быть идемпотентной, иначе остановка станет переводом под закачку.
+
+    Ревизия 02.09: `WCONPROD … SHUT` не снимал роль нагнетателя, и повторная
+    развёртка воскрешала прежнюю запись `WCONINJE` — в файл уезжала не
+    остановленная скважина, а переведённая под закачку на прежней ставке.
+    """
+    steps = [
+        ScheduleStep(date(2027, 1, 1), (), (inj("W", 50.0),)),
+        ScheduleStep(date(2027, 2, 1),
+                     (ProducerControl("W", "SHUT", "LRAT", None, 50.0),), ()),
+    ]
+
+    once = planner.expand_deltas(steps)
+    twice = planner.expand_deltas(once)
+
+    assert once == twice
+    assert once[1].injectors == (), "закрытая скважина не остаётся нагнетателем"
+    assert planner.fund_states(once)[1]["W"] == (False, False)
+
+
+def test_regime_hold_keeps_roles_apart(norms):
+    """Перевод под закачку — смена роли, а не статуса: ставки держатся раздельно."""
+    steps = [
+        month_step(2027, 1, producers=[prod("W", 100.0)]),
+        month_step(2027, 2, injectors=[inj("W", 5.0)]),
+        month_step(2027, 3, injectors=[inj("W", 6.0)]),
+    ]
+    limits = planner.Limits(enforce_water_balance=False, min_regime_months=6)
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+    rates = [(control.well, control.rate) for step_ in result
+             for control in step_.injectors]
+
+    assert rates == [("W", 5.0), ("W", 5.0)], (
+        "закачка держится на своей ставке, а не на добычной прошлого месяца"
+    )
+def test_quota_does_not_cancel_a_conversion_that_holds_a_volume_limit(norms):
+    """Отмена перевода под закачку возвращает добычу — и ломает годовой объём.
+
+    Ревизия 02.09 на реальных данных: квота отменяла переводы, добыча
+    возвращалась, и годовой предел оказывался превышен на 3 665 м³ после
+    «успешной» срезки. Пуски квота при этом режет как прежде — их отмена
+    нагрузку только снижает.
+    """
+    steps = [
+        month_step(2027, 1, producers=[prod("A", 100.0), prod("B", 100.0)]),
+        ScheduleStep(date(2027, 2, 1),
+                     (ProducerControl("A", "SHUT", "LRAT", None, 50.0), prod("B", 100.0)),
+                     (inj("A", 10.0),)),
+    ]
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_liquid_m3_per_year=6_000.0,
+                            max_events_per_year=0)
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+    february = planner.fund_states(result)[1]
+
+    assert february["A"] == (False, True), "перевод под закачку не отменён квотой"

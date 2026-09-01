@@ -574,7 +574,7 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             per_month=limits.max_events_per_month,
             per_year=limits.max_events_per_year,
             protected=(events_of(result) - events_of(expand_deltas(steps)))
-            | _events_holding_the_fund(result, limits.max_active_wells),
+            | _events_holding_the_fund(result, limits),
         )
         decisions.extend(events)
 
@@ -1365,12 +1365,14 @@ def expand_deltas(steps: list[ScheduleStep] | tuple[ScheduleStep, ...]
     for step in steps:
         for control in step.producers:
             producers[control.well] = control
-            if control.status == "OPEN":
-                injectors.pop(control.well, None)
+            # запись добычи снимает запись закачки — и когда открывает скважину, и
+            # когда закрывает: `WCONPROD … SHUT` в деке закрывает скважину целиком,
+            # а не одну её роль. Без этого развёртка не идемпотентна и остановка
+            # превращается в перевод под закачку (ревизия 02.09)
+            injectors.pop(control.well, None)
         for control in step.injectors:
             injectors[control.well] = control
-            if control.status == "OPEN":
-                producers.pop(control.well, None)
+            producers.pop(control.well, None)
         result.append(ScheduleStep(
             step.date,
             tuple(producers[well] for well in sorted(producers)),
@@ -1399,15 +1401,16 @@ def fund_states(steps: list[ScheduleStep]) -> list[dict[str, tuple[bool, bool]]]
     current: dict[str, tuple[bool, bool]] = {}
     for step in steps:
         for control in step.producers:
-            producing = control.status == "OPEN"
-            injecting = current.get(control.well, (False, False))[1]
-            # запись добычи снимает закачку той же скважины: одновременно и то и
-            # другое невозможно, и именно так выглядит возврат из ВНС
-            current[control.well] = (producing, injecting and not producing)
+            # Запись добычи снимает закачку той же скважины: одновременно и то и
+            # другое невозможно, и именно так выглядит возврат из ВНС. Запись
+            # `SHUT` снимает **обе** роли: в деке она закрывает скважину, а не
+            # только её добычу (ревизия 02.09 — иначе остановленная скважина
+            # уезжала в файл нагнетательной).
+            current[control.well] = ((True, False) if control.status == "OPEN"
+                                     else (False, False))
         for control in step.injectors:
-            injecting = control.status == "OPEN"
-            producing = current.get(control.well, (False, False))[0]
-            current[control.well] = (producing and not injecting, injecting)
+            current[control.well] = ((False, True) if control.status == "OPEN"
+                                     else (False, False))
         states.append(dict(current))
     return states
 
@@ -1467,23 +1470,44 @@ def _shut_below_minimum(steps: list[ScheduleStep],
 
 
 def _events_holding_the_fund(steps: list[ScheduleStep],
-                             limit: int | None) -> set[tuple[str, Any]]:
-    """Остановки, без которых предел числа действующих скважин будет нарушен.
+                             limits: Limits) -> set[tuple[str, Any]]:
+    """Остановки, отмена которых нарушила бы уже соблюдённый предел.
 
-    Квота отменяет мероприятие возвратом скважины в прежнее состояние; если этим
-    мероприятием держался состав фонда, отмена ломает предел, и перепроверять его
-    после квоты уже некому. Такие остановки защищаются заранее.
+    Квота отменяет мероприятие возвратом скважины в прежнее состояние, а отмена
+    остановки возвращает и работу, и добычу: ломается и предел числа действующих
+    скважин, и любой объёмный — годовой, горизонтный, суточный. Перепроверять
+    после квоты некому, она идёт последней.
+
+    Поэтому при **любом** активном пределе такого рода остановки защищаются
+    целиком. Это осознанно грубо: точная проверка «нарушит ли именно эта отмена
+    именно этот предел» стоит прохода по всему расписанию на каждое мероприятие,
+    а результат тот же — квота уступает допустимости (Р-139). Уступка при этом
+    печатается решением, а не подразумевается.
     """
-    if limit is None:
+    guarded = any(value is not None for value in (
+        limits.max_active_wells,
+        limits.max_field_liquid_m3_per_day, limits.max_field_injection_m3_per_day,
+        limits.max_field_liquid_m3_per_year, limits.max_field_injection_m3_per_year,
+        limits.max_field_liquid_m3_total, limits.max_field_injection_m3_total,
+        limits.max_field_oil_t_per_day, limits.max_field_water_t_per_day,
+        limits.min_producer_rate_m3_per_day,
+    ))
+    if not guarded:
         return set()
+    # Защищаются мероприятия, отмена которых **увеличит** нагрузку: остановка и
+    # перевод под закачку (обе прекращают добычу), конец закачки. Пуск и возврат
+    # в добычу квота режет как прежде: их отмена нагрузку только снижает, и
+    # пределы от неё не страдают.
     holding: set[tuple[str, Any]] = set()
-    for step, state in zip(steps, fund_states(steps), strict=True):
-        active = sum(1 for producing, injecting in state.values() if producing or injecting)
-        if active < limit:
+    states = fund_states(steps)
+    for index, step in enumerate(steps):
+        if index == 0:
             continue
-        for control in list(step.producers) + list(step.injectors):
-            if control.status == "SHUT":
-                holding.add((control.well, step.date))
+        before, after = states[index - 1], states[index]
+        for well, (producing, injecting) in after.items():
+            was_producing, was_injecting = before.get(well, (False, False))
+            if (was_producing and not producing) or (was_injecting and not injecting):
+                holding.add((well, step.date))
     return holding
 
 
@@ -1497,8 +1521,12 @@ def _hold_regimes(steps: list[ScheduleStep], months: int,
     """
     decisions: list[Allocation] = []
     result: list[ScheduleStep] = []
-    held_since: dict[str, int] = {}
-    current: dict[str, float | None] = {}
+    # ключ — скважина **и роль**: перевод под закачку меняет роль, а не статус, и
+    # обе записи при этом `OPEN`. С общим ключом скважина, переведённая под
+    # закачку на 5 м³/сут, уезжала бы в файл нагнетательной на 100 — столько она
+    # добывала жидкости месяцем раньше (ревизия 02.09).
+    held_since: dict[tuple[str, str], int] = {}
+    current: dict[tuple[str, str], float | None] = {}
 
     for step in steps:
         # календарные месяцы, а не номера шагов: шаг отчётности в кейсе задают
@@ -1509,8 +1537,8 @@ def _hold_regimes(steps: list[ScheduleStep], months: int,
         moment = step.date.year * 12 + step.date.month
         producers, injectors = [], []
         for control in step.producers:
-            rate, kept = _hold_one(control.well, control.liquid_rate, control.status,
-                                   moment, months, held_since, current,
+            rate, kept = _hold_one((control.well, "producer"), control.liquid_rate,
+                                   control.status, moment, months, held_since, current,
                                    (control.well, step.date) in protected)
             if kept and rate != control.liquid_rate:
                 decisions.append(Allocation(
@@ -1522,8 +1550,8 @@ def _hold_regimes(steps: list[ScheduleStep], months: int,
                                           rate, control.bhp)
             producers.append(control)
         for control in step.injectors:
-            rate, kept = _hold_one(control.well, control.rate, control.status,
-                                   moment, months, held_since, current,
+            rate, kept = _hold_one((control.well, "injector"), control.rate,
+                                   control.status, moment, months, held_since, current,
                                    (control.well, step.date) in protected)
             if kept and rate != control.rate:
                 decisions.append(Allocation(
@@ -1538,8 +1566,9 @@ def _hold_regimes(steps: list[ScheduleStep], months: int,
     return result, decisions
 
 
-def _hold_one(well: str, asked: float | None, status: str, moment: int, months: int,
-              held_since: dict[str, int], current: dict[str, float | None],
+def _hold_one(well: tuple[str, str], asked: float | None, status: str, moment: int,
+              months: int, held_since: dict[tuple[str, str], int],
+              current: dict[tuple[str, str], float | None],
               protected: bool) -> tuple[float | None, bool]:
     """Какую уставку оставить скважине и было ли удержание.
 
