@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>AIOS · трек 2 · Модель Z — защита 7 минут</title>
+<style>
+  /* Слайды собраны 01.09 по docs/presentation.md. Числа не редактировать здесь:
+     верен docs/experiments.md, сводная сверка — docs/numbers-audit.md.
+     Печать: Ctrl+P → «Альбомная», поля «Нет», фон включить. */
+  :root {
+    --ink: #16191d;
+    --muted: #5d6673;
+    --line: #d7dbe0;
+    --accent: #1a5fb4;
+    --warn: #a51d2d;
+    --bg: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #eceff2;
+    color: var(--ink);
+    font: 16px/1.5 "PT Sans", "Segoe UI", system-ui, sans-serif;
+  }
+  .deck { padding: 24px 12px 80px; }
+  section {
+    position: relative;
+    width: min(1120px, 96vw);
+    aspect-ratio: 16 / 9;
+    margin: 0 auto 22px;
+    padding: 46px 56px 52px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -.01em; }
+  h2 { font-size: 27px; margin: 0 0 18px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); font-size: 17px; margin: 0 0 22px; }
+  .big { font-size: 60px; font-weight: 700; letter-spacing: -.02em; line-height: 1.05; }
+  .huge { font-size: 84px; font-weight: 700; letter-spacing: -.03em; line-height: 1; }
+  .accent { color: var(--accent); }
+  .warn { color: var(--warn); }
+  table { border-collapse: collapse; font-size: 20px; margin: 6px 0 12px; }
+  th, td { padding: 7px 16px 7px 0; text-align: left; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.total td { border-top: 1px solid var(--line); font-weight: 700; }
+  ul { margin: 4px 0 0; padding-left: 22px; font-size: 20px; }
+  li { margin-bottom: 9px; }
+  .chain { font-size: 18px; line-height: 1.9; color: var(--ink); }
+  .chain b { background: #eef3fb; padding: 2px 7px; border-radius: 3px; font-weight: 600; }
+  .src {
+    position: absolute; left: 56px; right: 56px; bottom: 18px;
+    font-size: 13px; color: var(--muted); border-top: 1px solid var(--line);
+    padding-top: 8px;
+  }
+  .num-slide { position: absolute; top: 18px; right: 26px; font-size: 13px; color: var(--muted); }
+  .two { display: flex; gap: 44px; align-items: flex-start; }
+  .two > div { flex: 1; }
+  .label { font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .backup { background: #fbfaf6; }
+  .backup h2::after { content: " · запасной"; color: var(--muted); font-size: 17px; font-weight: 400; }
+  @media print {
+    body { background: #fff; }
+    .deck { padding: 0; }
+    section { margin: 0; border: none; border-radius: 0; box-shadow: none;
+              width: 100%; height: 100vh; aspect-ratio: auto; page-break-after: always; }
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+
+<section>
+  <div class="num-slide">1 / 9 · 0:30</div>
+  <h1>Многоагентная система с суррогатными моделями</h1>
+  <p class="sub">Трек 2 · Модель Z · 103 скважины · горизонт управления 2007–2025</p>
+  <p class="big accent" style="margin-top:26px">ЧДД считает ваш расчётчик</p>
+  <ul style="margin-top:18px">
+    <li>Своей формулы ЧДД в проекте нет и быть не должно — расхождение с вашим
+      пересчётом означает дисквалификацию.</li>
+    <li>Расчётчик вендорен побайтово; тест сверяет нашу обвязку с прямым запуском
+      до последнего знака (1e-9).</li>
+  </ul>
+  <div class="src">Источник: <code>vendor/CHDD_PYTHON</code> 7.0.2-negative-row-filter; тест паритета</div>
+</section>
+
+<section>
+  <div class="num-slide">2 / 9 · 0:45</div>
+  <h2>Заявляемое число</h2>
+  <table>
+    <tr><td>базовый (исторический) сценарий</td><td class="num">11 851,8</td></tr>
+    <tr><td>наш сценарий</td><td class="num">13 133,8</td></tr>
+    <tr class="total"><td>прирост</td><td class="num">+1 281,9 &nbsp;(+10,8 %)</td></tr>
+  </table>
+  <p class="sub" style="margin:8px 0 0">млн руб. · <code>runs/matched-0995</code> ·
+    прогон 24.08 на четырёх процессах MPI · дисконт от 2007</p>
+  <ul style="margin-top:20px">
+    <li>Отбор ×1.5, закачка — <b>не общим множителем</b>, а по достигнутому:
+      каждой скважине назначено то, что она в расчёте взяла.</li>
+    <li>Файл и число получены <b>одним</b> расчётом. Пара «файл от одного прогона,
+      число от другого» — самый дешёвый способ разойтись с собственной заявкой.</li>
+    <li>Самый доходный посчитанный сценарий даёт 13 645,7 (+15,1 %). Мы его
+      <b>не заявляем</b> — почему, на слайде 7.</li>
+  </ul>
+  <div class="src">Источники: docs/submission.md (разделы 1 и 3), тег submit-2026-08-24.1</div>
+</section>
+
+<section>
+  <div class="num-slide">3 / 9 · 0:45</div>
+  <h2>Контур: как это получено</h2>
+  <p class="chain">
+    состояние фонда → диагноз по марже → режимы →
+    <b>wells_schedule.inc</b> → <b>OPM Flow</b> → выгрузка 14 колонок →
+    <b>ЧДД вашим расчётчиком</b>
+  </p>
+  <p class="big" style="margin-top:24px">11 минут <span class="sub" style="font-size:22px">полный прогон истории 1991–2025</span></p>
+  <ul style="margin-top:14px">
+    <li>Замкнут целиком и прогнан не один раз: каждый прогон записан в журнал с
+      коммитом, конфигом и seed.</li>
+    <li>Один вход без ручных шагов между ними — требование п. 3.2.3 ТЗ.</li>
+  </ul>
+  <div class="src">Источники: scripts/run_all.py; docs/experiments.md</div>
+</section>
+
+<section>
+  <div class="num-slide">4 / 9 · 1:00</div>
+  <h2>Откуда взялись деньги: вклад групп</h2>
+  <table>
+    <tr><td>закачка в обводнённую зону</td><td class="num">+565,3</td></tr>
+    <tr><td>закачка в невыработанную</td><td class="num">+541,5</td></tr>
+    <tr><td>добывающие</td><td class="num">+306,0</td></tr>
+    <tr class="total"><td>сумма = прирост, зазор тождества</td><td class="num">0,000000</td></tr>
+  </table>
+  <p class="big accent" style="margin-top:10px">78,3 % даёт закачка</p>
+  <p class="sub" style="margin-top:10px">Разложение по Шепли: 8 полных гидродинамических
+    расчётов, 1 ч 48 мин. Не оценка по важности признаков, а равенство с проверкой.</p>
+  <div class="src">Источники: Р-85; docs/experiments.md, «Точный вклад групп в ЧДД»</div>
+</section>
+
+<section>
+  <div class="num-slide">5 / 9 · 1:00 · главный</div>
+  <h2>Почему группы, а не агент на скважину</h2>
+  <div class="two">
+    <div>
+      <p class="label">сумма одиночных вкладов</p>
+      <p class="big">1 254,6</p>
+    </div>
+    <div>
+      <p class="label">фактический прирост</p>
+      <p class="big">1 412,8</p>
+    </div>
+  </div>
+  <p class="huge warn" style="margin-top:18px">−211,4</p>
+  <p class="sub">синергия двух групп закачки, млн руб. — отрицательная</p>
+  <ul style="margin-top:8px">
+    <li>Две группы закачки, работая вместе, дают <b>меньше</b>, чем поодиночке:
+      они делят один пласт и мешают друг другу.</li>
+    <li>Изолированный скважинный агент этого не видит по построению — отсюда
+      иерархия «планировщик → исполнители» и общий сигнал ЧДД.</li>
+  </ul>
+  <div class="src">Источники: Р-85, Р-104; docs/experiments.md (план коалиций)</div>
+</section>
+
+<section>
+  <div class="num-slide">6 / 9 · 0:45</div>
+  <h2>Где система себя останавливает</h2>
+  <table>
+    <tr><th></th><th class="num">ошибка прогноза</th></tr>
+    <tr><td>поиск выключен</td><td class="num">−105,1 (занижение)</td></tr>
+    <tr><td>поиск включён</td><td class="num">+1 350,9 (завышение)</td></tr>
+  </table>
+  <p class="sub" style="margin-top:6px">Оптимизатор тянет решение туда, где суррогат
+    ошибается в нашу пользу. Это механика, а не гипотеза.</p>
+  <p class="big" style="margin-top:16px">200 → <span class="accent">111 отбраковано</span></p>
+  <ul style="margin-top:10px">
+    <li>Покоординатная проверка пропускает все 200 сдвинутых режимов;
+      <b>сценарное расстояние</b> отбраковывает 111.</li>
+    <li>Кандидат вне области доверия не принимается — он идёт на полный расчёт.</li>
+  </ul>
+  <div class="src">Источники: Р-111, Р-114; docs/experiments.md (шлюз доверия)</div>
+</section>
+
+<section>
+  <div class="num-slide">7 / 9 · 1:00 · не сокращать</div>
+  <h2>Что мы не заявляем</h2>
+  <ul style="font-size:21px">
+    <li>Лучший кандидат цикла — <b>+461 млн</b>, это <b>36 %</b> от простого правила
+      заявки. Цикл слабее простого правила, и мы сдаём то, что лучше.</li>
+    <li>Соблюсти наш же потолок по воде стоило <b>19,1 млн</b>, а способом цикла
+      стоило бы <b>752,8</b>. Способ решает больше, чем ограничение.</li>
+    <li>Заявляемый сценарий просит стороннего водоисточника <b>на 27 % больше</b>
+      сегодняшнего (865 против 680 м³/сут). Мощность водозабора нам неизвестна.</li>
+    <li>Достижимость множителя отбора историей <b>не подтверждается</b>: у 43 скважин
+      из 70 режим за 18 лет не менялся больше чем на 2 %.</li>
+  </ul>
+  <div class="src">Источники: Р-52, Р-93, Р-101; docs/submission.md, раздел 4</div>
+</section>
+
+<section>
+  <div class="num-slide">8 / 9 · 0:40</div>
+  <h2>Переносимость и воспроизводимость</h2>
+  <table>
+    <tr><td>SPE9 (промысловые единицы, TSTEP)</td><td>отвергнут: ECL-005, ECL-007</td></tr>
+    <tr><td>Norne (WCONHIST, дерево групп)</td><td>отвергнут: ECL-010, ECL-011</td></tr>
+    <tr class="total"><td>Модель Z</td><td>0 отказов</td></tr>
+  </table>
+  <p class="sub">Входной контроль чужого дека — 15 проверок с кодами отказа.</p>
+  <ul style="margin-top:8px">
+    <li>Это <b>не</b> значит, что мы посчитаем чужой дек. Это значит, что мы не
+      посчитаем его <b>молча неправильно</b>.</li>
+    <li>Условия кейса выражаются конфигурацией: 27 ключей, приёмка отрепетирована —
+      от условий до проверенного расписания 1,6 с.</li>
+  </ul>
+  <div class="src">Источники: Р-73, Р-83, Р-134; docs/portability.md, docs/validation-case-rehearsal.md</div>
+</section>
+
+<section>
+  <div class="num-slide">9 / 9 · 0:35</div>
+  <h2>Итог и сверка с вашим расчётом</h2>
+  <table>
+    <tr><td>эталон, тНавигатор</td><td class="num">5 218,9</td><td class="num">−0,21 %</td></tr>
+    <tr class="total"><td>наш прогон, OPM Flow</td><td class="num">5 207,7</td><td class="num">—</td></tr>
+    <tr><td>эталон, OPM Flow</td><td class="num">5 157,0</td><td class="num">+0,98 %</td></tr>
+    <tr><td>разрыв между вашими расчётами</td><td class="num">61,9</td><td class="num">1,20 %</td></tr>
+  </table>
+  <p class="sub" style="margin-top:2px">млн руб., база 1991, chargeInitialPump = ДА —
+    система отсчёта вашей публикации; заявка считается от 2007.</p>
+  <ul style="margin-top:10px">
+    <li>По нефти с вашим OPM Flow сходимся на <b>0,01 %</b> за 32 года, по закачке —
+      в ноль, смен ЭЦН 145 против 145.</li>
+    <li>Границы называем сами: сверка сделана <b>на исторической истории</b>, а не на
+      нашем форсированном сценарии; <code>PINCHREG</code> никуда не делся, расчёт идёт
+      с ослабленным разбором.</li>
+  </ul>
+  <div class="src">Команда: python scripts/compare_reference.py --charge-initial-pump --brief</div>
+</section>
+
+<section class="backup">
+  <div class="num-slide">запасной 1</div>
+  <h2>Интерфейс</h2>
+  <ul>
+    <li>Веб-платформа на FastAPI: прогоны, профили по скважинам, раскладка ЧДД по
+      годам, экономический предел скважин, баланс воды, сравнение сценариев.</li>
+    <li>Цикл запускается из интерфейса на любом готовом сценарии; решения показаны
+      с объяснением и с <b>происхождением</b> объяснения: модель, кэш, шаблон или
+      отвергнутый ответ.</li>
+    <li>Показ не требует ни симулятора, ни ключа API — только каталог прогона.</li>
+  </ul>
+  <div class="src">Запуск: python -m uvicorn aios.web.app:app · сценарий показа: docs/demo.md</div>
+</section>
+
+<section class="backup">
+  <div class="num-slide">запасной 2</div>
+  <h2>Языковая модель: зачем она здесь</h2>
+  <ul>
+    <li><b>Что делает:</b> связывает уже посчитанные факты в причинную цепочку —
+      что увидели, почему решили так, чем подтверждено.</li>
+    <li><b>Чего не делает шаблон:</b> связей между фактами он не видит по построению
+      и выдаёт одну формулировку на любой набор.</li>
+    <li><b>Цена связности измерена:</b> ASR 0,750 на живом ответе против 1,000 на
+      шаблоне — модель добавляет утверждения, которых в фактах нет.</li>
+    <li><b>Поэтому ей не доверены ни решения, ни числа.</b> 16.08 под неверный
+      результат уже было написано убедительное физическое объяснение; поймал ошибку
+      контрольный прогон, а не текст.</li>
+  </ul>
+  <div class="src">Источники: Р-86; docs/explainability.md, «Зачем здесь языковая модель»</div>
+</section>
+
+<section class="backup">
+  <div class="num-slide">запасной 3</div>
+  <h2>Масштабируемость и цена переноса</h2>
+  <table>
+    <tr><td>переносится как есть</td><td>экономика, контракт 14 колонок, чтение дека,
+      входной контроль, 27 ключей ограничений, иерархия агентов</td></tr>
+    <tr><td>только через переобучение</td><td>веса суррогата, пороги, область доверия</td></tr>
+  </table>
+  <p class="big accent" style="margin-top:14px">≈ 60 прогонов ≈ 11 часов</p>
+  <p class="sub">столько стоит перенос суррогата на новый объект: порог качества
+    берётся с пятого пакета DoE (на четырёх медиана Skill по нефти −0,058).</p>
+  <ul style="margin-top:6px">
+    <li>Прогноз быстрее ГГДМ примерно в <b>2 000 раз</b> (0,32 с против 660 с) — но
+      скорость имеет смысл только вместе с точностью.</li>
+    <li>Честная граница: на настоящем чужом объекте контур не запускался.</li>
+  </ul>
+  <div class="src">Источник: docs/scalability.md; замер 01.09 (docs/experiments.md)</div>
+</section>
+
+</div>
+<script>
+  // Навигация стрелками: слайд за слайдом, без библиотек — файл должен
+  // открываться на любой машине и без сети.
+  const slides = [...document.querySelectorAll('section')];
+  let index = 0;
+  function show(i) {
+    index = Math.max(0, Math.min(slides.length - 1, i));
+    slides[index].scrollIntoView({behavior: 'smooth', block: 'center'});
+  }
+  addEventListener('keydown', (event) => {
+    if (['ArrowRight', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); show(index + 1); }
+    if (['ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); show(index - 1); }
+    if (event.key === 'Home') show(0);
+    if (event.key === 'End') show(slides.length - 1);
+  });
+</script>
+</body>
+</html>

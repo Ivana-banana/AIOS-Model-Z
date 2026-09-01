@@ -751,6 +751,7 @@ JURY_DOCUMENTS = (
 #: проговаривает словами, — но именно в нём 01.09 нашлось «5 процентов при допуске
 #: в пару», пережившее правку presentation.md.
 LIVE_DOCUMENTS = JURY_DOCUMENTS + (
+    "docs/slides.html",
     "docs/defence-final.md",
     "docs/tz-compliance.md",
     "docs/onboarding-team.md",
@@ -818,3 +819,30 @@ def test_withdrawn_oil_gap_is_marked_as_withdrawn_wherever_it_appears():
             assert any(word in paragraph for word in excuses), (
                 f"{name}: отозванное число подано как действующее:\n{paragraph[:400]}"
             )
+# --- Слайды: показываемый файл обязан говорить то же, что сценарий -----------
+
+def test_slides_carry_the_claimed_triple_and_the_reference_check():
+    """Слайды собраны из docs/presentation.md — числа обязаны совпасть.
+
+    Слайд живёт отдельным файлом и правится отдельно от сценария; именно так
+    26.08 отозванный прирост цикла пережил правку записи и дожил до речи
+    прописью.
+    """
+    slides = _read("docs/slides.html")
+
+    for number in ("13 133,8", "11 851,8", "+1 281,9", "+10,8 %"):
+        assert number in slides, f"слайды не называют {number}"
+    for number in ("5 218,9", "5 207,7", "5 157,0", "1,20 %"):
+        assert number in slides, f"слайды не называют число сверки {number}"
+    for forbidden in ("774,9", "60,4 %", "4 771"):
+        assert forbidden not in slides, f"слайды называют отозванное: {forbidden}"
+
+
+def test_slides_keep_the_nine_speaking_slides_and_mark_the_spares():
+    """Девять слайдов доклада и три запасных — ровно так расписан хронометраж."""
+    slides = _read("docs/slides.html")
+
+    assert slides.count("<section") == 12
+    assert slides.count('class="backup"') == 3
+    for mark in ("1 / 9", "5 / 9 · 1:00 · главный", "7 / 9 · 1:00 · не сокращать", "9 / 9"):
+        assert mark in slides, f"в слайдах нет отметки «{mark}»"
