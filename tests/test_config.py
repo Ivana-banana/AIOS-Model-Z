@@ -175,3 +175,73 @@ def test_the_second_doe_config_does_not_repeat_the_seed():
     assert wide.run.seed != main.run.seed, (
         "второй пакет DoE обязан иметь свой seed, иначе он копия первого"
     )
+# ── формы ограничений кейса, заведённые 01.09 ────────────────────────────────
+
+WINDOWS = """
+[[limits.forced_shut_windows]]
+well = "102"
+start = 2027-01-01
+end = 2027-06-30
+
+[[limits.forced_shut_windows]]
+well = 305
+start = 2028-02-01
+end = 2028-02-29
+"""
+
+
+def test_forced_shut_windows_are_read_as_dates(tmp_path):
+    """Окно остановки приходит датами TOML, а номер скважины может быть числом."""
+    loaded = config.load(_written(tmp_path, MINIMAL + WINDOWS))
+    windows = loaded.limits.forced_shut_windows
+
+    assert len(windows) == 2
+    assert windows[0].well == "102"
+    assert windows[0].start == date(2027, 1, 1) and windows[0].end == date(2027, 6, 30)
+    assert windows[1].well == "305", "номер, записанный числом, обязан стать строкой"
+
+
+def test_forced_shut_window_with_a_string_date_is_refused(tmp_path):
+    """Строка `\"2027-13-01\"` прошла бы разбор и сравнивалась бы лексикографически."""
+    text = MINIMAL + WINDOWS.replace("start = 2027-01-01", 'start = "2027-01-01"')
+
+    with pytest.raises(ValueError, match="должно быть датой TOML"):
+        config.load(_written(tmp_path, text))
+
+
+def test_forced_shut_window_without_end_is_refused(tmp_path):
+    """Окно без конца — это не «до конца горизонта», это недописанная запись."""
+    text = MINIMAL + WINDOWS.replace("end = 2027-06-30", "")
+
+    with pytest.raises(ValueError, match="не хватает полей: end"):
+        config.load(_written(tmp_path, text))
+
+
+def test_reversed_window_is_refused_on_load(tmp_path):
+    """Проверка окна живёт в самой структуре и срабатывает при чтении конфига."""
+    text = MINIMAL + WINDOWS.replace("end = 2027-06-30", "end = 2026-06-30")
+
+    with pytest.raises(ValueError, match="раньше начала"):
+        config.load(_written(tmp_path, text))
+
+
+def test_annual_liquid_volume_and_average_reading_are_optional(tmp_path):
+    """Обе новые ручки необязательны: конфиг кейса не обязан их содержать."""
+    loaded = config.load(_written(tmp_path, MINIMAL))
+
+    assert loaded.limits.max_field_liquid_m3_per_year is None
+    assert loaded.limits.field_limits_are_annual_average is False
+    assert loaded.limits.forced_shut_windows is None
+
+
+def test_annual_liquid_volume_and_average_reading_are_read(tmp_path):
+    # вторая секция [limits] в TOML запрещена — дописываем ключи в существующую
+    text = MINIMAL.replace(
+        "water_tolerance = 1.0",
+        "water_tolerance = 1.0\nmax_field_liquid_m3_per_year = 1000000\n"
+        "field_limits_are_annual_average = true",
+    )
+    loaded = config.load(_written(tmp_path, text))
+
+    assert loaded.limits.max_field_liquid_m3_per_year == 1_000_000.0
+    assert loaded.limits.field_limits_are_annual_average is True

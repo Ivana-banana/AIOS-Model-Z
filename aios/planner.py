@@ -35,12 +35,39 @@ from __future__ import annotations
 
 from calendar import monthrange
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from aios import balance
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.margin import Norms, counted_by_methodology, month_margin
 from aios.summary import Fluids
+
+
+@dataclass(frozen=True)
+class ShutWindow:
+    """Окно обязательной остановки: скважина стоит с `start` по `end` включительно.
+
+    Форма ограничения, которой у нас не было до 01.09: `forced_shut_wells`
+    закрывает скважину на весь горизонт, а кейс скажет «скважину W остановить с
+    01.2027 по 06.2027» (ремонт, ГТМ, ограничение подрядчика). Выбор из двух
+    неверных — остановить навсегда или не останавливать вовсе — здесь и кончается.
+    """
+
+    well: str
+    start: date
+    end: date
+
+    def __post_init__(self) -> None:
+        if self.end < self.start:
+            raise ValueError(
+                f"окно остановки скважины {self.well}: конец {self.end} раньше начала "
+                f"{self.start}"
+            )
+
+    def covers(self, moment: date) -> bool:
+        """Попадает ли шаг расписания в окно. Границы включаются обе."""
+        return self.start <= moment <= self.end
 
 
 @dataclass(frozen=True)
@@ -153,6 +180,35 @@ class Limits:
     месяцам.
     """
 
+    forced_shut_windows: tuple[ShutWindow, ...] | None = None
+    """Обязательные остановки с окном дат. None — таких нет.
+
+    Отличается от `forced_shut_wells` ровно тем, ради чего заведена: скважина
+    закрывается только на шагах внутри окна, а вне его остаётся с тем режимом,
+    который ей назначил цикл. Окон у одной скважины может быть несколько.
+    """
+
+    max_field_liquid_m3_per_year: float | None = None
+    """Годовой объём отбора жидкости по объекту, м³. None — предела нет.
+
+    Годовой аккумулятор до 01.09 был только у закачки, хотя условие «за год не
+    более V» приходит и по отбору: квота на подготовку и утилизацию воды, лимит
+    системы сбора в объёме, договор на приём жидкости. Суточный предел его не
+    выражает — отбор неравномерен по месяцам, и год может выйти за норму, ни разу
+    не превысив суточного потолка.
+    """
+
+    field_limits_are_annual_average: bool = False
+    """Как читать суточные пределы объекта: пик каждого месяца или среднее за год.
+
+    Все наши пределы — помесячный пик, и это опасная сторона двусмысленности
+    ровно в одну сторону: **пик, прочитанный как среднее, пропускает нарушение**,
+    а среднее, прочитанное как пик, всего лишь режет лишнее. Ключ включает вторую
+    трактовку для `max_field_liquid_m3_per_day` и
+    `max_field_injection_m3_per_day`: предел применяется к среднесуточному за
+    календарный год, а не к каждому месяцу.
+    """
+
     max_events_per_year: int | None = None
     """Максимум платных мероприятий за год: остановки, пуски, переводы. None — нет.
 
@@ -219,14 +275,26 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         decisions.extend(water)
 
     if limits.max_field_liquid_m3_per_day is not None:
-        result, liquid = _fit_liquid_to_capacity(result, forecast, norms,
-                                                 limits.max_field_liquid_m3_per_day, fluids)
+        if limits.field_limits_are_annual_average:
+            result, liquid = _fit_liquid_to_annual_volume(
+                result, _annual_budget(result, limits.max_field_liquid_m3_per_day),
+                reason="среднесуточный отбор за год",
+            )
+        else:
+            result, liquid = _fit_liquid_to_capacity(result, forecast, norms,
+                                                     limits.max_field_liquid_m3_per_day, fluids)
         decisions.extend(liquid)
 
     if limits.max_field_injection_m3_per_day is not None:
-        result, injection = _fit_injection_to_capacity(
-            result, limits.max_field_injection_m3_per_day
-        )
+        if limits.field_limits_are_annual_average:
+            result, injection = _fit_injection_to_annual_budget(
+                result, _annual_budget(result, limits.max_field_injection_m3_per_day),
+                reason="среднесуточная закачка за год",
+            )
+        else:
+            result, injection = _fit_injection_to_capacity(
+                result, limits.max_field_injection_m3_per_day
+            )
         decisions.extend(injection)
 
     # Ручки под валидационный кейс идут последними и в этом порядке намеренно:
@@ -248,6 +316,14 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         )
         decisions.extend(yearly)
 
+    if limits.max_field_liquid_m3_per_year is not None:
+        result, yearly_liquid = _fit_liquid_to_annual_volume(
+            result,
+            dict.fromkeys(_years(result), limits.max_field_liquid_m3_per_year),
+            reason="годовой объём отбора жидкости",
+        )
+        decisions.extend(yearly_liquid)
+
     # Квота мероприятий идёт после всех срезок, и это обязательный порядок:
     # мероприятие может появиться от самой срезки — предел по объекту, доведённый
     # до нуля, это остановка. Считать квоту раньше значило бы считать не тот
@@ -257,6 +333,31 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         decisions.extend(events)
 
     return result, decisions
+
+
+def _shut_reason(well: str, forced: frozenset[str],
+                 active: dict[str, ShutWindow]) -> tuple[str, str]:
+    """Ресурс и причина остановки: список на весь горизонт или окно дат."""
+    if well in forced:
+        return ("обязательная остановка",
+                "скважина названа в конфигурации как обязательно остановленная")
+    window = active[well]
+    return ("обязательная остановка в окне",
+            f"окно обязательной остановки {window.start} … {window.end}")
+
+
+def _shut_mark(well: str, forced: frozenset[str],
+               active: dict[str, ShutWindow]) -> str:
+    """Ключ, по которому решение печатается один раз.
+
+    Для списка на весь горизонт это скважина: причина одна на все шаги. Для окон —
+    скважина и окно: два ремонта в разные годы это два разных решения, и слить их
+    в одну строку значило бы потерять второй.
+    """
+    if well in forced:
+        return well
+    window = active[well]
+    return f"{well}@{window.start}"
 
 
 def _fit_fund(steps: list[ScheduleStep],
@@ -279,7 +380,8 @@ def _fit_fund(steps: list[ScheduleStep],
        есть, и там же покрыта тестом.
     """
     forced = limits.forced_shut_wells or frozenset()
-    if not forced and limits.max_active_wells is None:
+    windows = limits.forced_shut_windows or ()
+    if not forced and not windows and limits.max_active_wells is None:
         return steps, []
     if limits.max_active_wells is not None and norms is None:
         raise ValueError(
@@ -299,26 +401,35 @@ def _fit_fund(steps: list[ScheduleStep],
         producers = list(step.producers)
         injectors = list(step.injectors)
 
-        def shut(well: str, resource: str, reason: str, before: float) -> None:
-            if well in reported:
+        def shut(well: str, resource: str, reason: str, before: float,
+                 mark: str | None = None) -> None:
+            key = mark or well
+            if key in reported:
                 return
-            reported.add(well)
+            reported.add(key)
             decisions.append(Allocation(well=well, resource=resource,
                                         before=before, after=0.0, reason=reason))
 
-        if forced:
+        # окно действует только на своих шагах: вне его скважина остаётся с тем
+        # режимом, который ей назначил цикл, — в этом вся разница с forced_shut_wells
+        active_windows = {
+            window.well: window for window in windows if window.covers(step.date)
+        }
+        shut_now = forced | set(active_windows)
+
+        if shut_now:
             for index, control in enumerate(producers):
-                if control.well in forced and control.status == "OPEN":
-                    shut(control.well, "обязательная остановка",
-                         "скважина названа в конфигурации как обязательно остановленная",
-                         control.liquid_rate or 0.0)
+                if control.well in shut_now and control.status == "OPEN":
+                    shut(control.well, *_shut_reason(control.well, forced, active_windows),
+                         control.liquid_rate or 0.0,
+                         _shut_mark(control.well, forced, active_windows))
                     producers[index] = ProducerControl(control.well, "SHUT", control.mode,
                                                        None, control.bhp)
             for index, control in enumerate(injectors):
-                if control.well in forced and control.status == "OPEN":
-                    shut(control.well, "обязательная остановка",
-                         "скважина названа в конфигурации как обязательно остановленная",
-                         control.rate or 0.0)
+                if control.well in shut_now and control.status == "OPEN":
+                    shut(control.well, *_shut_reason(control.well, forced, active_windows),
+                         control.rate or 0.0,
+                         _shut_mark(control.well, forced, active_windows))
                     injectors[index] = InjectorControl(control.well, control.fluid, "SHUT",
                                                        control.mode, None, control.bhp)
 
@@ -465,6 +576,25 @@ def _fit_pressures(steps: list[ScheduleStep],
     return result, decisions
 
 
+def _years(steps: list[ScheduleStep]) -> list[int]:
+    """Календарные годы, встречающиеся в расписании, по порядку."""
+    return sorted({step.date.year for step in steps})
+
+
+def _annual_budget(steps: list[ScheduleStep], rate_m3_per_day: float) -> dict[int, float]:
+    """Суточная ставка, прочитанная как среднее за год → объём каждого года.
+
+    Дни считаются только по месяцам, которые в расписании есть: горизонт
+    управления начинается в середине года и в середине же кончается, а деление
+    на 365 в такие годы завысило бы допустимый объём и пропустило нарушение.
+    """
+    days: dict[int, int] = {}
+    for step in steps:
+        days[step.date.year] = days.get(step.date.year, 0) + \
+            monthrange(step.date.year, step.date.month)[1]
+    return {year: rate_m3_per_day * count for year, count in days.items()}
+
+
 def _fit_injection_to_annual_volume(
     steps: list[ScheduleStep], limit_m3: float
 ) -> tuple[list[ScheduleStep], list[Allocation]]:
@@ -473,9 +603,22 @@ def _fit_injection_to_annual_volume(
     Отраслевая норма нормирует именно годовой объём
     (`docs/manus/vrr-water-balance.md`), и суточный предел его не выражает:
     закачка неравномерна по месяцам, и год может выйти за норму, ни разу не
-    превысив суточного потолка. Срезается каждый нарушивший год отдельно и
-    пропорционально — приоритета между скважинами у нас нет по той же причине,
-    что и в балансе воды.
+    превысив суточного потолка.
+    """
+    return _fit_injection_to_annual_budget(
+        steps, dict.fromkeys(_years(steps), limit_m3), reason="годовой объём закачки"
+    )
+
+
+def _fit_injection_to_annual_budget(
+    steps: list[ScheduleStep], budget_m3: dict[int, float], *, reason: str
+) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Уложить закачку в объём, свой у каждого года.
+
+    Срезается каждый нарушивший год отдельно и пропорционально — приоритета между
+    скважинами у нас нет по той же причине, что и в балансе воды. Пропорция
+    выбрана ещё и потому, что не создаёт мероприятий: скважина остаётся открытой,
+    а не закрывается, и квота мероприятий от срезки не расходуется.
     """
     by_year: dict[int, float] = {}
     for step in steps:
@@ -484,7 +627,10 @@ def _fit_injection_to_annual_volume(
                 by_year[step.date.year] = by_year.get(step.date.year, 0.0) + \
                     control.rate * monthrange(step.date.year, step.date.month)[1]
 
-    over = {year: total for year, total in by_year.items() if total > limit_m3}
+    over = {
+        year: total for year, total in by_year.items()
+        if year in budget_m3 and total > budget_m3[year]
+    }
     if not over:
         return steps, []
 
@@ -492,7 +638,8 @@ def _fit_injection_to_annual_volume(
     reported: set[int] = set()
     result: list[ScheduleStep] = []
     for step in steps:
-        factor = limit_m3 / over[step.date.year] if step.date.year in over else 1.0
+        factor = budget_m3[step.date.year] / over[step.date.year] \
+            if step.date.year in over else 1.0
         if factor >= 1.0:
             result.append(step)
             continue
@@ -505,14 +652,69 @@ def _fit_injection_to_annual_volume(
             if step.date.year not in reported:
                 reported.add(step.date.year)
                 decisions.append(Allocation(
-                    well=control.well, resource=f"годовой объём закачки, {step.date.year}",
+                    well=control.well, resource=f"{reason}, {step.date.year}",
                     before=control.rate, after=reduced,
                     reason=(f"за {step.date.year} закачка {over[step.date.year]:,.0f} > "
-                            f"нормы {limit_m3:,.0f} м³"),
+                            f"нормы {budget_m3[step.date.year]:,.0f} м³"),
                 ))
             injectors.append(InjectorControl(control.well, control.fluid, control.status,
                                              control.mode, reduced, control.bhp))
         result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
+    return result, decisions
+
+
+def _fit_liquid_to_annual_volume(
+    steps: list[ScheduleStep], budget_m3: dict[int, float], *, reason: str
+) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """То же для отбора жидкости: свой объём у каждого года.
+
+    Режется пропорционально, а не по марже, и это отдельное решение. Порядок «кого
+    резать первым» по деньгам осмыслен, когда дефицит мгновенный: не помещается
+    этот месяц. Годовой объём — величина накопленная, и очередь по марже одного
+    месяца распределяла бы годовую нехватку по случайной её части. Пропорция
+    сохраняет форму профиля, не закрывает ни одной скважины и потому не расходует
+    квоту мероприятий.
+    """
+    by_year: dict[int, float] = {}
+    for step in steps:
+        for control in step.producers:
+            if control.status == "OPEN" and control.liquid_rate:
+                by_year[step.date.year] = by_year.get(step.date.year, 0.0) + \
+                    control.liquid_rate * monthrange(step.date.year, step.date.month)[1]
+
+    over = {
+        year: total for year, total in by_year.items()
+        if year in budget_m3 and total > budget_m3[year]
+    }
+    if not over:
+        return steps, []
+
+    decisions: list[Allocation] = []
+    reported: set[int] = set()
+    result: list[ScheduleStep] = []
+    for step in steps:
+        factor = budget_m3[step.date.year] / over[step.date.year] \
+            if step.date.year in over else 1.0
+        if factor >= 1.0:
+            result.append(step)
+            continue
+        producers = []
+        for control in step.producers:
+            if control.status != "OPEN" or not control.liquid_rate:
+                producers.append(control)
+                continue
+            reduced = control.liquid_rate * factor
+            if step.date.year not in reported:
+                reported.add(step.date.year)
+                decisions.append(Allocation(
+                    well=control.well, resource=f"{reason}, {step.date.year}",
+                    before=control.liquid_rate, after=reduced,
+                    reason=(f"за {step.date.year} отбор жидкости {over[step.date.year]:,.0f} > "
+                            f"нормы {budget_m3[step.date.year]:,.0f} м³"),
+                ))
+            producers.append(ProducerControl(control.well, control.status, control.mode,
+                                             reduced, control.bhp))
+        result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
     return result, decisions
 
 

@@ -454,3 +454,157 @@ def test_external_water_refuses_a_forecast_without_dates_instead_of_guessing(nor
             planner.Limits(water_balance_rule="external_water",
                            max_external_water_m3_per_day=1.0), FLUIDS,
         )
+# ── формы ограничений валидационного кейса, заведённые 01.09 ─────────────────
+#
+# Каждая проверка построена так, как требует протокол приёмки кейса
+# (`docs/validation-case-checklist.md`): решение нарушает ровно одно условие, и
+# видно, что срезано именно оно.
+
+
+def month_step(year: int, month: int, producers=(), injectors=()):
+    return ScheduleStep(date(year, month, 1), tuple(producers), tuple(injectors))
+
+
+def test_shut_window_rejects_reversed_dates():
+    """Окно с концом раньше начала — опечатка кейса, а не «пустое окно»."""
+    with pytest.raises(ValueError, match="раньше начала"):
+        planner.ShutWindow(well="1", start=date(2027, 6, 1), end=date(2027, 1, 1))
+
+
+def test_forced_shut_window_closes_the_well_only_inside_it(norms):
+    """До 01.09 выбор был из двух неверных: остановить навсегда или не остановить.
+
+    Кейс говорит «скважину W остановить с 01.2027 по 06.2027»; вне окна режим
+    остаётся тот, который назначил цикл.
+    """
+    steps = [
+        month_step(2026, 12, producers=[prod("1", 30.0)]),
+        month_step(2027, 3, producers=[prod("1", 30.0)]),
+        month_step(2027, 9, producers=[prod("1", 30.0)]),
+    ]
+    limits = planner.Limits(
+        enforce_water_balance=False,
+        forced_shut_windows=(planner.ShutWindow("1", date(2027, 1, 1), date(2027, 6, 30)),),
+    )
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert [control.status for step_ in result for control in step_.producers] == \
+        ["OPEN", "SHUT", "OPEN"]
+    assert len(decisions) == 1
+    assert "окно обязательной остановки 2027-01-01 … 2027-06-30" in decisions[0].reason
+
+
+def test_forced_shut_window_closes_injectors_too(norms):
+    """«Не управлять этой скважиной в эти месяцы» относится и к нагнетательной."""
+    steps = [month_step(2027, 3, injectors=[inj("9", 40.0)])]
+    limits = planner.Limits(
+        enforce_water_balance=False,
+        forced_shut_windows=(planner.ShutWindow("9", date(2027, 1, 1), date(2027, 6, 30)),),
+    )
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert result[0].injectors[0].status == "SHUT"
+    assert result[0].injectors[0].rate is None
+    assert decisions[0].before == 40.0
+
+
+def test_two_windows_of_one_well_are_explained_separately(norms):
+    """Два ремонта в разные годы — два решения, а не одно повторённое."""
+    steps = [
+        month_step(2027, 3, producers=[prod("1", 30.0)]),
+        month_step(2028, 3, producers=[prod("1", 30.0)]),
+    ]
+    limits = planner.Limits(
+        enforce_water_balance=False,
+        forced_shut_windows=(
+            planner.ShutWindow("1", date(2027, 1, 1), date(2027, 6, 30)),
+            planner.ShutWindow("1", date(2028, 1, 1), date(2028, 6, 30)),
+        ),
+    )
+
+    _, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert len(decisions) == 2
+    assert {decision.reason for decision in decisions} == {
+        "окно обязательной остановки 2027-01-01 … 2027-06-30",
+        "окно обязательной остановки 2028-01-01 … 2028-06-30",
+    }
+
+
+def test_annual_liquid_volume_cuts_only_the_year_over_the_norm(norms):
+    """Годовой аккумулятор был только у закачки: «за год не более V» по отбору."""
+    steps = [
+        month_step(2007, month, producers=[prod("1", 100.0)]) for month in (1, 2)
+    ] + [month_step(2008, 1, producers=[prod("1", 10.0)])]
+    # январь + февраль 2007 при 100 м³/сут это 5 900 м³; 2008 — 310
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_liquid_m3_per_year=3_000.0)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    rates = [control.liquid_rate for step_ in result for control in step_.producers]
+    assert rates[2] == 10.0, "год в пределах нормы трогать нельзя"
+    assert sum(rate * days for rate, days in zip(rates[:2], (31, 28), strict=True)) == \
+        pytest.approx(3_000.0)
+    assert len(decisions) == 1
+    assert "годовой объём отбора жидкости, 2007" in decisions[0].resource
+
+
+def test_daily_field_limit_can_be_read_as_annual_average(norms):
+    """Пик, прочитанный как среднее, пропускает нарушение — поэтому это ключ.
+
+    Один месяц выше суточного предела, год в среднем — ниже. При обычном чтении
+    (пик каждого месяца) срезка есть, при чтении «среднее за год» — нет.
+    """
+    steps = [
+        month_step(2007, 1, producers=[prod("1", 150.0)]),
+        month_step(2007, 2, producers=[prod("1", 10.0)]),
+    ]
+    peak = planner.Limits(enforce_water_balance=False, max_field_liquid_m3_per_day=100.0)
+    average = planner.Limits(enforce_water_balance=False, max_field_liquid_m3_per_day=100.0,
+                             field_limits_are_annual_average=True)
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0)]
+
+    cut, cut_decisions = planner.enforce(steps, forecast, norms, peak, FLUIDS)
+    kept, kept_decisions = planner.enforce(steps, forecast, norms, average, FLUIDS)
+
+    assert cut[0].producers[0].liquid_rate == 100.0 and cut_decisions
+    assert kept == steps and kept_decisions == []
+
+
+def test_annual_average_still_catches_the_year_that_breaks_it(norms):
+    """Обратная сторона того же ключа: год выше среднего режется целиком."""
+    steps = [month_step(2007, month, producers=[prod("1", 150.0)]) for month in (1, 2)]
+    limits = planner.Limits(enforce_water_balance=False, max_field_liquid_m3_per_day=100.0,
+                            field_limits_are_annual_average=True)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert result[0].producers[0].liquid_rate == pytest.approx(100.0)
+    assert "среднесуточный отбор за год" in decisions[0].resource
+
+
+def test_annual_average_counts_only_the_months_present():
+    """Неполный год делится на свои дни, а не на 365 — иначе норма завышена вчетверо."""
+    steps = [month_step(2007, month) for month in (11, 12)]
+
+    budget = planner._annual_budget(steps, 100.0)
+
+    assert budget == {2007: 100.0 * (30 + 31)}
+
+
+def test_annual_average_applies_to_injection_too(norms):
+    """Тот же ключ читает и предел по закачке: формы приходят парой."""
+    steps = [
+        month_step(2007, 1, injectors=[inj("9", 150.0)]),
+        month_step(2007, 2, injectors=[inj("9", 10.0)]),
+    ]
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_injection_m3_per_day=100.0,
+                            field_limits_are_annual_average=True)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert result == steps and decisions == []

@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 
 from aios.explain import Settings as ExplainSettings
-from aios.planner import Limits
+from aios.planner import Limits, ShutWindow
 from aios.summary import Fluids
 
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "config.toml"
@@ -138,9 +138,14 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
             well_caps_m3_per_day=_well_caps(limits, source),
             controllable_wells=_well_set(limits, "controllable_wells", source),
             forced_shut_wells=_well_set(limits, "forced_shut_wells", source),
+            forced_shut_windows=_shut_windows(limits, source),
             max_active_wells=_optional_count(limits, "max_active_wells", "limits", source),
             max_field_injection_m3_per_year=_optional_positive(
                 limits, "max_field_injection_m3_per_year", "limits", source),
+            max_field_liquid_m3_per_year=_optional_positive(
+                limits, "max_field_liquid_m3_per_year", "limits", source),
+            field_limits_are_annual_average=bool(
+                limits.get("field_limits_are_annual_average", False)),
             max_events_per_year=_optional_count(limits, "max_events_per_year",
                                                 "limits", source),
         ),
@@ -199,6 +204,52 @@ def _well_set(section: dict, key: str, source: Path) -> frozenset[str] | None:
         raise ValueError(f"В {source} значение {key} в секции [limits] должно быть списком")
     names = frozenset(str(value) for value in values)
     return names or None
+
+
+def _shut_windows(section: dict, source: Path) -> tuple[ShutWindow, ...] | None:
+    """Обязательные остановки с окном дат. Пустой список — таких нет.
+
+    Формат — список таблиц, потому что окон у одной скважины может быть несколько:
+
+        [[limits.forced_shut_windows]]
+        well = "102"
+        start = 2027-01-01
+        end = 2027-06-30
+
+    Даты читаются нативным типом TOML, а не строкой: строка `"2027-13-01"`
+    прошла бы разбор и сравнивалась бы лексикографически — тихо и на всём
+    горизонте.
+    """
+    key = "forced_shut_windows"
+    if key not in section:
+        return None
+    entries = section[key]
+    if not isinstance(entries, list):
+        raise ValueError(
+            f"В {source} значение {key} в секции [limits] должно быть списком таблиц "
+            "вида {well, start, end}"
+        )
+    windows: list[ShutWindow] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"В {source} запись {key} должна быть таблицей {{well, start, end}}, "
+                f"получено {entry!r}"
+            )
+        missing = [field for field in ("well", "start", "end") if field not in entry]
+        if missing:
+            raise ValueError(
+                f"В {source} в записи {key} не хватает полей: {', '.join(missing)}"
+            )
+        for field in ("start", "end"):
+            if not isinstance(entry[field], date):
+                raise ValueError(
+                    f"В {source} поле {field} записи {key} должно быть датой TOML "
+                    f"(2027-01-01), получено {entry[field]!r}"
+                )
+        windows.append(ShutWindow(well=str(entry["well"]),
+                                  start=entry["start"], end=entry["end"]))
+    return tuple(windows) or None
 
 
 def _well_caps(section: dict, source: Path) -> dict[str, float] | None:
