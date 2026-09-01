@@ -1383,3 +1383,47 @@ def test_holding_a_regime_never_lifts_the_field_over_its_limit(norms):
                    if control.status == "OPEN")
 
     assert february <= 100.0
+def test_quota_does_not_cancel_a_shutdown_that_holds_the_active_fund(norms):
+    """Отмена остановки возвращает скважину в работу — и ломает предел числа действующих.
+
+    Ревизия 02.09: защищались только мероприятия, порождённые срезками. То, что
+    предложил цикл и чем при этом держится другой предел, квота отменяла, а
+    перепроверять после неё было некому.
+    """
+    steps = [
+        ScheduleStep(date(2027, 1, 1),
+                     (ProducerControl("A", "SHUT", "LRAT", None, 50.0), prod("B", 50.0)), ()),
+        ScheduleStep(date(2027, 2, 1),
+                     (prod("A", 50.0), ProducerControl("B", "SHUT", "LRAT", None, 50.0)), ()),
+    ]
+    limits = planner.Limits(enforce_water_balance=False, max_active_wells=1,
+                            max_events_per_year=1)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    february = planner.fund_states(result)[1]
+
+    assert sum(1 for state in february.values() if state[0] or state[1]) == 1
+    assert any("вопреки квоте" in decision.reason for decision in decisions), (
+        "уступка обязана быть объявлена, иначе репетиция сочтёт это провалом"
+    )
+
+
+def test_enforce_returns_a_full_schedule_even_after_the_quota_cancels(norms):
+    """Отмена снимает запись со шага — и расписание снова становилось дельтовым.
+
+    Тогда вся арифметика ограничений (и наша, и в casecheck) считала не тот фонд:
+    на минимальном примере предел 250 м³/сут «соблюдался» при фактических 350.
+    """
+    steps = [
+        ScheduleStep(date(2027, 1, 1), (prod("A", 100.0), prod("B", 150.0)), ()),
+        ScheduleStep(date(2027, 2, 1), (prod("A", 200.0),), ()),
+    ]
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_liquid_m3_per_day=250.0, max_events_per_year=0)
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert all(len(step_.producers) == 2 for step_ in result), "шаги обязаны быть полными"
+    february = sum(control.liquid_rate or 0.0 for control in result[1].producers
+                   if control.status == "OPEN")
+    assert february <= 250.0

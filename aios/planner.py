@@ -565,15 +565,24 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         decisions.extend(small)
 
     if limits.max_events_per_month is not None or limits.max_events_per_year is not None:
+        # Защищены не только мероприятия, порождённые срезками, но и те, которыми
+        # держится состав фонда: отмена остановки возвращает скважину в работу, и
+        # предел числа действующих ломается — а перепроверять его после квоты
+        # некому (ревизия 02.09).
         result, events = _fit_events_to_quota(
             result,
             per_month=limits.max_events_per_month,
             per_year=limits.max_events_per_year,
-            protected=events_of(result) - events_of(expand_deltas(steps)),
+            protected=(events_of(result) - events_of(expand_deltas(steps)))
+            | _events_holding_the_fund(result, limits.max_active_wells),
         )
         decisions.extend(events)
 
-    return result, decisions
+    # Квота отменяет мероприятие снятием записи со шага, поэтому на выходе
+    # расписание снова частично дельтовое — а вся арифметика ограничений (и наша,
+    # и в `aios.casecheck`) считает по записям шага. Разворачиваем обратно: то, что
+    # verificируется, и то, что уезжает в файл, должно быть одним и тем же.
+    return expand_deltas(result), decisions
 
 
 def _achieved_rates(forecast: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
@@ -1435,6 +1444,27 @@ def _shut_below_minimum(steps: list[ScheduleStep],
                                              None, control.bhp))
         result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
     return result, decisions
+
+
+def _events_holding_the_fund(steps: list[ScheduleStep],
+                             limit: int | None) -> set[tuple[str, Any]]:
+    """Остановки, без которых предел числа действующих скважин будет нарушен.
+
+    Квота отменяет мероприятие возвратом скважины в прежнее состояние; если этим
+    мероприятием держался состав фонда, отмена ломает предел, и перепроверять его
+    после квоты уже некому. Такие остановки защищаются заранее.
+    """
+    if limit is None:
+        return set()
+    holding: set[tuple[str, Any]] = set()
+    for step, state in zip(steps, fund_states(steps), strict=True):
+        active = sum(1 for producing, injecting in state.values() if producing or injecting)
+        if active < limit:
+            continue
+        for control in list(step.producers) + list(step.injectors):
+            if control.status == "SHUT":
+                holding.add((control.well, step.date))
+    return holding
 
 
 def _hold_regimes(steps: list[ScheduleStep], months: int,
