@@ -1134,32 +1134,56 @@ def _fit_liquid_to_annual_volume(
     return result, decisions
 
 
+def fund_states(steps: list[ScheduleStep]) -> list[dict[str, tuple[bool, bool]]]:
+    """Состояние фонда после каждого шага: `{скважина: (добывает, закачивает)}`.
+
+    Состояние **накопительное**, и это не деталь реализации, а семантика деков:
+    запись `WCONPROD` действует до следующей записи по той же скважине, а шаг, где
+    скважина не упомянута, означает «режим не менялся». Расписание Модели Z
+    именно такое — размер шага гуляет от 84 до 103 записей, а последний шаг
+    (01.09.2025, конец расчёта) пуст вовсе.
+
+    До 02.09 события считались сравнением **составов соседних шагов**, и из этого
+    следовало два молчаливых дефекта: пустой финальный шаг выглядел как остановка
+    всего фонда (103 «мероприятия» в 2025 году), а скважина, не упомянутая на шаге,
+    считалась остановленной и снова пущенной. Найдено репетицией приёмки: проверка
+    показала 91 мероприятие при квоте 30, а планировщик не отменил ни одного —
+    два счётчика одной величины меряли разное.
+    """
+    states: list[dict[str, tuple[bool, bool]]] = []
+    current: dict[str, tuple[bool, bool]] = {}
+    for step in steps:
+        for control in step.producers:
+            producing = control.status == "OPEN"
+            injecting = current.get(control.well, (False, False))[1]
+            # запись добычи снимает закачку той же скважины: одновременно и то и
+            # другое невозможно, и именно так выглядит возврат из ВНС
+            current[control.well] = (producing, injecting and not producing)
+        for control in step.injectors:
+            injecting = control.status == "OPEN"
+            producing = current.get(control.well, (False, False))[0]
+            current[control.well] = (producing and not injecting, injecting)
+        states.append(dict(current))
+    return states
+
+
 def events_of(steps: list[ScheduleStep]) -> set[tuple[str, Any]]:
     """Мероприятия расписания: `{(скважина, дата шага)}`.
 
-    Нужно, чтобы отличить мероприятие, которое предложил цикл, от мероприятия,
-    порождённого срезкой самого планировщика: предел, доведённый до нуля, — это
-    остановка, и отменять её квотой нельзя, иначе ограничение снова нарушено.
+    Событие — изменение накопительного состояния скважины (см. `fund_states`), а
+    не разница составов соседних шагов. Нужно, чтобы отличить мероприятие, которое
+    предложил цикл, от порождённого срезкой самого планировщика: предел,
+    доведённый до нуля, — это остановка, и отменять её квотой нельзя.
     """
     events: set[tuple[str, Any]] = set()
-    previous: ScheduleStep | None = None
-    for step in steps:
-        if previous is None:
-            previous = step
+    states = fund_states(steps)
+    for index, step in enumerate(steps):
+        if index == 0:
             continue
-        was_producing = {c.well for c in previous.producers if c.status == "OPEN"}
-        was_injecting = {c.well for c in previous.injectors if c.status == "OPEN"}
-        now_producing = {c.well for c in step.producers if c.status == "OPEN"}
-        now_injecting = {c.well for c in step.injectors if c.status == "OPEN"}
-        known = {c.well for c in previous.producers} | {c.well for c in previous.injectors}
-        for well in known:
-            kind = _event_kind(
-                (well in was_producing, well in was_injecting),
-                (well in now_producing, well in now_injecting),
-            )
-            if kind is not None:
+        before, after = states[index - 1], states[index]
+        for well, state in after.items():
+            if _event_kind(before.get(well, (False, False)), state) is not None:
                 events.add((well, step.date))
-        previous = step
     return events
 
 
@@ -1177,9 +1201,9 @@ def _fit_events_to_annual_quota(
     **Мероприятие считается по расписанию, а не по выгрузке.** Эталонный
     расчётчик выводит события из отклика (`WLPR`, `WWIR`) и знает ещё смену ЭЦН
     и изменение режима; здесь считается то, чем управляет сдаваемый файл:
-    перемена состояния скважины между соседними шагами. Смены ЭЦН среди них нет
-    — насос выбирается по дебиту, а дебит это прогноз, а не наша уставка.
-    Поэтому квота ограничивает **наши** решения, и число мероприятий у
+    перемена **накопительного состояния** скважины (`fund_states`). Смены ЭЦН
+    среди них нет — насос выбирается по дебиту, а дебит это прогноз, а не наша
+    уставка. Поэтому квота ограничивает **наши** решения, и число мероприятий у
     расчётчика может отличаться; сравнивать их напрямую нельзя.
 
     Перевод под закачку — одно мероприятие, а не два: в расписании он выглядит
@@ -1193,55 +1217,53 @@ def _fit_events_to_annual_quota(
     отбора, ценность события не выражает. Календарный порядок детерминирован и
     объясним словами, а произвольный выбор — нет.
 
-    Отменённое мероприятие означает, что скважина остаётся в том состоянии, в
-    каком была на предыдущем шаге, — и следующий шаг сравнивается уже с
-    исправленным, поэтому отмена не порождает нового мероприятия в отместку.
-    У первого шага предыдущего нет, и мероприятий он не даёт: историческое
-    состояние до горизонта управления планировщик не видит (та же причина, по
-    которой `controllable_wells` живёт в цикле, а не здесь).
+    **Отмена мероприятия — это снятие записей скважины с шага**, а не подстановка
+    записи предыдущего шага. В деке отсутствие записи означает «режим не менялся»,
+    поэтому снятая запись оставляет скважину ровно в том состоянии, в каком она
+    была, — и вместе с ней снимается изменение уставки, которое эту запись и
+    несло. Прежняя редакция подставляла запись предыдущего шага и на реальном
+    деке не срабатывала вовсе: там шаг содержит только изменившиеся скважины
+    (найдено репетицией приёмки 01.09).
+
+    `protected` — мероприятия, порождённые срезками самого планировщика. Их
+    отмена вернула бы скважину в состояние, нарушающее жёсткое ограничение,
+    поэтому они квоту расходуют, но не отменяются, а превышение печатается
+    решением (Р-138).
     """
     decisions: list[Allocation] = []
     result: list[ScheduleStep] = []
     spent: dict[int, int] = {}
-    previous: ScheduleStep | None = None
+    state: dict[str, tuple[bool, bool]] = {}
+    rates: dict[str, float] = {}
 
-    for step in steps:
-        if previous is None:
-            result.append(step)
-            previous = step
-            continue
-
-        was_producing = {c.well: c for c in previous.producers if c.status == "OPEN"}
-        was_injecting = {c.well: c for c in previous.injectors if c.status == "OPEN"}
-        now_producing = {c.well: c for c in step.producers if c.status == "OPEN"}
-        now_injecting = {c.well: c for c in step.injectors if c.status == "OPEN"}
-
-        before_producers = {c.well: c for c in previous.producers}
-        before_injectors = {c.well: c for c in previous.injectors}
-
+    for index, step in enumerate(steps):
         year = step.date.year
-        cancelled: set[str] = set()
+        after = dict(state)
+        for control in step.producers:
+            producing = control.status == "OPEN"
+            after[control.well] = (producing, after.get(control.well, (False, False))[1]
+                                   and not producing)
+        for control in step.injectors:
+            injecting = control.status == "OPEN"
+            after[control.well] = (after.get(control.well, (False, False))[0]
+                                   and not injecting, injecting)
 
+        cancelled: set[str] = set()
         # порядок обхода — как в файле: сначала добывающие, потом нагнетательные
         wells = [c.well for c in step.producers]
         wells += [c.well for c in step.injectors if c.well not in wells]
 
         for well in wells:
-            if well not in before_producers and well not in before_injectors:
-                continue  # скважина появилась в горизонте — сравнивать не с чем
-            kind = _event_kind(
-                (well in was_producing, well in was_injecting),
-                (well in now_producing, well in now_injecting),
-            )
+            if index == 0:
+                continue  # первому шагу не с чем сравнивать: истории до горизонта нет
+            kind = _event_kind(state.get(well, (False, False)),
+                               after.get(well, (False, False)))
             if kind is None:
                 continue
             if spent.get(year, 0) < limit:
                 spent[year] = spent.get(year, 0) + 1
                 continue
             if (well, step.date) in (protected or set()):
-                # мероприятие порождено срезкой: отменить его значит вернуть
-                # скважину в состояние, нарушающее жёсткое ограничение. Квоту оно
-                # всё равно расходует — и превышение называется вслух
                 spent[year] = spent.get(year, 0) + 1
                 decisions.append(Allocation(
                     well=well, resource=f"квота мероприятий, {year}",
@@ -1253,36 +1275,37 @@ def _fit_events_to_annual_quota(
                 ))
                 continue
             cancelled.add(well)
-            asked = now_producing.get(well) or now_injecting.get(well)
-            kept = before_producers.get(well) or before_injectors.get(well)
+            asked = next((c for c in step.producers if c.well == well), None) \
+                or next((c for c in step.injectors if c.well == well), None)
             decisions.append(Allocation(
                 well=well, resource=f"квота мероприятий, {year}",
-                before=_rate_of(asked), after=_rate_of(kept),
+                before=_rate_of(asked), after=rates.get(well, 0.0),
                 reason=(f"{kind} отменён: квота мероприятий на {year} год "
                         f"исчерпана (предел {limit}); скважина остаётся как была"),
             ))
 
-        if not cancelled:
-            result.append(step)
-            previous = step
-            continue
+        if cancelled:
+            producers = tuple(c for c in step.producers if c.well not in cancelled)
+            injectors = tuple(c for c in step.injectors if c.well not in cancelled)
+            step = ScheduleStep(step.date, producers, injectors)
+            after = dict(state)
+            for control in producers:
+                producing = control.status == "OPEN"
+                after[control.well] = (producing,
+                                       after.get(control.well, (False, False))[1]
+                                       and not producing)
+            for control in injectors:
+                injecting = control.status == "OPEN"
+                after[control.well] = (after.get(control.well, (False, False))[0]
+                                       and not injecting, injecting)
 
-        producers = tuple(
-            before_producers[c.well] if c.well in cancelled and c.well in before_producers
-            else c
-            for c in step.producers
-        )
-        # записи закачки, которой на прошлом шаге не было, при отмене снимаются:
-        # именно её появление и было мероприятием
-        injectors = tuple(
-            before_injectors[c.well] if c.well in cancelled and c.well in before_injectors
-            else c
-            for c in step.injectors
-            if not (c.well in cancelled and c.well not in before_injectors)
-        )
-        fixed = ScheduleStep(step.date, producers, injectors)
-        result.append(fixed)
-        previous = fixed
+        for control in step.producers:
+            rates[control.well] = control.liquid_rate or 0.0
+        for control in step.injectors:
+            rates[control.well] = control.rate or 0.0
+
+        state = after
+        result.append(step)
 
     return result, decisions
 

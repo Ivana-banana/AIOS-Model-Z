@@ -1033,9 +1033,13 @@ def test_quota_still_cancels_what_the_cycle_asked_for(norms):
     limits = planner.Limits(enforce_water_balance=False, max_events_per_year=1)
 
     result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
-    statuses = sorted(c.status for c in result[1].producers)
+    # смотрим на состояние фонда, а не на состав шага: отмена снимает запись, и
+    # скважина остаётся в прежнем состоянии без всякой записи — так устроен дек
+    state = planner.fund_states(result)[1]
 
-    assert statuses == ["OPEN", "SHUT"], "одна остановка проходит по квоте, вторая отменяется"
+    assert sorted(state.values()) == [(False, False), (True, False)], (
+        "одна остановка проходит по квоте, вторая отменяется"
+    )
     assert any("отменён: квота мероприятий" in decision.reason for decision in decisions)
 def test_a_group_cut_to_zero_shuts_the_well_instead_of_leaving_it_open(norms):
     """Открытая запись с нулевым дебитом делает расписание непригодным целиком.
@@ -1144,3 +1148,45 @@ def test_a_month_missing_from_the_forecast_is_named_not_skipped_silently(norms):
 
     assert any("месяца нет в прогнозе" in one.reason and "2007-02" in one.resource
                for one in decisions)
+def test_events_are_counted_on_the_real_deck_not_on_step_composition(norms):
+    """Шаг настоящего дека содержит только изменившиеся скважины.
+
+    Найдено репетицией приёмки 01.09: проверка показывала 91 мероприятие при
+    квоте 30, а планировщик не отменял ни одного — счётчики меряли разное. Причина
+    в семантике: отсутствие записи означает «режим не менялся», а прежний счёт
+    сравнивал составы соседних шагов, поэтому пустой финальный шаг (01.09.2025,
+    конец расчёта) выглядел остановкой всего фонда.
+    """
+    steps = [
+        # скважина B упомянута только на первом шаге — её режим не менялся
+        month_step(2027, 1, producers=[prod("A", 50.0), prod("B", 50.0)]),
+        month_step(2027, 2, producers=[prod("A", 60.0)]),
+        month_step(2027, 3, producers=()),        # пустой шаг — конец расчёта
+    ]
+
+    assert planner.events_of(steps) == set(), "изменение уставки и конец расчёта — не мероприятия"
+
+    with_shutdown = steps[:1] + [
+        ScheduleStep(date(2027, 2, 1),
+                     (ProducerControl("A", "SHUT", "LRAT", None, 50.0),), ())
+    ]
+    assert planner.events_of(with_shutdown) == {("A", date(2027, 2, 1))}
+
+
+def test_quota_works_on_a_schedule_where_steps_carry_only_changes(norms):
+    """Та же семантика в самой квоте: раньше она не срабатывала на таком расписании."""
+    steps = [
+        month_step(2027, 1, producers=[prod("A", 50.0), prod("B", 50.0)]),
+        ScheduleStep(date(2027, 2, 1),
+                     (ProducerControl("A", "SHUT", "LRAT", None, 50.0),), ()),
+        ScheduleStep(date(2027, 3, 1),
+                     (ProducerControl("B", "SHUT", "LRAT", None, 50.0),), ()),
+    ]
+    limits = planner.Limits(enforce_water_balance=False, max_events_per_year=1)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    state = planner.fund_states(result)[-1]
+
+    assert state["A"] == (False, False), "первая остановка проходит по квоте"
+    assert state["B"] == (True, False), "вторая отменена: квота исчерпана"
+    assert any("отменён: квота" in one.reason for one in decisions)
