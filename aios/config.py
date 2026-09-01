@@ -122,6 +122,12 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
                 _value(limits, "water_balance_rule", "limits", source)
             ),
             water_tolerance=_positive(limits, "water_tolerance", "limits", source),
+            # Нижняя граница коридора — опциональная: ключа нет, значит снизу
+            # закачка не ограничена. Обязательной её делать нельзя, иначе каждый
+            # существующий конфиг стал бы нечитаемым, а заявляемое число
+            # изменилось бы от одной правки схемы.
+            water_tolerance_min=_optional_positive(limits, "water_tolerance_min",
+                                                   "limits", source),
             # Ручки под валидационный кейс (Р-110). У всех умолчание «ключа нет —
             # ограничения нет»: это единственные ключи в конфигурации, которые
             # можно не писать, и так сделано намеренно. Кейс придёт со своим

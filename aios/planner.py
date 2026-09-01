@@ -85,11 +85,30 @@ class Limits:
     """
 
     water_tolerance: float = 1.0
-    """Во сколько раз закачка может превышать базу правила.
+    """Во сколько раз закачка может превышать базу правила — **верхняя** граница.
 
     Для `produced_water` 1.0 означает «закачиваем ровно столько, сколько подняли»;
     для `compensation` это потолок компенсации — 1.3 держит нас не выше
     исторической компенсации объекта (1,291).
+    """
+
+    water_tolerance_min: float | None = None
+    """Нижняя граница того же отношения. None — снизу закачка не ограничена.
+
+    Вместе с `water_tolerance` задаёт **коридор**: трекер на КТ-2 сказала, что в
+    тестовом кейсе он будет задан жёстко, «примерно 0.85–1.15 условно»
+    (`docs/kt2-feedback-2026-08-31.md`, запись 00:00). До появления кейса ключ
+    не задан ни в одном рабочем конфиге, и это осознанно: нижняя граница,
+    включённая умолчанием, изменила бы заявляемое число.
+
+    Смысл границы зависит от правила ровно так же, как у верхней: база — та же
+    (отобранная пустотность у `compensation`, добытая вода у `produced_water`).
+    Правило `external_water` ограничивает **источник**, а не отношение объёмов,
+    и нижней границы в этих терминах не имеет: сочетание отвергается явно, а не
+    молча игнорируется.
+
+    Коридор Модели Z полезно знать заранее: историческая компенсация объекта —
+    1,291, то есть при коридоре 0.85–1.15 **вся история выше верхней границы**.
     """
 
     #: --- ручки под валидационный кейс (Р-110) ---------------------------------
@@ -166,7 +185,11 @@ class Limits:
 
 @dataclass(frozen=True)
 class Allocation:
-    """Одно решение планировщика: кого и почему урезали."""
+    """Одно решение планировщика: кого и почему изменили.
+
+    Чаще всего это урезание, но не всегда: добор до нижней границы коридора
+    баланса воды даёт `after > before` и, соответственно, отрицательный `cut`.
+    """
 
     well: str
     resource: str
@@ -205,6 +228,21 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             "допустимы 'produced_water', 'compensation' и 'external_water'"
         )
 
+    if (limits.water_tolerance_min is not None
+            and limits.water_balance_rule == "external_water"):
+        raise ValueError(
+            "water_tolerance_min несовместим с правилом external_water: оно "
+            "ограничивает источник воды, а не отношение объёмов, и нижней границы "
+            "в этих терминах не имеет"
+        )
+
+    if (limits.water_tolerance_min is not None
+            and limits.water_tolerance_min > limits.water_tolerance):
+        raise ValueError(
+            f"пустой коридор баланса воды: нижняя граница {limits.water_tolerance_min:.10g} "
+            f"выше верхней {limits.water_tolerance:.10g}"
+        )
+
     if limits.enforce_water_balance:
         if limits.water_balance_rule == "compensation":
             result, water = _fit_injection_to_compensation(result, forecast, fluids,
@@ -217,6 +255,13 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             result, water = _fit_injection_to_available_water(result, forecast, fluids,
                                                               limits.water_tolerance)
         decisions.extend(water)
+
+        if limits.water_tolerance_min is not None:
+            result, floor = _raise_injection_to_floor(
+                result, forecast, fluids, limits.water_tolerance_min,
+                limits.water_balance_rule,
+            )
+            decisions.extend(floor)
 
     if limits.max_field_liquid_m3_per_day is not None:
         result, liquid = _fit_liquid_to_capacity(result, forecast, norms,
@@ -712,8 +757,14 @@ def explain(decisions: list[Allocation]) -> str:
     lines = []
     for resource, items in by_resource.items():
         total = sum(item.cut for item in items)
-        lines.append(f"{resource}: урезано {len(items)} скважин, суммарно {total:,.0f} м³/сут")
-        lines.extend(f"  {item}" for item in sorted(items, key=lambda x: -x.cut)[:10])
+        # Знак важен: с появлением нижней границы коридора планировщик умеет не
+        # только резать, но и добирать, и «урезано −120 м³/сут» читалось бы как
+        # опечатка, а не как добор до нормы.
+        verb = "урезано" if total >= 0 else "добрано"
+        lines.append(
+            f"{resource}: {verb} {len(items)} скважин, суммарно {abs(total):,.0f} м³/сут"
+        )
+        lines.extend(f"  {item}" for item in sorted(items, key=lambda x: -abs(x.cut))[:10])
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -833,9 +884,57 @@ def _fit_injection_to_compensation(steps: list[ScheduleStep],
     )
 
 
+def _raise_injection_to_floor(steps: list[ScheduleStep],
+                              forecast: list[dict[str, Any]],
+                              fluids: Fluids,
+                              floor: float,
+                              rule: str) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Добрать закачку до нижней границы коридора баланса воды.
+
+    Зеркало срезки сверху: та же база, тот же пропорциональный множитель, только
+    в другую сторону. База зависит от правила ровно так же, как у верхней
+    границы — отобранная пустотность у `compensation`, добытая вода у
+    `produced_water`.
+
+    **Добор идёт первым в цепочке ограничений, и это осознанно.** Дальше по
+    порядку стоят физические пределы: приёмистость скважины, мощность ППД,
+    годовой объём. Любой из них может снять часть добора обратно, и тогда
+    расписание останется ниже коридора. Это правильная приоритетность — водовод
+    важнее нормы, — но она означает, что планировщик **не гарантирует** попадание
+    в коридор, а только двигает к нему. Ловит несоответствие аудит по факту
+    (`aios.balance.compensation_problems` с тем же `floor`), и он же —
+    единственный, кто увидит случай «нагнетательных нет вовсе»: домножать нечего,
+    расписанием такое не лечится.
+    """
+    base = 0.0
+    planned = 0.0
+    for row in forecast:
+        oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
+        if liquid_t > 0 and 0 <= oil_t <= liquid_t:
+            base += (liquid_t - oil_t) * 1000.0 / fluids.water_density
+            if rule == "compensation":
+                base += oil_t * 1000.0 / fluids.oil_density
+        planned += max(row["WWIT_Diff"], 0.0)
+
+    required = base * floor
+    if required <= 0 or planned >= required or planned <= 0:
+        return steps, []
+
+    return _scale_injection(
+        steps, required / planned,
+        f"закачка {planned:,.0f} м³ даёт {planned / base:.2f} от базы правила "
+        f"{base:,.0f} м³ — ниже границы коридора {floor:.2f}",
+    )
+
+
 def _scale_injection(steps: list[ScheduleStep], factor: float,
                      reason: str) -> tuple[list[ScheduleStep], list[Allocation]]:
-    """Пропорционально ужать закачку всех открытых нагнетательных."""
+    """Пропорционально изменить закачку всех открытых нагнетательных.
+
+    Множитель меньше единицы режет, больше — добирает до нижней границы коридора.
+    `Allocation` в обоих случаях один и тот же: он описывает изменение, а не
+    только урезание.
+    """
     decisions: list[Allocation] = []
     seen: set[str] = set()
     result: list[ScheduleStep] = []

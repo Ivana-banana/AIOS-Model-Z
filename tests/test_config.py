@@ -144,6 +144,17 @@ def test_a_non_positive_water_tolerance_is_refused(tmp_path):
         config.load(_written(tmp_path, text))
 
 
+def test_the_corridor_floor_is_optional(tmp_path):
+    """Ключа нет — снизу закачка не ограничена; так получено заявляемое число."""
+    assert config.load(_written(tmp_path, MINIMAL)).limits.water_tolerance_min is None
+
+
+def test_the_corridor_floor_is_read_from_the_config(tmp_path):
+    text = MINIMAL.replace("water_tolerance = 1.0",
+                           "water_tolerance = 1.15\nwater_tolerance_min = 0.85")
+    assert config.load(_written(tmp_path, text)).limits.water_tolerance_min == 0.85
+
+
 @pytest.mark.parametrize(("line", "broken", "key"), [
     ("processes = 2", "processes = 0", "processes"),
     ("lookback_months = 6", "lookback_months = 0", "lookback_months"),

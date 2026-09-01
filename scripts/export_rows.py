@@ -49,10 +49,12 @@ def water_notes(rows: list[dict[str, object]], config) -> list[str]:
     rule = limits.water_balance_rule
     if rule == "compensation":
         found = balance.compensation_problems(rows, fluids=config.fluids,
-                                              ceiling=limits.water_tolerance)
+                                              ceiling=limits.water_tolerance,
+                                              floor=limits.water_tolerance_min)
     elif rule == "produced_water":
         found = balance.problems(rows, fluids=config.fluids,
-                                 tolerance=limits.water_tolerance)
+                                 tolerance=limits.water_tolerance,
+                                 floor=limits.water_tolerance_min)
     elif rule == "external_water":
         found = balance.external_water_problems(
             rows, fluids=config.fluids,

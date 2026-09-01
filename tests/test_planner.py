@@ -131,6 +131,127 @@ def test_compensation_above_the_ceiling_is_cut_to_the_ceiling(norms):
     assert "компенсац" in decisions[0].reason
 
 
+def test_without_a_floor_the_corridor_stays_one_sided(norms):
+    """Умолчание не должно менять поведение: заявляемое число получено без нижней границы."""
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 100.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 3.0)])]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
+    )
+
+    assert decisions == []
+    assert result == steps
+
+
+def test_compensation_below_the_floor_is_raised_to_the_floor(norms):
+    """Отобрано 1 000 м³, закачано 100 — при коридоре снизу 0.85 нужно 850."""
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 100.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 3.0)])]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.15,
+                       water_tolerance_min=0.85), FLUIDS,
+    )
+
+    assert [decision.resource for decision in decisions] == ["закачка"]
+    assert result[0].injectors[0].rate == pytest.approx(3.0 * 850.0 / 100.0)
+    assert "ниже границы коридора" in decisions[0].reason
+
+
+def test_raising_to_the_floor_is_proportional_across_injectors(norms):
+    """Добор распределяется тем же правилом, что и срезка: приоритета мы не знаем."""
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0),
+                injected("2007-01-01", "8", 75.0), injected("2007-01-01", "9", 25.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("8", 3.0), inj("9", 1.0)])]
+
+    result, _ = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.15,
+                       water_tolerance_min=0.85), FLUIDS,
+    )
+    rates = {control.well: control.rate for control in result[0].injectors}
+
+    assert rates["8"] / rates["9"] == pytest.approx(3.0)
+    assert rates["8"] + rates["9"] == pytest.approx(4.0 * 850.0 / 100.0)
+
+
+def test_injection_inside_the_corridor_is_left_alone(norms):
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 1000.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 33.0)])]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.15,
+                       water_tolerance_min=0.85), FLUIDS,
+    )
+
+    assert decisions == []
+    assert result == steps
+
+
+def test_nothing_to_raise_when_there_are_no_injectors(norms):
+    """Расписанием такое не лечится — планировщик молчит, ловит аудит по факту."""
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0)]
+    steps = [step(producers=[prod("1", 30.0)])]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.15,
+                       water_tolerance_min=0.85), FLUIDS,
+    )
+
+    assert decisions == []
+    assert result == steps
+    assert balance.compensation_problems(forecast, FLUIDS, ceiling=1.15, floor=0.85)
+
+
+def test_an_empty_corridor_is_refused_by_name(norms):
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 100.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 3.0)])]
+
+    with pytest.raises(ValueError, match="пустой коридор"):
+        planner.enforce(
+            steps, forecast, norms,
+            planner.Limits(water_balance_rule="compensation", water_tolerance=0.9,
+                           water_tolerance_min=1.1), FLUIDS,
+        )
+
+
+def test_a_floor_makes_no_sense_for_the_external_water_rule(norms):
+    """Правило про источник, а не про отношение объёмов: молча игнорировать нельзя."""
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 100.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 3.0)])]
+
+    with pytest.raises(ValueError, match="external_water"):
+        planner.enforce(
+            steps, forecast, norms,
+            planner.Limits(water_balance_rule="external_water",
+                           max_external_water_m3_per_day=10.0,
+                           water_tolerance_min=0.85), FLUIDS,
+        )
+
+
+def test_the_raised_schedule_satisfies_the_same_audit(norms):
+    """Итог добора обязан проходить ту же проверку, которой ловим нарушение по факту."""
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 100.0)]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 3.0)])]
+
+    result, _ = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.15,
+                       water_tolerance_min=0.85), FLUIDS,
+    )
+
+    factor = result[0].injectors[0].rate / 3.0
+    corrected = [row for row in forecast if row["WWIT_Diff"] == 0] + [
+        injected("2007-01-01", "9", 100.0 * factor)
+    ]
+    assert balance.compensation_problems(corrected, FLUIDS, ceiling=1.15, floor=0.85) == []
+
+
 def test_external_water_rule_allows_injection_the_source_can_cover(norms):
     """Январь 2007: 31 сутки, своей воды 900 м³, источник даёт 10 м³/сут — это 310 м³."""
     forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 1200.0)]
