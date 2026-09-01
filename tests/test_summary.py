@@ -380,3 +380,17 @@ def test_watercut_limit_lives_apart_from_the_physical_sanity_checks():
     assert summary.sanity_problems(rows) == [], (
         "условие кейса не имеет права попасть в физический страж"
     )
+def test_watercut_is_counted_by_mass_not_by_volume():
+    """Обводнённость считается из тех же двух колонок, что и везде: по массе.
+
+    Мутация «делить объёмы» проходит незаметно на близких плотностях, поэтому
+    проверяется точное значение: 1 − нефть/жидкость в тоннах.
+    """
+    from conftest import make_row
+
+    rows = [make_row("2007-01-01", "W", wlpr=30.0, womr=5.0, liquid=1000.0, oil=250.0)]
+
+    assert summary.case_problems(rows, max_watercut=0.751) == []
+    problems = summary.case_problems(rows, max_watercut=0.749)
+
+    assert len(problems) == 1 and "0.75" in problems[0]

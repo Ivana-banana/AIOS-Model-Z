@@ -1543,3 +1543,46 @@ def test_a_well_retired_by_the_minimum_rate_stays_shut(norms):
     assert statuses == ["OPEN", "SHUT", "SHUT", "SHUT"], "остановка окончательна"
     assert len(planner.events_of(result)) == 1, "одно мероприятие, а не четыре"
     assert sum(1 for one in decisions if "минимальный дебит" in one.resource) == 1
+def test_minimum_rate_leaves_injection_alone(norms):
+    """Правило минимального дебита — про добычу: закачку оно не трогает вовсе."""
+    steps = [month_step(2027, 1, producers=[prod("W", 2.0)], injectors=[inj("I", 3.0)])]
+    limits = planner.Limits(enforce_water_balance=False,
+                            min_producer_rate_m3_per_day=5.0)
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert [(c.well, c.status, c.rate) for c in result[0].injectors] == [("I", "OPEN", 3.0)]
+
+
+def test_minimum_rate_boundary_is_inclusive(norms):
+    """Ровно порог — это «не ниже»: скважина работает."""
+    steps = [month_step(2027, 1, producers=[prod("ровно", 5.0), prod("чуть ниже", 4.999)])]
+    limits = planner.Limits(enforce_water_balance=False,
+                            min_producer_rate_m3_per_day=5.0)
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+    state = {c.well: c.status for c in result[0].producers}
+
+    assert state["ровно"] == "OPEN" and state["чуть ниже"] == "SHUT"
+
+
+def test_a_conceded_event_spends_every_quota_bucket(norms):
+    """Уступка расходует обе корзины, иначе месячная квота «оживает» в том же месяце."""
+    steps = [
+        month_step(2027, 1, producers=[prod("A", 50.0), prod("B", 50.0), prod("C", 50.0)]),
+        ScheduleStep(date(2027, 2, 1),
+                     (ProducerControl("A", "SHUT", "LRAT", None, 50.0),
+                      ProducerControl("B", "SHUT", "LRAT", None, 50.0),
+                      ProducerControl("C", "SHUT", "LRAT", None, 50.0)), ()),
+    ]
+    # объектный предел делает остановки защищёнными, квоты — по единице
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_liquid_m3_per_day=200.0,
+                            max_events_per_year=1, max_events_per_month=1)
+
+    _, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    conceded = [one for one in decisions if "вопреки квоте" in one.reason]
+
+    assert len(conceded) == 2, "две уступки из трёх мероприятий: первое прошло по квоте"
+    assert any("месяц 2027-02" in one.reason or "год 2027" in one.reason
+               for one in conceded)
