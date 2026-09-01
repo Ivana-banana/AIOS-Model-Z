@@ -168,6 +168,8 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
                 limits.get("field_limits_are_annual_average", False)),
             max_events_per_year=_optional_count(limits, "max_events_per_year",
                                                 "limits", source),
+            max_events_per_month=_optional_count(limits, "max_events_per_month",
+                                                 "limits", source),
         ),
         policy=PolicyConfig(
             lookback_months=_at_least_one(policy, "lookback_months", "policy", source),

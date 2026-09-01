@@ -47,7 +47,7 @@ from aios.margin import Norms  # noqa: E402
 CHECKED_ELSEWHERE = {
     "min_producer_bhp_atm": "уставки давления правит планировщик (_fit_pressures)",
     "max_injector_bhp_atm": "уставки давления правит планировщик (_fit_pressures)",
-    "max_events_per_year": "квота мероприятий считается по расписанию (_fit_events_to_annual_quota)",
+    "max_events_per_year": "квота мероприятий считается по расписанию (_fit_events_to_quota)",
     "controllable_wells": "возврат к опорному режиму делает цикл (aios.loop), планировщик его не видит",
     "enforce_water_balance": "баланс воды проверяется отдельно, ниже",
     "water_balance_rule": "баланс воды проверяется отдельно, ниже",

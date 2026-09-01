@@ -304,6 +304,15 @@ class Limits:
     календарный год, а не к каждому месяцу.
     """
 
+    max_events_per_month: int | None = None
+    """Максимум платных мероприятий за календарный месяц. None — предела нет.
+
+    Годовая квота не выражает «не больше двух переключений в месяц»: год из
+    двенадцати мероприятий проходит и тогда, когда все двенадцать сделаны в
+    январе. Форма отдельная и в чек-листе приёмки стоит отдельной строкой
+    (`docs/validation-case-checklist.md`, п. 25).
+    """
+
     max_events_per_year: int | None = None
     """Максимум платных мероприятий за год: остановки, пуски, переводы. None — нет.
 
@@ -311,7 +320,7 @@ class Limits:
     ВНС), поэтому ограничить их число — естественная форма ограничения по фонду.
 
     Считается по расписанию, а не по выгрузке, и потому не совпадает с событиями
-    эталонного расчётчика — подробности в `_fit_events_to_annual_quota`.
+    эталонного расчётчика — подробности в `_fit_events_to_quota`.
     """
 
 
@@ -464,11 +473,22 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # мероприятие может появиться от самой срезки — предел по объекту, доведённый
     # до нуля, это остановка. Считать квоту раньше значило бы считать не тот
     # график, который в итоге уедет в файл.
+    # Мероприятие, порождённое самой срезкой, отменять нельзя: отмена вернула бы
+    # скважину в состояние, которое нарушает жёсткое ограничение. Такие события
+    # квоту расходуют, но не отменяются — найдено критиком 01.09 (Р-139).
+    #
+    # Месячная квота идёт первой: она строже по локальности, и год, приведённый
+    # ею, годовой квоте резать уже нечего. Обратный порядок оставил бы месяц с
+    # двенадцатью переключениями внутри годового лимита двенадцать.
+    if limits.max_events_per_month is not None:
+        result, monthly_events = _fit_events_to_quota(
+            result, limits.max_events_per_month,
+            protected=events_of(result) - events_of(list(steps)), period="month",
+        )
+        decisions.extend(monthly_events)
+
     if limits.max_events_per_year is not None:
-        # Мероприятие, порождённое самой срезкой, отменять нельзя: отмена вернула бы
-        # скважину в состояние, которое нарушает жёсткое ограничение. Такие события
-        # квоту расходуют, но не отменяются — найдено критиком 01.09 (Р-139).
-        result, events = _fit_events_to_annual_quota(
+        result, events = _fit_events_to_quota(
             result, limits.max_events_per_year,
             protected=events_of(result) - events_of(list(steps)),
         )
@@ -1279,9 +1299,10 @@ def events_of(steps: list[ScheduleStep]) -> set[tuple[str, Any]]:
     return events
 
 
-def _fit_events_to_annual_quota(
+def _fit_events_to_quota(
     steps: list[ScheduleStep], limit: int,
     protected: set[tuple[str, Any]] | None = None,
+    *, period: str = "year",
 ) -> tuple[list[ScheduleStep], list[Allocation]]:
     """Квота платных мероприятий на календарный год.
 
@@ -1329,7 +1350,7 @@ def _fit_events_to_annual_quota(
     rates: dict[str, float] = {}
 
     for index, step in enumerate(steps):
-        year = step.date.year
+        year = step.date.year if period == "year" else f"{step.date:%Y-%m}"
         after = dict(state)
         for control in step.producers:
             producing = control.status == "OPEN"
@@ -1362,7 +1383,7 @@ def _fit_events_to_annual_quota(
                     before=0.0, after=0.0,
                     reason=(f"{kind} оставлен вопреки квоте {limit}: он порождён "
                             f"ограничением объекта, и его отмена нарушила бы это "
-                            f"ограничение. Мероприятий за {year} год уже "
+                            f"ограничение. Мероприятий за период {year} уже "
                             f"{spent[year]}"),
                 ))
                 continue
@@ -1372,7 +1393,7 @@ def _fit_events_to_annual_quota(
             decisions.append(Allocation(
                 well=well, resource=f"квота мероприятий, {year}",
                 before=_rate_of(asked), after=rates.get(well, 0.0),
-                reason=(f"{kind} отменён: квота мероприятий на {year} год "
+                reason=(f"{kind} отменён: квота мероприятий на период {year} "
                         f"исчерпана (предел {limit}); скважина остаётся как была"),
             ))
 

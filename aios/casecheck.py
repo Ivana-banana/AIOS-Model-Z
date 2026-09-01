@@ -103,7 +103,9 @@ def check(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         checks.append(_phase(steps, forecast, limits.max_field_water_t_per_day,
                              key="max_field_water_t_per_day", phase="вода"))
     if limits.max_events_per_year is not None:
-        checks.append(_events_per_year(steps, limits.max_events_per_year))
+        checks.append(_events_per_period(steps, limits.max_events_per_year, period="year"))
+    if limits.max_events_per_month is not None:
+        checks.append(_events_per_period(steps, limits.max_events_per_month, period="month"))
     if limits.max_active_wells is not None:
         checks.append(_active_wells(steps, limits.max_active_wells))
     if limits.forced_shut_wells:
@@ -251,7 +253,7 @@ def _phase(steps: list[ScheduleStep], forecast: list[dict[str, Any]], limit: flo
     return LimitCheck(key=key, limit=limit, value=best, where=where, unit="т/сут")
 
 
-def _events_per_year(steps: list[ScheduleStep], limit: int) -> LimitCheck:
+def _events_per_period(steps: list[ScheduleStep], limit: int, *, period: str) -> LimitCheck:
     """Платных мероприятий за календарный год — против квоты.
 
     Единственный ключ, который проверка до 02.09 не знала вовсе, — при том что
@@ -263,14 +265,16 @@ def _events_per_year(steps: list[ScheduleStep], limit: int) -> LimitCheck:
     Мероприятия считаются тем же кодом, что и в планировщике: два счётчика одной
     величины разъезжаются молча.
     """
-    by_year: dict[int, int] = {}
+    by_period: dict[str, int] = {}
     for _, moment in events_of(steps):
-        by_year[moment.year] = by_year.get(moment.year, 0) + 1
+        key = str(moment.year) if period == "year" else f"{moment:%Y-%m}"
+        by_period[key] = by_period.get(key, 0) + 1
     best, where = 0, "—"
-    for year, count in sorted(by_year.items()):
+    for stamp, count in sorted(by_period.items()):
         if count > best:
-            best, where = count, str(year)
-    return LimitCheck(key="max_events_per_year", limit=float(limit), value=float(best),
+            best, where = count, stamp
+    name = "max_events_per_year" if period == "year" else "max_events_per_month"
+    return LimitCheck(key=name, limit=float(limit), value=float(best),
                       where=where, unit="мероприятий")
 
 

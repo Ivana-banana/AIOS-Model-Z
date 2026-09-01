@@ -343,3 +343,16 @@ def test_field_limits_see_wells_that_keep_running_from_an_earlier_step():
     check = casecheck.check(planner.expand_deltas(steps), [], limits)[0]
 
     assert check.value == pytest.approx(1200.0) and not check.satisfied
+def test_monthly_event_quota_is_checked_separately_from_the_annual_one():
+    """Две квоты — две проверки: год из двенадцати и месяц из двенадцати это разное."""
+    steps = [
+        step(2027, 1, producers=[prod("A", 10.0), prod("B", 10.0)]),
+        step(2027, 2, producers=[prod("A", None, "SHUT"), prod("B", None, "SHUT")]),
+    ]
+    limits = planner.Limits(max_events_per_year=12, max_events_per_month=1)
+
+    checks = {check.key: check for check in casecheck.check(steps, [], limits)}
+
+    assert checks["max_events_per_year"].satisfied
+    assert not checks["max_events_per_month"].satisfied
+    assert checks["max_events_per_month"].where == "2027-02"

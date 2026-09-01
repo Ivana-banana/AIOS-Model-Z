@@ -971,7 +971,7 @@ def test_ranking_survives_a_forecast_read_from_csv(norms):
 def test_quota_does_not_cancel_a_shutdown_it_did_not_ask_for(norms):
     """Квота отменяла остановку, поставленную ограничением, — и нарушала его.
 
-    `_fit_events_to_annual_quota` идёт последним и при исчерпанной квоте
+    `_fit_events_to_quota` идёт последним и при исчерпанной квоте
     возвращает скважину в состояние предыдущего шага. Остановка, которую только
     что поставило окно `forced_shut_windows`, для квоты выглядит обычным
     мероприятием — и отменялась. Скважина снова открыта внутри окна.
@@ -1260,3 +1260,30 @@ def test_expand_deltas_switches_a_well_between_roles():
 
     assert [len(step_.producers) for step_ in full] == [1, 0, 1]
     assert [len(step_.injectors) for step_ in full] == [0, 1, 0]
+def test_monthly_event_quota_limits_a_burst_the_annual_one_allows(norms):
+    """Год из двенадцати мероприятий проходит и тогда, когда все двенадцать в январе.
+
+    Месячная квота — отдельная форма условия (п. 25 чек-листа приёмки), и годовой
+    её не выразить.
+    """
+    steps = [
+        month_step(2027, 1, producers=[prod("A", 10.0), prod("B", 10.0), prod("C", 10.0)]),
+        month_step(2027, 2, producers=[
+            ProducerControl("A", "SHUT", "LRAT", None, 50.0),
+            ProducerControl("B", "SHUT", "LRAT", None, 50.0),
+            ProducerControl("C", "SHUT", "LRAT", None, 50.0),
+        ]),
+    ]
+
+    yearly = planner.Limits(enforce_water_balance=False, max_events_per_year=12)
+    monthly = planner.Limits(enforce_water_balance=False, max_events_per_year=12,
+                             max_events_per_month=1)
+
+    kept, _ = planner.enforce(steps, [], norms, yearly, FLUIDS)
+    cut, decisions = planner.enforce(steps, [], norms, monthly, FLUIDS)
+
+    assert sum(1 for state in planner.fund_states(kept)[1].values()
+               if state == (False, False)) == 3, "годовая квота 12 три остановки пропускает"
+    assert sum(1 for state in planner.fund_states(cut)[1].values()
+               if state == (False, False)) == 1, "месячная квота 1 оставляет одну"
+    assert any("период 2027-02" in decision.reason for decision in decisions)
