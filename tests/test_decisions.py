@@ -18,7 +18,12 @@ SOURCES = ("aios", "scripts", "tests")
 SUFFIXES = (".py", ".sh", ".toml")
 
 REFERENCE = re.compile(r"Р-\d+")
-DEFINITION = re.compile(r"^\*\*(Р-\d+)[.\s]", re.MULTILINE)
+#: Решение объявляется двумя способами: `**Р-42.** …` (так писались первые сто с
+#: лишним) и заголовком `## Р-118. …` (так пишутся с 30.08). Пока шаблон знал
+#: только первый, девять последних решений были невидимы обеим проверкам ниже:
+#: ссылка на них из кода считалась бы висячей, а столкновение номеров — не нашлось
+#: бы вовсе. Найдено 01.09 ссылкой на Р-120 из `scripts/export_rows.py`.
+DEFINITION = re.compile(r"^(?:\*\*|##\s+)(Р-\d+)[.\s]", re.MULTILINE)
 
 
 def defined() -> list[str]:
@@ -49,6 +54,19 @@ def test_every_reference_from_the_code_resolves():
         f"код ссылается на решения, которых нет в decisions.md: {missing} — "
         "скорее всего ссылка осталась от нумерации до перенумерации"
     )
+
+
+def test_both_ways_of_declaring_a_decision_are_seen():
+    """Решения, объявленные заголовком, тоже считаются объявленными."""
+    numbers = set(defined())
+    text = DECISIONS.read_text(encoding="utf-8")
+
+    headed = set(re.findall(r"^##\s+(Р-\d+)[.\s]", text, re.MULTILINE))
+    bolded = set(re.findall(r"^\*\*(Р-\d+)[.\s]", text, re.MULTILINE))
+
+    assert headed, "в журнале не осталось решений-заголовков — проверка потеряла смысл"
+    assert bolded, "в журнале не осталось решений в прежнем формате"
+    assert headed <= numbers and bolded <= numbers
 
 
 def test_the_journal_is_not_empty_so_the_check_means_something():

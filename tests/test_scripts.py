@@ -294,25 +294,43 @@ def test_export_rows_takes_the_oil_benchmark_from_published_references():
     ориентиром 5,0 %». Теперь ориентиры читаются из их же опубликованных
     раскладок базового сценария, и их два — по одному на симулятор.
     """
-    from aios import reference
     from scripts import export_rows
 
     marks = dict(export_rows.reference_oil_kt())
 
-    assert set(marks) == {"OPM Flow", "тНавигатор"}
-    opm = reference.load(export_rows.REFERENCE_FILES[0][1])
-    assert abs(marks["OPM Flow"] - opm.total("Добыча нефти")) < 1e-9
-    assert abs(marks["OPM Flow"] - 5011.55) < 0.01
-    assert abs(marks["тНавигатор"] - 5036.68) < 0.01
+    assert len(marks) == 2, f"ожидались обе раскладки организаторов, получено: {sorted(marks)}"
+    by_opm = [value for name, value in marks.items() if "OPM" in name]
+    by_tnavigator = [value for name, value in marks.items() if "авигатор" in name]
+    assert len(by_opm) == 1 and len(by_tnavigator) == 1
+    assert abs(by_opm[0] - 5011.55) < 0.01
+    assert abs(by_tnavigator[0] - 5036.68) < 0.01
 
 
-def test_export_rows_survives_a_missing_reference(monkeypatch, tmp_path):
-    """Справочный ориентир не имеет права ронять выгрузку: без файла — без строки."""
+def test_export_rows_names_no_model_z_file(monkeypatch, tmp_path):
+    """Ориентиры ищутся по каталогу: имён файлов Модели Z в коде быть не должно.
+
+    Сторож `test_no_module_hardcodes_a_model_z_file_name` поймал первую редакцию
+    этой функции — она перечисляла книги поимённо, и на чужом кейсе (п. 4.3 ТЗ)
+    ориентир молча исчез бы.
+    """
     from scripts import export_rows
 
-    monkeypatch.setattr(export_rows, "REFERENCE_FILES",
-                        (("OPM Flow", tmp_path / "нет-такого.xlsx"),))
+    monkeypatch.setattr(export_rows, "REFERENCE_DIR", tmp_path)
     assert export_rows.reference_oil_kt() == []
+
+    (tmp_path / "чужая книга.txt").write_text("не раскладка", encoding="utf-8")
+    assert export_rows.reference_oil_kt() == []
+
+
+def test_export_rows_survives_an_unreadable_reference(monkeypatch, tmp_path, capsys):
+    """Нечитаемая книга в каталоге печатает строку, а не роняет выгрузку."""
+    from scripts import export_rows
+
+    (tmp_path / "битая.csv").write_text("не тот формат вовсе", encoding="utf-8")
+    monkeypatch.setattr(export_rows, "REFERENCE_DIR", tmp_path)
+
+    assert export_rows.reference_oil_kt() == []
+    assert "битая.csv" in capsys.readouterr().err
 
 
 def test_export_rows_says_whether_the_run_obeys_our_own_water_rule(tmp_path, monkeypatch,
