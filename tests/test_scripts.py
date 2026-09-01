@@ -1221,3 +1221,41 @@ def test_rehearsal_runs_on_the_model_and_leaves_no_violation(tmp_path):
     code = rehearse_case.main(["--config", str(config), "--rows", str(rows)])
 
     assert code == 0, "после срезки осталось нарушенное условие — см. вывод"
+# ── замер ускорения прогноза (задача 8 плана КТ-2) ───────────────────────────
+
+def test_forecast_speed_takes_the_median_of_repeats():
+    """Медиана, а не первый прогон: первый вызов несёт прогрев и ввод-вывод."""
+    from scripts import measure_forecast_speed
+
+    calls = []
+
+    def predict(steps):
+        calls.append(steps)
+        return [{"row": 1}] * 7
+
+    seconds, rows = measure_forecast_speed.measure(predict, ["шаг"], repeats=3)
+
+    assert len(calls) == 3
+    assert rows == 7
+    assert seconds >= 0.0
+
+
+def test_forecast_speed_prints_thousands_in_russian():
+    """«8 956 раз», а не «8,956 раз» — запятая в русском тексте читается как дробь."""
+    from scripts import measure_forecast_speed
+
+    assert measure_forecast_speed._ru(8956.4) == "8 956"
+    assert measure_forecast_speed._ru(12.0) == "12"
+
+
+def test_forecast_speed_runs_on_the_model(tmp_path):
+    """Сквозной прогон замера на Модели Z: без артефакта меряется один бейзлайн."""
+    rows = ROOT / "runs" / "base" / "rows.csv"
+    if not rows.is_file():
+        pytest.skip("нет выгрузки runs/base/rows.csv — мерить не на чем")
+
+    from scripts import measure_forecast_speed
+
+    code = measure_forecast_speed.main(["--rows", str(rows), "--repeats", "1"])
+
+    assert code == 0
