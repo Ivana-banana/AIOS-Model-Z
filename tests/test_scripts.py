@@ -286,6 +286,35 @@ def test_export_rows_labels_two_different_totals_blocks(tmp_path, monkeypatch, c
     assert printed.count("закачка") >= 2, "закачки не было в блоке ЧДД вовсе"
 
 
+def test_export_rows_takes_the_oil_benchmark_from_published_references():
+    """До 01.09 ориентиром стоял литерал 4771 тыс. т — число чужой оптимизации.
+
+    Оно приехало из файла организаторов с суффиксом `OPTIMIZED`, то есть из
+    другого управления, и печаталось рядом с нашей историей как «расхождение с
+    ориентиром 5,0 %». Теперь ориентиры читаются из их же опубликованных
+    раскладок базового сценария, и их два — по одному на симулятор.
+    """
+    from aios import reference
+    from scripts import export_rows
+
+    marks = dict(export_rows.reference_oil_kt())
+
+    assert set(marks) == {"OPM Flow", "тНавигатор"}
+    opm = reference.load(export_rows.REFERENCE_FILES[0][1])
+    assert abs(marks["OPM Flow"] - opm.total("Добыча нефти")) < 1e-9
+    assert abs(marks["OPM Flow"] - 5011.55) < 0.01
+    assert abs(marks["тНавигатор"] - 5036.68) < 0.01
+
+
+def test_export_rows_survives_a_missing_reference(monkeypatch, tmp_path):
+    """Справочный ориентир не имеет права ронять выгрузку: без файла — без строки."""
+    from scripts import export_rows
+
+    monkeypatch.setattr(export_rows, "REFERENCE_FILES",
+                        (("OPM Flow", tmp_path / "нет-такого.xlsx"),))
+    assert export_rows.reference_oil_kt() == []
+
+
 def test_export_rows_says_whether_the_run_obeys_our_own_water_rule(tmp_path, monkeypatch,
                                                                     capsys):
     """Сдаваемый сценарий собран тупым бейзлайном и правило по воде не проходил.

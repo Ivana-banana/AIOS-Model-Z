@@ -24,14 +24,38 @@ from aios import (  # noqa: E402
     balance,
     economics,
     pvt,
+    reference,
     summary,
 )
 from aios import config as config_module  # noqa: E402
 
-#: Ориентир организаторов по накопленной нефти за историю, тыс. т. Их число из
-#: разбора задачи; расхождение больше пары процентов означает, что мы посчитали
-#: не ту модель, а не что мы её улучшили.
-REFERENCE_OIL_KT = 4771.0
+#: Опубликованные раскладки организаторов по базовому сценарию. Накопленная нефть
+#: берётся из них, а не из литерала: стоявшее здесь до 01.09 число 4771 тыс. т
+#: пришло из их файла с суффиксом `OPTIMIZED`, то есть из другого управления, и
+#: сравнение нашей истории с чужой оптимизацией измеряло разницу сценариев, а не
+#: разрыв численных схем (Р-120, `docs/report.md`, раздел 1).
+REFERENCE_FILES = (
+    ("OPM Flow", ROOT / "docs" / "reference" / "Расчет ЧДД через OPM Flow Model_Z.xlsx"),
+    ("тНавигатор", ROOT / "docs" / "reference" / "Расчет ЧДД через тНавигатор Model_Z.csv"),
+)
+
+
+def reference_oil_kt() -> list[tuple[str, float]]:
+    """Накопленная нефть базового сценария по раскладкам организаторов, тыс. т.
+
+    Справочная величина: сравнивать с ней имеет смысл только исторический прогон.
+    Отсутствие или нечитаемость файла останавливать выгрузку не должны — тогда
+    ориентир просто не печатается.
+    """
+    found: list[tuple[str, float]] = []
+    for name, path in REFERENCE_FILES:
+        if not path.is_file():
+            continue
+        try:
+            found.append((name, reference.load(path).total("Добыча нефти")))
+        except (OSError, KeyError, ValueError) as error:
+            print(f"ориентир {name} не прочитан: {error}", file=sys.stderr)
+    return found
 
 
 def water_notes(rows: list[dict[str, object]], config) -> list[str]:
@@ -107,8 +131,12 @@ def main(argv: list[str] | None = None) -> int:
     # назывались просто «нефть», числа за разные периоды уже дважды попадали в
     # одну строку журнала.
     print(f"--- итоги по всей выгрузке ({dates[0]} — {dates[-1]}) ---")
-    print(f"нефть:     {oil_kt:11.1f} тыс. т   ориентир организаторов {REFERENCE_OIL_KT:.0f} тыс. т "
-          f"({100.0 * (oil_kt - REFERENCE_OIL_KT) / REFERENCE_OIL_KT:+.1f} %)")
+    marks = "; ".join(
+        f"{name} {value:.1f} ({100.0 * (oil_kt - value) / value:+.2f} %)"
+        for name, value in reference_oil_kt()
+    )
+    print(f"нефть:     {oil_kt:11.1f} тыс. т"
+          + (f"   базовый сценарий организаторов: {marks}" if marks else ""))
     print(f"жидкость:  {liquid_kt:11.1f} тыс. т")
     print(f"закачка:   {injection_km3:11.1f} тыс. м3")
 
