@@ -1363,3 +1363,23 @@ def test_horizon_volume_is_spread_over_years_in_proportion(norms):
 
     assert rates == [pytest.approx(50.0), pytest.approx(50.0)], "оба года срезаны поровну"
     assert any("объём отбора за горизонт" in decision.resource for decision in decisions)
+def test_holding_a_regime_never_lifts_the_field_over_its_limit(norms):
+    """Удержание возвращает прежнюю уставку, а прежняя бывает выше нынешней.
+
+    Ревизия 02.09: когда удержание стояло после срезок, оно поднимало скважину
+    поверх объектного предела там, где предел держался сам собой и срезки не было
+    вовсе — а перепроверять его было уже некому. Теперь удержание идёт до срезок.
+    """
+    steps = [
+        ScheduleStep(date(2027, 1, 1),
+                     (prod("A", 100.0), ProducerControl("B", "SHUT", "LRAT", None, 50.0)), ()),
+        ScheduleStep(date(2027, 2, 1), (prod("A", 10.0), prod("B", 90.0)), ()),
+    ]
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_liquid_m3_per_day=100.0, min_regime_months=6)
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+    february = sum(control.liquid_rate or 0.0 for control in result[1].producers
+                   if control.status == "OPEN")
+
+    assert february <= 100.0

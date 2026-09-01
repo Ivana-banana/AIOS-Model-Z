@@ -350,7 +350,8 @@ class Limits:
     Правило применяется **к предложениям цикла**, а не к срезкам ограничений: если
     объектный предел требует срезать режим раньше срока, ограничение важнее — иначе
     удержание режима заставляло бы нарушать допустимость (та же развилка, что у
-    квоты, Р-139).
+    квоты, Р-139). Обеспечивается это порядком: удержание стоит до всех срезок, и
+    что оно вернуло, то пределы и приведут.
     """
 
     max_events_per_month: int | None = None
@@ -414,6 +415,16 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # все пределы объекта, группы и фонда считают не тот фонд
     result = expand_deltas(steps)
     decisions: list[Allocation] = []
+
+    # Удержание режима идёт **до** срезок, а не после. Оно возвращает скважине
+    # прежнюю уставку, и прежняя может быть выше нынешней: после всех пределов
+    # такой возврат ломал объектный предел там, где он держался сам собой, без
+    # единой срезки (ревизия 02.09). До срезок этого не случается — что удержание
+    # вернуло, то пределы и приведут, а «ограничение важнее длительности режима»
+    # остаётся верным по построению.
+    if limits.min_regime_months is not None:
+        result, held = _hold_regimes(result, limits.min_regime_months, protected=set())
+        decisions.extend(held)
 
     if limits.water_balance_rule not in ("produced_water", "compensation", "external_water"):
         raise ValueError(
@@ -552,11 +563,6 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     if limits.min_producer_rate_m3_per_day is not None:
         result, small = _shut_below_minimum(result, limits.min_producer_rate_m3_per_day)
         decisions.extend(small)
-
-    if limits.min_regime_months is not None:
-        result, held = _hold_regimes(result, limits.min_regime_months,
-                                     protected=_changed_wells(result, expand_deltas(steps)))
-        decisions.extend(held)
 
     if limits.max_events_per_month is not None or limits.max_events_per_year is not None:
         result, events = _fit_events_to_quota(
@@ -1429,24 +1435,6 @@ def _shut_below_minimum(steps: list[ScheduleStep],
                                              None, control.bhp))
         result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
     return result, decisions
-
-
-def _changed_wells(result: list[ScheduleStep],
-                   original: list[ScheduleStep]) -> set[tuple[str, Any]]:
-    """Скважино-месяцы, где уставку изменил сам планировщик, а не цикл.
-
-    Их удержание режима не трогает: срезка ограничения важнее длительности режима.
-    """
-    changed: set[tuple[str, Any]] = set()
-    for fixed, before in zip(result, original, strict=True):
-        was = {control.well: control.liquid_rate for control in before.producers}
-        was.update({control.well: control.rate for control in before.injectors})
-        now = {control.well: control.liquid_rate for control in fixed.producers}
-        now.update({control.well: control.rate for control in fixed.injectors})
-        for well, rate in now.items():
-            if was.get(well) != rate:
-                changed.add((well, fixed.date))
-    return changed
 
 
 def _hold_regimes(steps: list[ScheduleStep], months: int,
