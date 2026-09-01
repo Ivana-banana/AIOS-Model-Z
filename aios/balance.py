@@ -148,7 +148,7 @@ def days_of(stamps: set[str]) -> float:
 
 
 def problems(rows: list[dict[str, Any]], fluids: Fluids | None = None,
-             tolerance: float = 1.05) -> list[str]:
+             tolerance: float = 1.05, floor: float | None = None) -> list[str]:
     """Нарушения баланса воды.
 
     Проверка накопительная, а не помесячная: воду можно копить в системе
@@ -156,6 +156,9 @@ def problems(rows: list[dict[str, Any]], fluids: Fluids | None = None,
     ничего не значит. Значение имеет накопленный итог — за ним источника уже нет.
 
     `tolerance` — допуск на неучтённые потери и на упрощение с плотностями.
+
+    `floor` — нижняя граница того же отношения, когда кейс задаёт коридор, а не
+    один потолок. None — снизу не проверяем.
     """
     over: list[str] = []
     produced = 0.0
@@ -177,6 +180,12 @@ def problems(rows: list[dict[str, Any]], fluids: Fluids | None = None,
                 f"{produced:,.0f} м³ на {(injected / produced - 1) * 100:.0f}% — "
                 f"дополнительной воды на объекте нет"
             )
+        elif floor is not None and injected < produced * floor:
+            over.append(
+                f"{year.year}: накопленная закачка {injected:,.0f} м³ составляет "
+                f"{injected / produced * 100:.0f}% добытой воды {produced:,.0f} м³ — "
+                f"ниже границы {floor * 100:.0f}%"
+            )
     return over
 
 
@@ -184,7 +193,8 @@ def compensation_problems(rows: list[dict[str, Any]],
                           fluids: Fluids | None = None,
                           ceiling: float = 1.5,
                           oil_fvf: float = 1.0,
-                          water_fvf: float = 1.0) -> list[str]:
+                          water_fvf: float = 1.0,
+                          floor: float | None = None) -> list[str]:
     """Нарушения компенсации отбора закачкой — вторая, физическая формулировка.
 
     Отличие от `problems` принципиальное, и от него зависят деньги.
@@ -210,6 +220,13 @@ def compensation_problems(rows: list[dict[str, Any]],
     отобранного нельзя»; величина взята с запасом и обсуждаема, в отличие от самой
     формулировки.
 
+    `floor` — нижняя граница той же величины. None — снизу не проверяем, и это
+    умолчание: до КТ-2 коридор был односторонним. Трекер сказала, что в тестовом
+    кейсе он будет задан жёстко с двух сторон, «примерно 0.85–1.15 условно»
+    (`docs/kt2-feedback-2026-08-31.md`). Нижняя граница физически не менее важна
+    верхней: недокомпенсация роняет пластовое давление, и потерянную энергию
+    пласта не вернуть последующей закачкой.
+
     Какую из двух проверок применять на сдаче — открытый вопрос к организаторам
     (`BLOCKED.md`, п. 3). Обе доступны намеренно: подменять одну другой молча
     значит изменить ЧДД без решения человека.
@@ -233,6 +250,12 @@ def compensation_problems(rows: list[dict[str, Any]],
                 f"{year.year}: накопленная закачка {injected:,.0f} м³ возмещает отобранный "
                 f"объём {withdrawn:,.0f} м³ на {injected / withdrawn * 100:.0f}% — "
                 f"выше предела {ceiling * 100:.0f}%"
+            )
+        elif floor is not None and injected < withdrawn * floor:
+            over.append(
+                f"{year.year}: накопленная закачка {injected:,.0f} м³ возмещает отобранный "
+                f"объём {withdrawn:,.0f} м³ на {injected / withdrawn * 100:.0f}% — "
+                f"ниже границы {floor * 100:.0f}%"
             )
     return over
 

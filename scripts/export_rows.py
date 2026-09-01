@@ -82,16 +82,29 @@ def water_notes(rows: list[dict[str, object]], config) -> list[str]:
     rule = limits.water_balance_rule
     if rule == "compensation":
         found = balance.compensation_problems(rows, fluids=config.fluids,
-                                              ceiling=limits.water_tolerance)
+                                              ceiling=limits.water_tolerance,
+                                              floor=limits.water_tolerance_min)
     elif rule == "produced_water":
         found = balance.problems(rows, fluids=config.fluids,
-                                 tolerance=limits.water_tolerance)
+                                 tolerance=limits.water_tolerance,
+                                 floor=limits.water_tolerance_min)
     elif rule == "external_water":
         found = balance.external_water_problems(
             rows, fluids=config.fluids,
             limit_m3_per_day=limits.max_external_water_m3_per_day)
     else:
         return [f"неизвестное правило {rule!r} — проверка не делалась"]
+
+    # Источник проверяется отдельно от правила и при любом правиле: норма
+    # («сколько закачивать») и физика («откуда брать воду») — разные вопросы, и
+    # заявка отвечает на оба. На Модели Z это не формальность: 60,8 % закачки за
+    # историю — вода со стороны, и правило compensation про неё не знает ничего.
+    if rule != "external_water" and limits.max_external_water_m3_per_day is not None:
+        source = balance.external_water_problems(
+            rows, fluids=config.fluids,
+            limit_m3_per_day=limits.max_external_water_m3_per_day)
+        found = found + [f"источник: {line}" for line in source]
+
     return found or ["нарушений нет"]
 
 
@@ -152,7 +165,11 @@ def main(argv: list[str] | None = None) -> int:
               "прогон недействителен", file=sys.stderr)
         return 1
 
-    problems = summary.sanity_problems(rows)
+    problems = summary.sanity_problems(
+        rows,
+        min_reservoir_pressure=config.limits.min_reservoir_pressure_atm,
+        max_reservoir_pressure=config.limits.max_reservoir_pressure_atm,
+    )
     print()
     print(f"--- санити-чеки: {'нарушений нет' if not problems else f'нарушений {len(problems)}'} ---")
     for line in problems[:15]:

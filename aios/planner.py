@@ -86,9 +86,18 @@ class Limits:
     max_external_water_m3_per_day: float | None = None
     """Мощность стороннего водоисточника, м³/сут. None — число неизвестно.
 
-    Нужна только правилу `external_water`. Значение по умолчанию для конкретного
-    объекта выводится из его же истории — `aios.balance.historic_external_water`
-    даёт максимум, который источник заведомо выдавал.
+    Действует **при любом правиле**, а не только при `external_water`: норма
+    («сколько закачивать относительно отбора») и физика («откуда взять воду») —
+    разные ограничения, и кейс задаёт оба сразу. Трекер на КТ-2 назвала второе
+    «докачкой дополнительного объёма воды в размере N»
+    (`docs/kt2-feedback-2026-08-31.md`, запись 00:16).
+
+    До 01.09 ключ жил внутри одного правила и в рабочей конфигурации
+    (`compensation`) не работал вовсе.
+
+    Значение по умолчанию для конкретного объекта выводится из его же истории —
+    `aios.balance.historic_external_water` даёт максимум, который источник
+    заведомо выдавал.
     """
 
     water_balance_rule: str = "produced_water"
@@ -112,11 +121,30 @@ class Limits:
     """
 
     water_tolerance: float = 1.0
-    """Во сколько раз закачка может превышать базу правила.
+    """Во сколько раз закачка может превышать базу правила — **верхняя** граница.
 
     Для `produced_water` 1.0 означает «закачиваем ровно столько, сколько подняли»;
     для `compensation` это потолок компенсации — 1.3 держит нас не выше
     исторической компенсации объекта (1,291).
+    """
+
+    water_tolerance_min: float | None = None
+    """Нижняя граница того же отношения. None — снизу закачка не ограничена.
+
+    Вместе с `water_tolerance` задаёт **коридор**: трекер на КТ-2 сказала, что в
+    тестовом кейсе он будет задан жёстко, «примерно 0.85–1.15 условно»
+    (`docs/kt2-feedback-2026-08-31.md`, запись 00:00). До появления кейса ключ
+    не задан ни в одном рабочем конфиге, и это осознанно: нижняя граница,
+    включённая умолчанием, изменила бы заявляемое число.
+
+    Смысл границы зависит от правила ровно так же, как у верхней: база — та же
+    (отобранная пустотность у `compensation`, добытая вода у `produced_water`).
+    Правило `external_water` ограничивает **источник**, а не отношение объёмов,
+    и нижней границы в этих терминах не имеет: сочетание отвергается явно, а не
+    молча игнорируется.
+
+    Коридор Модели Z полезно знать заранее: историческая компенсация объекта —
+    1,291, то есть при коридоре 0.85–1.15 **вся история выше верхней границы**.
     """
 
     #: --- ручки под валидационный кейс (Р-110) ---------------------------------
@@ -139,6 +167,27 @@ class Limits:
 
     max_injector_bhp_atm: float | None = None
     """Верхний предел давления нагнетания, атм. None — берётся из дека (300)."""
+
+    min_reservoir_pressure_atm: float | None = None
+    """Нижний предел **пластового** давления у добывающей, атм. None — не проверяем.
+
+    Не путать с `min_producer_bhp_atm`: то — забойное, наша уставка, она уезжает
+    в `WCONPROD` сдаваемого файла и её планировщик правит. Пластовое давление
+    (`WBP9`, приезжает в колонке `THP`) — **отклик пласта**, а не уставка:
+    расписанием его не задать, оно получается расчётом. Поэтому предел здесь
+    работает проверкой по факту, а не срезкой: нарушение видно в
+    `aios.summary.sanity_problems` и останавливает выгрузку.
+
+    Трекер назвала это отдельным пунктом на КТ-2 и добавила, что «многие
+    забывают» (`docs/kt2-feedback-2026-08-31.md`, запись 00:35).
+    """
+
+    max_reservoir_pressure_atm: float | None = None
+    """Верхний предел пластового давления у нагнетательной, атм. None — не проверяем.
+
+    Физический смысл верхней границы — не перейти давление гидроразрыва:
+    закачка выше него уводит воду в трещину и в соседа, а не вытесняет нефть.
+    """
 
     max_well_injection_m3_per_day: float | None = None
     """Потолок приёмистости **одной** скважины. None — предела нет.
@@ -252,7 +301,11 @@ class Limits:
 
 @dataclass(frozen=True)
 class Allocation:
-    """Одно решение планировщика: кого и почему урезали."""
+    """Одно решение планировщика: кого и почему изменили.
+
+    Чаще всего это урезание, но не всегда: добор до нижней границы коридора
+    баланса воды даёт `after > before` и, соответственно, отрицательный `cut`.
+    """
 
     well: str
     resource: str
@@ -292,17 +345,34 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             "допустимы 'produced_water', 'compensation' и 'external_water'"
         )
 
+    if (limits.water_tolerance_min is not None
+            and limits.water_balance_rule == "external_water"):
+        raise ValueError(
+            "water_tolerance_min несовместим с правилом external_water: оно "
+            "ограничивает источник воды, а не отношение объёмов, и нижней границы "
+            "в этих терминах не имеет"
+        )
+
+    if (limits.water_tolerance_min is not None
+            and limits.water_tolerance_min > limits.water_tolerance):
+        raise ValueError(
+            f"пустой коридор баланса воды: нижняя граница {limits.water_tolerance_min:.10g} "
+            f"выше верхней {limits.water_tolerance:.10g}"
+        )
+
     if limits.enforce_water_balance:
-        if limits.water_balance_rule == "compensation":
-            result, water = _fit_injection_to_compensation(result, forecast, fluids,
-                                                           limits.water_tolerance)
-        elif limits.water_balance_rule == "external_water":
+        if limits.water_balance_rule == "external_water":
             result, water = _fit_injection_to_external_water(
                 result, forecast, fluids, limits.max_external_water_m3_per_day
             )
         else:
-            result, water = _fit_injection_to_available_water(result, forecast, fluids,
-                                                              limits.water_tolerance)
+            result, water = _fit_injection_to_water_corridor(
+                result, forecast, fluids,
+                rule=limits.water_balance_rule,
+                ceiling=limits.water_tolerance,
+                floor=limits.water_tolerance_min,
+                source_m3_per_day=limits.max_external_water_m3_per_day,
+            )
         decisions.extend(water)
 
     if limits.max_field_liquid_m3_per_day is not None:
@@ -1191,34 +1261,16 @@ def explain(decisions: list[Allocation]) -> str:
     lines = []
     for resource, items in by_resource.items():
         total = sum(item.cut for item in items)
-        lines.append(f"{resource}: урезано {len(items)} скважин, суммарно {total:,.0f} м³/сут")
-        lines.extend(f"  {item}" for item in sorted(items, key=lambda x: -x.cut)[:10])
+        # Знак важен: с появлением нижней границы коридора планировщик умеет не
+        # только резать, но и добирать, и «урезано −120 м³/сут» читалось бы как
+        # опечатка, а не как добор до нормы.
+        verb = "урезано" if total >= 0 else "добрано"
+        lines.append(
+            f"{resource}: {verb} {len(items)} скважин, суммарно {abs(total):,.0f} м³/сут"
+        )
+        lines.extend(f"  {item}" for item in sorted(items, key=lambda x: -abs(x.cut))[:10])
         lines.append("")
     return "\n".join(lines).rstrip()
-
-
-def _fit_injection_to_available_water(steps: list[ScheduleStep],
-                                      forecast: list[dict[str, Any]],
-                                      fluids: Fluids,
-                                      tolerance: float) -> tuple[list[ScheduleStep], list[Allocation]]:
-    """Ужать закачку до объёма добытой воды."""
-    produced = 0.0
-    planned = 0.0
-    for row in forecast:
-        oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
-        if liquid_t > 0 and 0 <= oil_t <= liquid_t:
-            produced += (liquid_t - oil_t) * 1000.0 / fluids.water_density
-        planned += max(row["WWIT_Diff"], 0.0)
-
-    allowed = produced * tolerance
-    if planned <= allowed or planned <= 0:
-        return steps, []
-
-    return _scale_injection(
-        steps, allowed / planned,
-        f"закачка {planned:,.0f} м³ превышает добытую воду "
-        f"{produced:,.0f} м³; источника сверх неё нет",
-    )
 
 
 def _fit_injection_to_external_water(
@@ -1276,45 +1328,116 @@ def _fit_injection_to_external_water(
     )
 
 
-def _fit_injection_to_compensation(steps: list[ScheduleStep],
-                                   forecast: list[dict[str, Any]],
-                                   fluids: Fluids,
-                                   ceiling: float) -> tuple[list[ScheduleStep], list[Allocation]]:
-    """Ужать закачку до компенсации отобранного объёма в пластовых условиях.
+def _fit_injection_to_water_corridor(
+    steps: list[ScheduleStep],
+    forecast: list[dict[str, Any]],
+    fluids: Fluids,
+    *,
+    rule: str,
+    ceiling: float,
+    floor: float | None,
+    source_m3_per_day: float | None,
+) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Привести закачку к коридору нормы и к тому, сколько воды физически есть.
 
-    База — нефть вместе с водой, а не одна вода: закачка при заводнении возмещает
-    отобранную пустотность, иначе поддерживать пластовое давление было бы нечем.
-    Объёмные коэффициенты Модели Z измерены по деку (`Bв = 1,0000`,
-    `Bн` = 0,9862…1,0078), то есть поверхностные объёмы здесь практически равны
-    пластовым; на другом кейсе это нужно будет пересчитать (Р-61).
+    Один шаг вместо трёх, и это не стилистика. Каждая срезка здесь **умножает**
+    текущие расходы, а базу берёт из прогноза — того самого, который срезки уже
+    не отражают. Две срезки подряд поэтому дают произведение множителей, то есть
+    «двойную экономию», которой в пласте нет; ровно об этом предупреждает
+    комментарий о порядке в `enforce`. Сложить в одном шаге срезку сверху, добор
+    снизу и предел источника — единственный способ не считать одно и то же
+    дважды.
 
-    Ужимаем пропорционально по всем нагнетательным — по той же причине, что и в
-    `_fit_injection_to_available_water`: чья закачка полезнее, тривиальный
-    суррогат сказать не может.
+    Три границы, из которых собирается итог:
+
+    * **верхняя граница нормы** — `база × ceiling`. База зависит от правила:
+      отобранная пустотность (нефть вместе с водой) у `compensation`, добытая
+      вода у `produced_water`;
+    * **нижняя граница нормы** — `база × floor`, если коридор двусторонний;
+    * **физика источника** — попутная вода плюс `source_m3_per_day × сутки`.
+
+    Приоритет между ними один и он не обсуждается: **воды, которой нет, никакая
+    норма не создаёт.** Поэтому предел источника режет и верхнюю границу, и
+    добор: если водозабора не хватает на нижнюю границу коридора, расписание
+    останется ниже нормы, и это правильный исход, а не ошибка. Назвать
+    несоответствие — работа аудита по факту
+    (`aios.balance.compensation_problems`, `aios.balance.external_water_problems`).
+
+    Правило `external_water` сюда не попадает: оно целиком про источник и
+    обслуживается `_fit_injection_to_external_water`.
     """
-    withdrawn = 0.0
+    base = 0.0
+    produced_water = 0.0
     planned = 0.0
+    stamps: set[str] = set()
     for row in forecast:
         oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
         if liquid_t > 0 and 0 <= oil_t <= liquid_t:
-            withdrawn += oil_t * 1000.0 / fluids.oil_density
-            withdrawn += (liquid_t - oil_t) * 1000.0 / fluids.water_density
+            water_m3 = (liquid_t - oil_t) * 1000.0 / fluids.water_density
+            produced_water += water_m3
+            base += water_m3
+            if rule == "compensation":
+                base += oil_t * 1000.0 / fluids.oil_density
         planned += max(row["WWIT_Diff"], 0.0)
+        stamp = str(row.get("DATA", ""))[:7]
+        if len(stamp) == 7:
+            stamps.add(stamp)
 
-    allowed = withdrawn * ceiling
-    if planned <= allowed or planned <= 0:
+    if planned <= 0 or base <= 0:
+        return steps, []
+
+    allowed = base * ceiling
+    reason = (
+        f"закачка {planned:,.0f} м³ даёт компенсацию {planned / base:.2f} "
+        f"от отобранных {base:,.0f} м³ при потолке {ceiling:.2f}"
+        if rule == "compensation" else
+        f"закачка {planned:,.0f} м³ превышает добытую воду "
+        f"{base:,.0f} м³; источника сверх неё нет"
+    )
+
+    if source_m3_per_day is not None:
+        if not stamps:
+            # Тихо подставить 365 нельзя: на длинном горизонте это занизило бы
+            # доступную воду в разы и срезало бы закачку без всякой причины.
+            raise ValueError(
+                "лимиту стороннего источника нужна колонка DATA в прогнозе: он "
+                "задан в м³/сут, и без календаря его не с чем сравнивать"
+            )
+        days = balance.days_of(stamps)
+        by_source = produced_water + source_m3_per_day * days
+        if by_source < allowed:
+            allowed = by_source
+            reason = (
+                f"закачке нужно {(planned - produced_water) / days:,.0f} м³/сут воды "
+                f"со стороны при мощности источника {source_m3_per_day:,.10g} м³/сут"
+            )
+
+    if planned > allowed:
+        return _scale_injection(steps, allowed / planned, reason)
+
+    if floor is None:
+        return steps, []
+
+    # Добор ограничен той же доступной водой: `allowed` уже её учитывает.
+    required = min(base * floor, allowed)
+    if planned >= required:
         return steps, []
 
     return _scale_injection(
-        steps, allowed / planned,
-        f"закачка {planned:,.0f} м³ даёт компенсацию {planned / withdrawn:.2f} "
-        f"от отобранных {withdrawn:,.0f} м³ при потолке {ceiling:.2f}",
+        steps, required / planned,
+        f"закачка {planned:,.0f} м³ даёт {planned / base:.2f} от базы правила "
+        f"{base:,.0f} м³ — ниже границы коридора {floor:.2f}",
     )
 
 
 def _scale_injection(steps: list[ScheduleStep], factor: float,
                      reason: str) -> tuple[list[ScheduleStep], list[Allocation]]:
-    """Пропорционально ужать закачку всех открытых нагнетательных."""
+    """Пропорционально изменить закачку всех открытых нагнетательных.
+
+    Множитель меньше единицы режет, больше — добирает до нижней границы коридора.
+    `Allocation` в обоих случаях один и тот же: он описывает изменение, а не
+    только урезание.
+    """
     decisions: list[Allocation] = []
     seen: set[str] = set()
     result: list[ScheduleStep] = []

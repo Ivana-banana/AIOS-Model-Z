@@ -160,6 +160,42 @@ def test_the_ceiling_is_a_parameter_not_a_constant():
     assert balance.compensation_problems(rows, ceiling=1.1)
 
 
+def test_without_a_floor_undercompensation_is_not_reported():
+    """Умолчание обязано остаться односторонним: иначе заявляемое число поменялось бы."""
+    rows = _rows(oil_t=100_000, water_t=100_000, injected_m3=10_000)
+    assert not balance.compensation_problems(rows)
+
+
+def test_injection_below_the_floor_is_reported():
+    """Коридор кейса двусторонний — недокомпенсация такое же нарушение, как перекачка."""
+    rows = _rows(oil_t=100_000, water_t=100_000, injected_m3=10_000)
+    found = balance.compensation_problems(rows, floor=0.85)
+    assert found and "ниже границы" in found[0]
+
+
+def test_injection_inside_the_corridor_passes_both_bounds():
+    rows = _rows(oil_t=100_000, water_t=100_000, injected_m3=220_000)
+    assert not balance.compensation_problems(rows, ceiling=1.15, floor=0.85)
+
+
+def test_the_historical_scenario_sits_above_a_085_115_corridor():
+    """Историческая компенсация Модели Z — 1,291, то есть вся история выше 1.15.
+
+    Это не абстракция: если кейс придёт с таким коридором, базовый сценарий
+    объекта в него не попадает, и знать это нужно до кейса, а не после.
+    """
+    rows = _rows(oil_t=3_656_800, water_t=9_561_600 - 3_656_800, injected_m3=11_671_000)
+    found = balance.compensation_problems(rows, ceiling=1.15, floor=0.85)
+    assert found and "выше предела" in found[0]
+
+
+def test_produced_water_rule_has_the_same_floor():
+    rows = _rows(oil_t=100_000, water_t=1_000_000, injected_m3=100_000)
+    assert not balance.problems(rows)
+    found = balance.problems(rows, floor=0.85)
+    assert found and "ниже границы" in found[0]
+
+
 def test_volume_factors_change_the_withdrawn_volume():
     """На другом объекте Bн заметно больше единицы, и это меняет вывод."""
     rows = _rows(oil_t=1_000_000, water_t=0.0, injected_m3=1_400_000)

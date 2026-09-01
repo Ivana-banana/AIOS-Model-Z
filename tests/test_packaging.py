@@ -236,6 +236,33 @@ def test_the_licence_boundary_names_every_top_level_entry():
         "в LICENSE не отнесены ни к покрытым, ни к исключённым: " + ", ".join(missing))
 
 
+def test_service_archives_stay_out_of_tracking():
+    """П. 8.3 ТЗ: «не содержать избыточных материалов, затрудняющих проверку».
+
+    `data.7z` (49 МБ) и `to-machine-b.7z` (3,4 МБ) — передача между нашими же
+    машинами, к решению отношения не имеющая. Оба были в git до 01.09: правило
+    `/data.7z` в `.gitignore` появилось **после** коммита файла, а на
+    отслеживаемые файлы `.gitignore` не действует — то есть само по себе правило
+    возврат не остановит, остановит этот тест (Р-131).
+    """
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    listed = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True,
+                            text=True, encoding="utf-8", check=True).stdout.split()
+
+    archives = sorted(name for name in listed if name.endswith(".7z"))
+
+    assert not archives, (
+        "служебные архивы вернулись в отслеживание: " + ", ".join(archives) +
+        " — снимать через git rm --cached, файл на диске остаётся"
+    )
+    for name in ("/data.7z", "/to-machine-b.7z"):
+        assert name in (root / ".gitignore").read_text(encoding="utf-8"), (
+            f"{name} не закрыт правилом .gitignore"
+        )
+
+
 def test_readme_does_not_expand_mit_beyond_the_licence_boundary():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
