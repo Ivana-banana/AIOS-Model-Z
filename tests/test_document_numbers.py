@@ -304,6 +304,26 @@ def test_the_letter_no_longer_asks_the_question_answered_at_the_checkpoint():
     assert "КТ-2, 31.08.2026, трекер, запись 06:39" in decisions
 
 
+def test_the_llm_rationale_answers_the_question_the_tracker_asked():
+    """Требование ТЗ п. 3.1 — обосновать причину использования, а не только вызвать.
+
+    Трекер сформулировала это отдельным пунктом (КТ-2, запись 03:15). Раздел
+    обязан отвечать на три вещи сразу: зачем модель здесь, что она даёт сверх
+    шаблона **числом**, и почему ей не доверено производить числа и принимать
+    решения. Без последней части обоснование превращается в рекламу слоя.
+    """
+    rationale = _read("docs/llm-rationale.md")
+
+    assert "ASR" in rationale and "0,750" in rationale
+    assert "не принимает его" in rationale and "производит чисел" in rationale
+    assert "template-rejected" in rationale
+    assert "16.08" in rationale, "история про обоснование под неверный результат"
+    assert "Границы: чего это обоснование не доказывает" in rationale
+
+    assert "llm-rationale.md" in _read("README.md"), "раздел не найти из README"
+    assert "llm-rationale.md" in _read("docs/report.md"), "отчёт на него не ссылается"
+
+
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
