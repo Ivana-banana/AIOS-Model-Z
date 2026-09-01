@@ -304,6 +304,20 @@ class Limits:
     календарный год, а не к каждому месяцу.
     """
 
+    min_regime_months: int | None = None
+    """Сколько месяцев режим скважины нельзя менять после изменения. None — можно.
+
+    Вторая половина п. 25 чек-листа приёмки: «минимальная длительность режима».
+    Смена уставки мероприятием не считается (методика платит за пуск, остановку и
+    перевод), поэтому квота мероприятий этой формы не выражает: расписание может
+    дёргать дебит каждый месяц, не потратив ни одного мероприятия.
+
+    Правило применяется **к предложениям цикла**, а не к срезкам ограничений: если
+    объектный предел требует срезать режим раньше срока, ограничение важнее — иначе
+    удержание режима заставляло бы нарушать допустимость (та же развилка, что у
+    квоты, Р-139).
+    """
+
     max_events_per_month: int | None = None
     """Максимум платных мероприятий за календарный месяц. None — предела нет.
 
@@ -480,6 +494,11 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # Месячная квота идёт первой: она строже по локальности, и год, приведённый
     # ею, годовой квоте резать уже нечего. Обратный порядок оставил бы месяц с
     # двенадцатью переключениями внутри годового лимита двенадцать.
+    if limits.min_regime_months is not None:
+        result, held = _hold_regimes(result, limits.min_regime_months,
+                                     protected=_changed_wells(result, expand_deltas(steps)))
+        decisions.extend(held)
+
     if limits.max_events_per_month is not None:
         result, monthly_events = _fit_events_to_quota(
             result, limits.max_events_per_month,
@@ -1297,6 +1316,91 @@ def events_of(steps: list[ScheduleStep]) -> set[tuple[str, Any]]:
             if _event_kind(before.get(well, (False, False)), state) is not None:
                 events.add((well, step.date))
     return events
+
+
+def _changed_wells(result: list[ScheduleStep],
+                   original: list[ScheduleStep]) -> set[tuple[str, Any]]:
+    """Скважино-месяцы, где уставку изменил сам планировщик, а не цикл.
+
+    Их удержание режима не трогает: срезка ограничения важнее длительности режима.
+    """
+    changed: set[tuple[str, Any]] = set()
+    for fixed, before in zip(result, original, strict=True):
+        was = {control.well: control.liquid_rate for control in before.producers}
+        was.update({control.well: control.rate for control in before.injectors})
+        now = {control.well: control.liquid_rate for control in fixed.producers}
+        now.update({control.well: control.rate for control in fixed.injectors})
+        for well, rate in now.items():
+            if was.get(well) != rate:
+                changed.add((well, fixed.date))
+    return changed
+
+
+def _hold_regimes(steps: list[ScheduleStep], months: int,
+                  protected: set[tuple[str, Any]]) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Не менять режим скважины чаще, чем раз в `months` месяцев.
+
+    Изменение, пришедшее раньше срока, отменяется — скважина остаётся на прежней
+    уставке. Смена статуса (остановка, пуск, перевод) удержанию не подлежит: это
+    мероприятие, и его ограничивает квота, а не длительность режима.
+    """
+    decisions: list[Allocation] = []
+    result: list[ScheduleStep] = []
+    held_since: dict[str, int] = {}
+    current: dict[str, float | None] = {}
+
+    for index, step in enumerate(steps):
+        producers, injectors = [], []
+        for control in step.producers:
+            rate, kept = _hold_one(control.well, control.liquid_rate, control.status,
+                                   index, months, held_since, current,
+                                   (control.well, step.date) in protected)
+            if kept and rate != control.liquid_rate:
+                decisions.append(Allocation(
+                    well=control.well, resource=f"длительность режима, {step.date:%Y-%m}",
+                    before=control.liquid_rate or 0.0, after=rate or 0.0,
+                    reason=(f"режим держится {months} мес.: смена раньше срока отменена"),
+                ))
+                control = ProducerControl(control.well, control.status, control.mode,
+                                          rate, control.bhp)
+            producers.append(control)
+        for control in step.injectors:
+            rate, kept = _hold_one(control.well, control.rate, control.status,
+                                   index, months, held_since, current,
+                                   (control.well, step.date) in protected)
+            if kept and rate != control.rate:
+                decisions.append(Allocation(
+                    well=control.well, resource=f"длительность режима, {step.date:%Y-%m}",
+                    before=control.rate or 0.0, after=rate or 0.0,
+                    reason=(f"режим держится {months} мес.: смена раньше срока отменена"),
+                ))
+                control = InjectorControl(control.well, control.fluid, control.status,
+                                          control.mode, rate, control.bhp)
+            injectors.append(control)
+        result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
+    return result, decisions
+
+
+def _hold_one(well: str, asked: float | None, status: str, index: int, months: int,
+              held_since: dict[str, int], current: dict[str, float | None],
+              protected: bool) -> tuple[float | None, bool]:
+    """Какую уставку оставить скважине и было ли удержание."""
+    if status != "OPEN":
+        # смена статуса — мероприятие, а не режим: держать её нечем
+        current[well] = None
+        held_since[well] = index
+        return asked, False
+    if well not in current or current[well] is None:
+        current[well] = asked
+        held_since[well] = index
+        return asked, False
+    if asked == current[well]:
+        return asked, False
+    if protected or index - held_since[well] >= months:
+        current[well] = asked
+        held_since[well] = index
+        return asked, False
+    return current[well], True
 
 
 def _fit_events_to_quota(

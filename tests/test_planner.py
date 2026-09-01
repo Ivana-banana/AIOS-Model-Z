@@ -1287,3 +1287,44 @@ def test_monthly_event_quota_limits_a_burst_the_annual_one_allows(norms):
     assert sum(1 for state in planner.fund_states(cut)[1].values()
                if state == (False, False)) == 1, "месячная квота 1 оставляет одну"
     assert any("период 2027-02" in decision.reason for decision in decisions)
+def test_a_regime_is_held_for_the_declared_number_of_months(norms):
+    """«Минимальная длительность режима» — форма, которую квота мероприятий не выражает.
+
+    Смена уставки мероприятием не считается, поэтому расписание может дёргать
+    дебит каждый месяц, не потратив ни одной единицы квоты (п. 25 чек-листа).
+    """
+    steps = [month_step(2027, month, producers=[prod("W", rate)])
+             for month, rate in ((1, 30.0), (2, 40.0), (3, 50.0), (4, 60.0))]
+    limits = planner.Limits(enforce_water_balance=False, min_regime_months=3)
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+    rates = [control.liquid_rate for step_ in result for control in step_.producers]
+
+    assert rates == [30.0, 30.0, 30.0, 60.0], "три месяца режим держится, на четвёртый меняется"
+    assert any("длительность режима" in decision.resource for decision in decisions)
+
+
+def test_holding_a_regime_does_not_block_a_shutdown(norms):
+    """Смена статуса — мероприятие, а не режим: удержание её не касается."""
+    steps = [
+        month_step(2027, 1, producers=[prod("W", 30.0)]),
+        month_step(2027, 2, producers=[ProducerControl("W", "SHUT", "LRAT", None, 50.0)]),
+    ]
+    limits = planner.Limits(enforce_water_balance=False, min_regime_months=6)
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert [control.status for step_ in result for control in step_.producers] == ["OPEN", "SHUT"]
+
+
+def test_a_limit_cut_beats_the_regime_hold(norms):
+    """Ограничение важнее длительности: иначе удержание заставляло бы нарушать предел."""
+    steps = [month_step(2027, month, producers=[prod("W", rate)])
+             for month, rate in ((1, 30.0), (2, 30.0))]
+    limits = planner.Limits(enforce_water_balance=False, min_regime_months=6,
+                            max_field_liquid_m3_per_day=10.0)
+
+    result, _ = planner.enforce(steps, [], norms, limits, FLUIDS)
+    rates = [control.liquid_rate for step_ in result for control in step_.producers]
+
+    assert rates == [10.0, 10.0], "срезка проходит, несмотря на удержание режима"
