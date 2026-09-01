@@ -1184,3 +1184,36 @@ def test_defence_comparison_command_survives_a_narrow_locale(arguments: list[str
         "команда защиты упала на выдаче уже посчитанного:\n" + result.stderr[-600:]
     )
     assert "UnicodeEncodeError" not in result.stderr
+# ── репетиция приёмки кейса (01.09) ──────────────────────────────────────────
+
+def test_rehearsal_lists_only_declared_conditions():
+    """«Объявлено условий» считается по конфигурации, а не по числу ключей класса."""
+    from aios import planner
+    from scripts import rehearse_case
+
+    empty = rehearse_case.declared(planner.Limits(enforce_water_balance=False))
+    named = rehearse_case.declared(planner.Limits(
+        enforce_water_balance=False, max_field_liquid_m3_per_day=100.0,
+        forced_shut_wells=frozenset({"1"})))
+
+    assert empty == [], "выключенные ограничения объявленными не считаются"
+    assert set(named) == {"max_field_liquid_m3_per_day", "forced_shut_wells"}
+
+
+def test_rehearsal_runs_on_the_model_and_leaves_no_violation(tmp_path):
+    """Прогон репетиции на Модели Z: после срезки нарушений не остаётся.
+
+    Это и есть проверка, ради которой репетиция затевалась: до 01.09 два условия
+    её не проходили — предел по фазе резал от уставки вместо достигнутого дебита,
+    а ранжирование по марже вырождалось на прогнозе из CSV.
+    """
+    rows = ROOT / "runs" / "base" / "rows.csv"
+    config = ROOT / "config-rehearsal.toml"
+    if not rows.is_file():
+        pytest.skip("нет выгрузки runs/base/rows.csv — репетировать не на чем")
+
+    from scripts import rehearse_case
+
+    code = rehearse_case.main(["--config", str(config), "--rows", str(rows)])
+
+    assert code == 0, "после срезки осталось нарушенное условие — см. вывод"

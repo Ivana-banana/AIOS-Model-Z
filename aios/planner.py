@@ -282,6 +282,7 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     Возвращает исправленное расписание и список решений с обоснованием.
     """
     fluids = fluids or Fluids()
+    forecast = _with_string_wells(forecast)
     result = list(steps)
     decisions: list[Allocation] = []
 
@@ -382,6 +383,17 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     return result, decisions
 
 
+def _achieved_rates(forecast: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """Достигнутый дебит жидкости по прогнозу: `{"2007-01": {"скв": м³/сут}}`."""
+    rates: dict[str, dict[str, float]] = {}
+    for row in forecast:
+        if not counted_by_methodology(row):
+            continue
+        stamp = str(row["DATA"])[:7]
+        rates.setdefault(stamp, {})[str(row["well"])] = float(row["WLPR"] or 0.0)
+    return rates
+
+
 def _phase_by_month(forecast: list[dict[str, Any]], phase: str) -> dict[str, float]:
     """Тонны фазы за месяц по объекту: `{"2007-01": 12345.0}`.
 
@@ -424,6 +436,7 @@ def _fit_phase_to_capacity(steps: list[ScheduleStep],
         )
 
     monthly = _phase_by_month(forecast, phase)
+    reference = _achieved_rates(forecast)
     decisions: list[Allocation] = []
     reported: set[str] = set()
     result: list[ScheduleStep] = []
@@ -441,19 +454,33 @@ def _fit_phase_to_capacity(steps: list[ScheduleStep],
             continue
 
         factor = capacity_t_per_day / rate
+        achieved = reference.get(stamp, {})
         producers = []
         for control in step.producers:
             if control.status != "OPEN" or not control.liquid_rate:
                 producers.append(control)
                 continue
-            reduced = control.liquid_rate * factor
+            # Резать надо от **достигнутого** дебита, а не от уставки. Уставки
+            # Модели Z выше факта в среднем в 1,47 раза: пропорциональный срез
+            # уставки на k при уставке 45 и факте 30 не меняет отклика вовсе, и
+            # ограничение по фазе оставалось нарушенным после «успешной» срезки
+            # (найдено репетицией приёмки 01.09). Скважину без отклика в прогнозе
+            # трогать не за что — она фазы и не даёт.
+            achieved_rate = achieved.get(control.well)
+            if achieved_rate is None or achieved_rate <= 0:
+                producers.append(control)
+                continue
+            reduced = min(control.liquid_rate, achieved_rate * factor)
+            if reduced >= control.liquid_rate:
+                producers.append(control)
+                continue
             if stamp not in reported:
                 reported.add(stamp)
                 decisions.append(Allocation(
                     well=control.well, resource=f"{phase}, {stamp}",
                     before=control.liquid_rate, after=reduced,
                     reason=(f"{phase} {rate:,.1f} > мощности {capacity_t_per_day:,.1f} т/сут; "
-                            "жидкость срезана в той же доле"),
+                            "уставка опущена до той же доли от достигнутого дебита"),
                 ))
             producers.append(ProducerControl(control.well, control.status, control.mode,
                                              reduced, control.bhp))
@@ -562,6 +589,27 @@ def _fit_groups(steps: list[ScheduleStep],
 
         result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
     return result, decisions
+
+
+def _with_string_wells(forecast: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Привести имена скважин прогноза к строкам — как в расписании.
+
+    Найдено репетицией приёмки 01.09 и стоило бы дорого на кейсе. Прогноз,
+    прочитанный из `rows.csv` через pandas, отдаёт имя скважины числом (`1`, а не
+    `"1"`), а в расписании оно всегда строка. Совпадений между ними нет ни одного,
+    поэтому `value.get(control.well, 0.0)` возвращал ноль **каждой** скважине — и
+    ранжирование «режем худшую по деньгам на кубометр» молча вырождалось в порядок
+    перечисления. Срезка при этом выглядела совершенно обычной: объяснение
+    печаталось, предел соблюдался, а выбор был произвольным.
+
+    Нормализация делается один раз на входе, а не в каждой функции: разъехаться
+    заново тогда может только весь модуль сразу.
+    """
+    if not forecast:
+        return []
+    if all(isinstance(row.get("well"), str) for row in forecast):
+        return list(forecast)
+    return [row | {"well": str(row["well"])} for row in forecast]
 
 
 def _shut_reason(well: str, forced: frozenset[str],

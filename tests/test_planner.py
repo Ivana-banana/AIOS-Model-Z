@@ -612,20 +612,49 @@ def test_field_oil_limit_cuts_liquid_in_the_same_share(norms):
     """Мощность УПН выражается по нефти, и объектным пределом по жидкости не заменяется."""
     steps = [month_step(2007, 1, producers=[prod("1", 100.0)])]
     # 100 м³ нефти за месяц ≈ 91,3 т, то есть 2,94 т/сут при 31 дне
-    forecast = [produced("2007-01-01", "1", 100.0, 900.0)]
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0, rate=100.0)]
     limits = planner.Limits(enforce_water_balance=False, max_field_oil_t_per_day=1.47)
 
     result, decisions = planner.enforce(steps, forecast, norms, limits, FLUIDS)
 
     assert result[0].producers[0].liquid_rate == pytest.approx(50.0, rel=1e-2)
     assert "нефть" in decisions[0].resource
-    assert "жидкость срезана в той же доле" in decisions[0].reason
+    assert "от достигнутого" in decisions[0].reason
+
+
+def test_field_oil_limit_cuts_from_the_achieved_rate_not_from_the_setpoint(norms):
+    """Уставка выше факта: пропорциональный срез уставки отклика не меняет вовсе.
+
+    Найдено репетицией приёмки 01.09 — на Модели Z уставки выше достигнутых
+    дебитов в 1,47 раза, и после «успешной» срезки предел по нефти оставался
+    нарушенным. Резать надо до доли **достигнутого**: уставка 100 при факте 30 и
+    половинном пределе даёт 15, а не 50.
+    """
+    steps = [month_step(2007, 1, producers=[prod("1", 100.0)])]
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0, rate=30.0)]
+    limits = planner.Limits(enforce_water_balance=False, max_field_oil_t_per_day=1.47)
+
+    result, _ = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    assert result[0].producers[0].liquid_rate == pytest.approx(15.0, rel=1e-2)
+
+
+def test_a_well_without_a_response_is_left_alone_by_the_phase_limit(norms):
+    """Скважина, которой в прогнозе нет, фазы не даёт — резать её не за что."""
+    steps = [month_step(2007, 1, producers=[prod("1", 100.0), prod("новая", 80.0)])]
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0, rate=100.0)]
+    limits = planner.Limits(enforce_water_balance=False, max_field_oil_t_per_day=1.47)
+
+    result, _ = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+    rates = {control.well: control.liquid_rate for control in result[0].producers}
+
+    assert rates["новая"] == 80.0
 
 
 def test_field_water_limit_uses_liquid_minus_oil(norms):
     """Отдельной колонки воды в контракте расчётчика нет — вода это жидкость минус нефть."""
     steps = [month_step(2007, 1, producers=[prod("1", 100.0)])]
-    forecast = [produced("2007-01-01", "1", 100.0, 900.0)]
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0, rate=100.0)]
     water_t = 900.0 * FLUIDS.water_density / 1000
     limits = planner.Limits(enforce_water_balance=False,
                             max_field_water_t_per_day=water_t / 31 / 2)
@@ -731,3 +760,23 @@ def test_group_cap_without_the_group_is_refused(norms):
 
     with pytest.raises(ValueError, match="куст-7"):
         planner.enforce([month_step(2007, 1)], [], norms, limits, FLUIDS)
+def test_ranking_survives_a_forecast_read_from_csv(norms):
+    """Имя скважины из pandas — число, в расписании — строка: совпадений ноль.
+
+    Найдено репетицией приёмки 01.09. Без нормализации маржа не находилась ни
+    одной скважине, `value.get(well, 0.0)` возвращал ноль всем, и «режем худшую по
+    деньгам» превращалось в «режем в порядке перечисления» — молча, с правильным
+    на вид объяснением и соблюдённым пределом.
+    """
+    steps = [step(producers=[prod("1", 60.0), prod("2", 60.0)])]
+    rich = produced("2007-01-01", "1", 200.0, 800.0)
+    poor = produced("2007-01-01", "2", 5.0, 995.0)
+    as_csv = [row | {"well": int(row["well"])} for row in (rich, poor)]
+    limits = planner.Limits(enforce_water_balance=False, max_field_liquid_m3_per_day=80.0)
+
+    result, decisions = planner.enforce(steps, as_csv, norms, limits, FLUIDS)
+    rates = {control.well: control.liquid_rate for control in result[0].producers}
+
+    assert rates["1"] + rates["2"] == pytest.approx(80.0)
+    assert rates["2"] < rates["1"], "первой обязана резаться скважина с худшей маржой"
+    assert decisions[0].well == "2"
