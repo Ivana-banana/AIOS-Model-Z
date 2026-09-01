@@ -304,6 +304,17 @@ class Limits:
     календарный год, а не к каждому месяцу.
     """
 
+    max_field_liquid_m3_total: float | None = None
+    """Объём отбора жидкости за **весь горизонт**, м³. None — предела нет.
+
+    Третья форма объёмного ограничения после суточной и годовой (п. 10 чек-листа
+    приёмки): «за период разработки поднять не более V». Годовым её не выразить —
+    год может укладываться в норму, а сумма лет нет.
+    """
+
+    max_field_injection_m3_total: float | None = None
+    """Объём закачки за весь горизонт, м³. None — предела нет."""
+
     max_watercut: float | None = None
     """Предел обводнённости работающей добывающей, доля. None — предела нет.
 
@@ -502,6 +513,22 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             result, limits.max_field_injection_m3_per_year
         )
         decisions.extend(yearly)
+
+    if limits.max_field_liquid_m3_total is not None:
+        result, total_liquid = _fit_liquid_to_annual_volume(
+            result, _horizon_budget(result, limits.max_field_liquid_m3_total,
+                                    producers=True),
+            reason="объём отбора за горизонт",
+        )
+        decisions.extend(total_liquid)
+
+    if limits.max_field_injection_m3_total is not None:
+        result, total_injection = _fit_injection_to_annual_budget(
+            result, _horizon_budget(result, limits.max_field_injection_m3_total,
+                                    producers=False),
+            reason="объём закачки за горизонт",
+        )
+        decisions.extend(total_injection)
 
     if limits.max_field_liquid_m3_per_year is not None:
         result, yearly_liquid = _fit_liquid_to_annual_volume(
@@ -1131,6 +1158,31 @@ def _annual_budget(steps: list[ScheduleStep], rate_m3_per_day: float) -> dict[in
         days[step.date.year] = days.get(step.date.year, 0) + \
             monthrange(step.date.year, step.date.month)[1]
     return {year: rate_m3_per_day * count for year, count in days.items()}
+
+
+def _horizon_budget(steps: list[ScheduleStep], limit_m3: float,
+                    *, producers: bool) -> dict[int, float]:
+    """Разложить объём **за весь горизонт** по годам пропорционально их вкладу.
+
+    Годовые срезки у нас уже есть и объяснимы, а «горизонт» — это тот же объём,
+    только с одной корзиной вместо нескольких. Раскладываем предел по годам в той
+    же пропорции, в какой они дают объём сейчас: год, который берёт больше,
+    больше и отдаёт. Так срезка остаётся равномерной по времени и не съедает
+    целиком последние годы, которые дисконт и так обесценил.
+    """
+    volume: dict[int, float] = {}
+    for step in steps:
+        days = monthrange(step.date.year, step.date.month)[1]
+        controls = step.producers if producers else step.injectors
+        for control in controls:
+            if control.status != "OPEN":
+                continue
+            rate = (control.liquid_rate if producers else control.rate) or 0.0
+            volume[step.date.year] = volume.get(step.date.year, 0.0) + rate * days
+    total = sum(volume.values())
+    if total <= 0:
+        return {}
+    return {year: limit_m3 * value / total for year, value in volume.items()}
 
 
 def _fit_injection_to_annual_volume(

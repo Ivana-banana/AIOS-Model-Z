@@ -366,3 +366,12 @@ def test_minimum_rate_is_the_only_check_that_looks_downward():
     assert not check.satisfied
     assert check.value == pytest.approx(3.0), "недобор 5 − 2"
     assert "скв. мало" in check.where
+def test_horizon_volume_is_one_basket_not_yearly_ones():
+    steps = [step(2027, 1, injectors=[inj("W", 100.0)]),
+             step(2028, 1, injectors=[inj("W", 100.0)])]
+
+    check = casecheck.check(steps, [], planner.Limits(
+        max_field_injection_m3_total=1_000.0))[0]
+
+    assert check.value == pytest.approx(6_200.0)
+    assert not check.satisfied and "2027-01 … 2028-01" in check.where

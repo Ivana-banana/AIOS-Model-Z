@@ -96,6 +96,12 @@ def check(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     if limits.max_field_injection_m3_per_year is not None:
         checks.append(_annual_volume(steps, limits.max_field_injection_m3_per_year,
                                      key="max_field_injection_m3_per_year", producers=False))
+    if limits.max_field_liquid_m3_total is not None:
+        checks.append(_horizon_volume(steps, limits.max_field_liquid_m3_total,
+                                      key="max_field_liquid_m3_total", producers=True))
+    if limits.max_field_injection_m3_total is not None:
+        checks.append(_horizon_volume(steps, limits.max_field_injection_m3_total,
+                                      key="max_field_injection_m3_total", producers=False))
     if limits.max_field_oil_t_per_day is not None:
         checks.append(_phase(steps, forecast, limits.max_field_oil_t_per_day,
                              key="max_field_oil_t_per_day", phase="нефть"))
@@ -204,6 +210,19 @@ def _annual_volume(steps: list[ScheduleStep], limit: float, *, key: str,
         if total > best:
             best, where = total, str(year)
     return LimitCheck(key=key, limit=limit, value=best, where=where, unit="м³/год")
+
+
+def _horizon_volume(steps: list[ScheduleStep], limit: float, *, key: str,
+                    producers: bool) -> LimitCheck:
+    """Объём за весь горизонт — одна корзина вместо годовых."""
+    total = 0.0
+    for step in steps:
+        span = monthrange(step.date.year, step.date.month)[1]
+        total += sum(_rates(step, producers=producers).values()) * span
+    span_from = f"{steps[0].date:%Y-%m}" if steps else "—"
+    span_to = f"{steps[-1].date:%Y-%m}" if steps else "—"
+    return LimitCheck(key=key, limit=limit, value=total,
+                      where=f"{span_from} … {span_to}", unit="м³ за горизонт")
 
 
 def _phase(steps: list[ScheduleStep], forecast: list[dict[str, Any]], limit: float,
