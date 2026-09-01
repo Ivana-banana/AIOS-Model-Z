@@ -178,6 +178,23 @@ def test_well_caps_report_the_worst_offender_against_its_own_cap():
     assert not checks[0].satisfied
 
 
+def test_well_caps_compare_each_well_with_its_own_cap_not_by_absolute_rate():
+    """Скважина 900/1000 не должна закрывать собой скважину 100/10.
+
+    Найдено критиком 01.09: ранжирование шло по абсолютной ставке, и нарушитель
+    с маленьким потолком терялся за большим соседом — `violations()` возвращал
+    пусто на расписании, которое нарушает адресный потолок вдесятеро.
+    """
+    steps = [step(2007, 1, producers=[prod("большая", 900.0), prod("малая", 100.0)])]
+    limits = planner.Limits(well_caps_m3_per_day={"большая": 1000.0, "малая": 10.0})
+
+    checks = casecheck.check(steps, [], limits)
+
+    assert not checks[0].satisfied
+    assert checks[0].where == "скв. малая, 2007-01"
+    assert checks[0].value == 100.0 and checks[0].limit == 10.0
+
+
 def test_well_caps_are_satisfied_when_every_well_is_under_its_own():
     """Соблюдение считается по своему потолку, а не по чужому."""
     steps = [step(2007, 1, producers=[prod("1", 200.0), prod("2", 90.0)])]

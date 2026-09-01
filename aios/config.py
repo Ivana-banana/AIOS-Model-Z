@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import date
 from pathlib import Path
 
@@ -71,6 +71,7 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
     explain = _section(raw, "explain", source)
     fluids = _section(raw, "fluids", source)
     limits = _section(raw, "limits", source)
+    _reject_unknown_limits(limits, source)
     policy = _section(raw, "policy", source)
     run = _section(raw, "run", source)
 
@@ -223,6 +224,27 @@ def _well_set(section: dict, key: str, source: Path) -> frozenset[str] | None:
         raise ValueError(f"В {source} значение {key} в секции [limits] должно быть списком")
     names = frozenset(str(value) for value in values)
     return names or None
+
+
+def _reject_unknown_limits(section: dict, source: Path) -> None:
+    """Незнакомый ключ в `[limits]` — ошибка, а не «настройка на будущее».
+
+    Умолчание каждой ручки кейса — «ограничения нет», и это делает опечатку
+    невидимой: `max_field_oil_t_per_dai = 700` читается как «предела по нефти нет»,
+    прогон проходит, репетиция печатает «пройдена», а условие кейса не применено
+    вовсе. Найдено критиком 01.09. Поэтому список ключей закрыт: имена берутся из
+    самой структуры `Limits`, то есть новая ручка разрешается автоматически, а
+    опечатка — никогда.
+    """
+    known = {field.name for field in fields(Limits)}
+    unknown = sorted(set(section) - known)
+    if unknown:
+        raise ValueError(
+            f"В {source} в секции [limits] неизвестные ключи: {', '.join(unknown)}. "
+            "Проверьте написание: незнакомый ключ читался бы как «ограничения нет», "
+            f"и условие кейса не применилось бы молча. Известные ключи: "
+            f"{', '.join(sorted(known))}"
+        )
 
 
 def _shut_windows(section: dict, source: Path) -> tuple[ShutWindow, ...] | None:

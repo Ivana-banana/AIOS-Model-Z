@@ -1101,3 +1101,31 @@ def test_phase_limit_does_not_cut_a_month_another_limit_already_fixed(norms):
     assert not [one for one in decisions if "нефть" in one.resource], (
         "месяц, приведённый чужой срезкой, фазовый предел резать не должен"
     )
+def test_a_window_shorter_than_a_month_still_shuts_that_month(norms):
+    """«Остановить с 05.02 по 20.02» — шаг месячный, точнее выразить нечем.
+
+    Найдено критиком 01.09: сравнивалась только дата шага, окно внутри месяца не
+    закрывало ничего, и проверка условий говорила «соблюдено» — она зовёт тот же
+    метод. Огрубляем в безопасную сторону: месяц закрывается целиком.
+    """
+    steps = [month_step(2027, 1, producers=[prod("W", 30.0)]),
+             month_step(2027, 2, producers=[prod("W", 30.0)]),
+             month_step(2027, 3, producers=[prod("W", 30.0)])]
+    limits = planner.Limits(
+        enforce_water_balance=False,
+        forced_shut_windows=(planner.ShutWindow("W", date(2027, 2, 5), date(2027, 2, 20)),),
+    )
+
+    result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    assert [control.status for step_ in result for control in step_.producers] == \
+        ["OPEN", "SHUT", "OPEN"]
+    assert decisions and "2027-02-05 … 2027-02-20" in decisions[0].reason
+
+
+def test_a_window_that_only_touches_the_edge_of_a_month_shuts_it(norms):
+    """Окно, задевающее последний день месяца, закрывает этот месяц."""
+    window = planner.ShutWindow("W", date(2027, 1, 31), date(2027, 2, 2))
+
+    assert window.covers(date(2027, 1, 1)) and window.covers(date(2027, 2, 1))
+    assert not window.covers(date(2026, 12, 1)) and not window.covers(date(2027, 3, 1))

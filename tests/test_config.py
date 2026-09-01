@@ -351,3 +351,21 @@ def test_optional_keys_documented_in_config_toml_actually_load(tmp_path):
     assert loaded.limits.well_groups == {"куст-1": frozenset({"102", "305"})}
     assert loaded.limits.forced_shut_windows[0].well == "102"
     assert loaded.limits.max_events_per_year == 12
+def test_a_typo_in_a_limits_key_is_refused(tmp_path):
+    """Опечатка читалась бы как «ограничения нет» — и условие кейса терялось молча.
+
+    Найдено критиком 01.09: `max_field_oil_t_per_dai = 700` проходил разбор,
+    прогон шёл, репетиция печатала «пройдена», а предел не применялся вовсе.
+    """
+    text = MINIMAL.replace("water_tolerance = 1.0",
+                           "water_tolerance = 1.0\nmax_field_oil_t_per_dai = 700")
+
+    with pytest.raises(ValueError, match="max_field_oil_t_per_dai"):
+        config.load(_written(tmp_path, text))
+
+
+def test_every_key_of_the_repository_config_is_known():
+    """Сам `config.toml` обязан проходить ту же проверку — иначе она бесполезна."""
+    loaded = config.load()
+
+    assert loaded.limits is not None

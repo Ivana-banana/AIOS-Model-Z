@@ -287,15 +287,24 @@ def _forced_windows(steps: list[ScheduleStep], windows) -> LimitCheck:
 
 
 def _well_caps(steps: list[ScheduleStep], caps: dict[str, float]) -> LimitCheck:
-    """Адресные потолки: наибольшее превышение своего потолка, в долях от него."""
-    worst, where, limit_of_worst = 0.0, "—", 0.0
+    """Адресные потолки: наибольшее превышение **своего** потолка, в долях от него.
+
+    Сравнивать абсолютные ставки нельзя: скважина на 900 при потолке 1000 не
+    нарушает ничего, а скважина на 100 при потолке 10 нарушает вдесятеро — и до
+    02.09 первая закрывала вторую собой, а `violations()` возвращал пусто
+    (найдено критиком 01.09). Поэтому ищется максимум отношения, а в отчёт идёт
+    та пара «факт и его потолок», на которой отношение достигнуто.
+    """
+    worst_ratio, worst, where, limit_of_worst = 0.0, 0.0, "—", 0.0
     for step in steps:
         rates = _rates(step, producers=True) | _rates(step, producers=False)
         for well, cap in caps.items():
             rate = rates.get(well)
             if rate is None or cap <= 0:
                 continue
-            if rate > worst:
+            ratio = rate / cap
+            if ratio > worst_ratio:
+                worst_ratio = ratio
                 worst, where, limit_of_worst = rate, f"скв. {well}, {_stamp(step)}", cap
     return LimitCheck(key="well_caps_m3_per_day", limit=limit_of_worst or 0.0,
                       value=worst, where=where, unit="м³/сут")
