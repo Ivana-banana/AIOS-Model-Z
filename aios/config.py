@@ -137,6 +137,10 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
                                                     "limits", source),
             max_injector_bhp_atm=_optional_positive(limits, "max_injector_bhp_atm",
                                                     "limits", source),
+            min_reservoir_pressure_atm=_optional_positive(
+                limits, "min_reservoir_pressure_atm", "limits", source),
+            max_reservoir_pressure_atm=_optional_positive(
+                limits, "max_reservoir_pressure_atm", "limits", source),
             max_well_injection_m3_per_day=_optional_positive(
                 limits, "max_well_injection_m3_per_day", "limits", source),
             max_well_liquid_m3_per_day=_optional_positive(

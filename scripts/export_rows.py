@@ -119,7 +119,11 @@ def main(argv: list[str] | None = None) -> int:
               "прогон недействителен", file=sys.stderr)
         return 1
 
-    problems = summary.sanity_problems(rows)
+    problems = summary.sanity_problems(
+        rows,
+        min_reservoir_pressure=config.limits.min_reservoir_pressure_atm,
+        max_reservoir_pressure=config.limits.max_reservoir_pressure_atm,
+    )
     print()
     print(f"--- санити-чеки: {'нарушений нет' if not problems else f'нарушений {len(problems)}'} ---")
     for line in problems[:15]:

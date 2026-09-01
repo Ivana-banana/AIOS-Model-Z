@@ -144,6 +144,24 @@ def test_a_non_positive_water_tolerance_is_refused(tmp_path):
         config.load(_written(tmp_path, text))
 
 
+def test_reservoir_pressure_limits_are_optional(tmp_path):
+    """Как и остальные ручки кейса: ключа нет — предела нет."""
+    limits = config.load(_written(tmp_path, MINIMAL)).limits
+    assert limits.min_reservoir_pressure_atm is None
+    assert limits.max_reservoir_pressure_atm is None
+
+
+def test_reservoir_pressure_limits_are_read_from_the_config(tmp_path):
+    text = MINIMAL.replace(
+        "water_tolerance = 1.0",
+        "water_tolerance = 1.0\nmin_reservoir_pressure_atm = 50.0\n"
+        "max_reservoir_pressure_atm = 300.0",
+    )
+    limits = config.load(_written(tmp_path, text)).limits
+    assert limits.min_reservoir_pressure_atm == 50.0
+    assert limits.max_reservoir_pressure_atm == 300.0
+
+
 def test_the_corridor_floor_is_optional(tmp_path):
     """Ключа нет — снизу закачка не ограничена; так получено заявляемое число."""
     assert config.load(_written(tmp_path, MINIMAL)).limits.water_tolerance_min is None

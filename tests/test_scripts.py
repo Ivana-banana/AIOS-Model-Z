@@ -595,7 +595,11 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert "прогноз цикла считался одной плотностью" in note.read_text(encoding="utf-8")
     assert "на каких плотностях:" in printed
 
-    monkeypatch.setattr(run_cycle.summary, "sanity_problems", lambda _rows: ["отрицательный объём"])
+    # `**_limits` здесь не формальность: цикл передаёт в проверку пределы
+    # пластового давления из конфигурации, и заглушка без них снова поймает
+    # рассогласование вызова — за этим тест и стоит.
+    monkeypatch.setattr(run_cycle.summary, "sanity_problems",
+                        lambda _rows, **_limits: ["отрицательный объём"])
     code = run_cycle.main([
         "--from", str(source.parent), "--confirm", str(tmp_path / "out"),
         "--no-tune-rates", "--config", str(config),
