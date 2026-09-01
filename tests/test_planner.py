@@ -1365,12 +1365,14 @@ def test_a_well_below_the_minimum_rate_is_shut_not_raised(norms):
     assert state["мало"] == ("SHUT", None)
     assert state["много"] == ("OPEN", 40.0)
     assert "минимальный дебит" in decisions[0].resource
-def test_horizon_volume_is_spread_over_years_in_proportion(norms):
+def test_horizon_volume_is_taken_by_the_early_years_first(norms):
     """«За период разработки не более V» — третья форма объёма после суток и года.
 
     Годовым пределом её не выразить: каждый год может укладываться в норму, а
-    сумма лет — нет. Предел раскладывается по годам пропорционально их вкладу,
-    чтобы срезка не съела целиком последние годы.
+    сумма лет — нет. Предел раздаётся годам по порядку: объём фиксирован, значит
+    поднимать выгоднее рано — так говорит дисконт. Пропорциональная раскладка,
+    стоявшая здесь до 02.09, теряла около трети приведённого отбора при том же
+    суммарном объёме (ревизия).
     """
     steps = [month_step(2027, 1, producers=[prod("W", 100.0)]),
              month_step(2028, 1, producers=[prod("W", 100.0)])]
@@ -1379,9 +1381,12 @@ def test_horizon_volume_is_spread_over_years_in_proportion(norms):
                             max_field_liquid_m3_total=3_100.0)
 
     result, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
-    rates = [control.liquid_rate for step_ in result for control in step_.producers]
+    rates = [(control.status, control.liquid_rate)
+             for step_ in result for control in step_.producers]
 
-    assert rates == [pytest.approx(50.0), pytest.approx(50.0)], "оба года срезаны поровну"
+    assert rates == [("OPEN", 100.0), ("SHUT", None)], (
+        "первый год берёт весь объём, второму не остаётся ничего"
+    )
     assert any("объём отбора за горизонт" in decision.resource for decision in decisions)
 def test_holding_a_regime_never_lifts_the_field_over_its_limit(norms):
     """Удержание возвращает прежнюю уставку, а прежняя бывает выше нынешней.

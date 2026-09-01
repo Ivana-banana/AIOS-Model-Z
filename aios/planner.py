@@ -1178,13 +1178,21 @@ def _annual_budget(steps: list[ScheduleStep], rate_m3_per_day: float) -> dict[in
 
 def _horizon_budget(steps: list[ScheduleStep], limit_m3: float,
                     *, producers: bool) -> dict[int, float]:
-    """Разложить объём **за весь горизонт** по годам пропорционально их вкладу.
+    """Разложить объём **за весь горизонт** по годам: ранние берут всё, поздние остаток.
 
-    Годовые срезки у нас уже есть и объяснимы, а «горизонт» — это тот же объём,
-    только с одной корзиной вместо нескольких. Раскладываем предел по годам в той
-    же пропорции, в какой они дают объём сейчас: год, который берёт больше,
-    больше и отдаёт. Так срезка остаётся равномерной по времени и не съедает
-    целиком последние годы, которые дисконт и так обесценил.
+    Объём за горизонт фиксирован, значит каждый кубометр можно поднять рано или
+    поздно — и дисконт отвечает однозначно: рано. Поэтому предел раздаётся годам
+    по порядку: год берёт столько, сколько просит, пока предел не кончится;
+    следующим достаётся остаток, дальше — ноль.
+
+    Пропорциональная раскладка, стоявшая здесь до 02.09, была ошибкой ровно в
+    этом месте: она отдавала тот же объём равномерно и теряла около трети
+    дисконтированного отбора (замер ревизии: 3 302 815 против 4 324 619 м³
+    приведённых при одинаковом суммарном объёме). Довод «не съедать последние
+    годы» перевёрнут: съесть их — это и есть максимум при данном пределе.
+
+    Годовой предел раскладкой не занимается вовсе: там корзина одна на год, и
+    внутри года режется по марже.
     """
     volume: dict[int, float] = {}
     for step in steps:
@@ -1195,10 +1203,15 @@ def _horizon_budget(steps: list[ScheduleStep], limit_m3: float,
                 continue
             rate = (control.liquid_rate if producers else control.rate) or 0.0
             volume[step.date.year] = volume.get(step.date.year, 0.0) + rate * days
-    total = sum(volume.values())
-    if total <= 0:
+    if sum(volume.values()) <= 0:
         return {}
-    return {year: limit_m3 * value / total for year, value in volume.items()}
+    budget: dict[int, float] = {}
+    left = limit_m3
+    for year in sorted(volume):
+        take = min(volume[year], left)
+        budget[year] = take
+        left -= take
+    return budget
 
 
 def _fit_injection_to_annual_volume(
