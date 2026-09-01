@@ -286,3 +286,39 @@ def test_phase_limits_are_optional_and_read(tmp_path):
 
     assert loaded.limits.max_field_oil_t_per_day == 1200.0
     assert loaded.limits.max_field_water_t_per_day == 9000.0
+def test_optional_keys_documented_in_config_toml_actually_load(tmp_path):
+    """Примеры необязательных ручек в `config.toml` обязаны читаться, а не украшать.
+
+    Блок закомментированных ключей — единственное место, где человек узнаёт, что
+    ручка есть. Пример, который не грузится (опечатка в имени, устаревший ключ,
+    неверный тип), хуже отсутствующего: он обещает ограничение, которого не будет.
+    """
+    lines = config.DEFAULT_PATH.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines)
+                 if "необязательные ручки под валидационный кейс" in line)
+    end = next(i for i, line in enumerate(lines[start:], start) if line.startswith("[policy]"))
+
+    flat, tables = [], []
+    current = flat
+    for line in lines[start:end]:
+        stripped = line.lstrip("#").strip()
+        if not stripped or stripped.startswith("---"):
+            continue
+        if stripped.startswith("["):
+            current = tables
+        elif "=" not in stripped:
+            continue
+        if "=" in stripped or stripped.startswith("["):
+            current.append(stripped.split("  #")[0].strip())
+
+    assert flat and tables, "блок примеров пуст — проверка потеряла смысл"
+
+    text = MINIMAL.replace("water_tolerance = 1.0",
+                           "water_tolerance = 1.0\n" + "\n".join(flat))
+    text += "\n" + "\n".join(tables) + "\n"
+    loaded = config.load(_written(tmp_path, text))
+
+    assert loaded.limits.max_field_oil_t_per_day == 1200.0
+    assert loaded.limits.well_groups == {"куст-1": frozenset({"102", "305"})}
+    assert loaded.limits.forced_shut_windows[0].well == "102"
+    assert loaded.limits.max_events_per_year == 12
