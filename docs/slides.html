@@ -2,319 +2,715 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AIOS · трек 2 · Модель Z — защита 7 минут</title>
 <style>
-  /* Слайды собраны 01.09 по docs/presentation.md. Числа не редактировать здесь:
-     верен docs/experiments.md, сводная сверка — docs/numbers-audit.md.
-     Печать: Ctrl+P → «Альбомная», поля «Нет», фон включить. */
-  :root {
-    --ink: #16191d;
-    --muted: #5d6673;
-    --line: #d7dbe0;
-    --accent: #1a5fb4;
-    --warn: #a51d2d;
-    --bg: #ffffff;
+/* ===========================================================================
+   Слайды защиты. Собраны 01.09 по docs/presentation.md, оформлены 02.09.
+
+   ЧИСЛА ЗДЕСЬ НЕ ПРАВИТЬ. Верен docs/experiments.md, сводная сверка —
+   docs/numbers-audit.md; заявку, числа сверки, счёт ключей [limits] и цену
+   переноса стережёт tests/test_document_numbers.py. Правка оформления
+   свободна, правка чисел падает тестом.
+
+   Три решения оформления, которые важно не откатить по незнанию:
+
+   1. НИКАКИХ ВНЕШНИХ ШРИФТОВ И БИБЛИОТЕК. Файл обязан открываться на чужой
+      машине, в чужой сети и без сети вовсе — его смотрит жюри. Веб-шрифт,
+      подгрузившийся у нас и не подгрузившийся у них, меняет метрики текста,
+      а при фиксированной сцене это означает съеденную строку. Поэтому
+      гарнитуры только системные, а характер набран вёрсткой и цветом.
+   2. СЦЕНА ФИКСИРОВАНА 1920×1080 и целиком масштабируется под окно. Так слайд
+      выглядит одинаково на проекторе, в записи и в PDF.
+   3. ПЕРЕПОЛНЕНИЕ НЕ ПРЯЧЕТСЯ МОЛЧА. 02.09 жёсткая пропорция вместе с
+      overflow:hidden уже срезала целый пункт на слайде 5, и этого никто не
+      заметил. Теперь слайд меряет себя при показе: не влезло — красная рамка
+      и строка в консоль. Пусть лучше видно.
+
+   Печать в PDF: Ctrl+P → «Альбомная», поля «Нет», фон включить.
+   Навигация: → ← Space PageUp/Down Home End, «о» — обзор всех слайдов.
+   =========================================================================== */
+
+:root {
+  /* Бумага тёплая, а не белая: на проекторе чистый белый выжигает тонкие
+     линии таблиц, а вся эта колода — таблицы и числа. */
+  --paper:    #f6f3ec;
+  --paper-2:  #eee9df;
+  --ink:      #15181b;
+  --ink-soft: #5a6167;
+  --rule:     #cdc6b8;
+  --rule-2:   #e2dccf;
+
+  /* Три сигнальных цвета, у каждого одна работа. Смешивать нельзя:
+     petrol — вода и закачка, amber — деньги и главный слайд,
+     crimson — то, чего мы не заявляем. */
+  --petrol:  #0f5568;
+  --amber:   #a75d09;
+  --crimson: #96271e;
+
+  --serif: Georgia, "PT Serif", "Times New Roman", serif;
+  --sans:  "Segoe UI", "PT Sans", "Helvetica Neue", system-ui, sans-serif;
+  --mono:  "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+
+  --stage-bg: #24282c;
+}
+
+/* === 1. Сцена: 1920×1080, масштабируется целиком ========================= */
+
+html, body {
+  width: 100%; height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--stage-bg);
+}
+
+.deck-viewport {
+  position: fixed; inset: 0;
+  overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 0%, #2f353a 0%, #202428 60%, #191c1f 100%);
+}
+
+.deck-stage {
+  position: absolute; left: 0; top: 0;
+  width: 1920px; height: 1080px;
+  transform-origin: 0 0;
+  background: var(--paper);
+  box-shadow: 0 40px 120px rgba(0,0,0,.55);
+}
+
+.deck-stage > section {
+  position: absolute; inset: 0;
+  width: 1920px; height: 1080px;
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  grid-template-rows: 104px 1fr 96px;
+  background: var(--paper);
+  visibility: hidden; opacity: 0; pointer-events: none;
+  transition: opacity .28s ease;
+}
+
+.deck-stage > section.active {
+  visibility: visible; opacity: 1; pointer-events: auto;
+  z-index: 1;
+}
+
+/* Слайд, не поместившийся в сцену, обязан быть заметен. */
+.deck-stage > section.overflowing { outline: 6px solid var(--crimson); outline-offset: -6px; }
+.deck-stage > section.overflowing::after {
+  content: "СЛАЙД НЕ ПОМЕСТИЛСЯ В 1920×1080";
+  position: absolute; right: 0; bottom: 0;
+  background: var(--crimson); color: #fff;
+  font: 700 20px/1 var(--sans); letter-spacing: .08em;
+  padding: 12px 18px;
+}
+
+/* === 2. Рейка слева: номер слайда и цветовая метка его роли ============== */
+
+.rail {
+  grid-row: 1 / 4;
+  border-right: 1px solid var(--rule);
+  background: var(--paper-2);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: space-between;
+  padding: 30px 0 28px;
+}
+
+.rail-num { font: 400 44px/1 var(--serif); color: var(--ink); }
+
+/* Метка роли: обычный слайд — вода, «главный» — деньги, «не сокращать» —
+   оговорки, запасной — серый. Цвет несёт смысл, а не украшает. */
+.rail-tick { width: 14px; height: 120px; background: var(--petrol); }
+section[data-kind="main"] .rail-tick { background: var(--amber); }
+section[data-kind="keep"] .rail-tick { background: var(--crimson); }
+section.backup .rail-tick { background: var(--rule); }
+
+.rail-vert {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  font: 600 15px/1 var(--sans);
+  letter-spacing: .26em; text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* === 3. Шапка и подвал =================================================== */
+
+.slide-head {
+  grid-column: 2;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 76px;
+  border-bottom: 1px solid var(--rule-2);
+}
+
+.eyebrow {
+  font: 600 16px/1 var(--sans);
+  letter-spacing: .22em; text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.stamp {
+  font: 500 16px/1 var(--mono);
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  padding: 7px 12px;
+  background: var(--paper);
+}
+
+.slide-body {
+  grid-column: 2;
+  padding: 44px 76px 10px;
+  display: flex; flex-direction: column;
+  min-height: 0;
+}
+/* flex-детям запрещено сжиматься. Иначе слишком длинный слайд не переполняет
+   контейнер, а молча ужимает свои блоки — и сторож переполнения ниже видит
+   scrollHeight == clientHeight на любом содержимом. Проверено замером 02.09:
+   до этой строки все двенадцать слайдов отчитывались «ok» независимо от того,
+   сколько в них текста. */
+.slide-body > * { flex: 0 0 auto; }
+
+/* Подвал источника — не сноска, а элемент оформления: в этом проекте каждое
+   число подписано тем, чем оно получено, и на слайде это должно быть видно. */
+.src {
+  grid-column: 2;
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 76px;
+  border-top: 1px solid var(--rule-2);
+  font: 400 17px/1.35 var(--sans);
+  color: var(--ink-soft);
+}
+.src::before {
+  content: "";
+  flex: none;
+  width: 11px; height: 11px;
+  background: var(--petrol);
+  transform: rotate(45deg);
+}
+.src code { font: 400 16px/1 var(--mono); color: var(--ink); }
+
+/* === 4. Типографика содержимого ========================================== */
+
+h1 { font: 400 76px/1.05 var(--serif); margin: 0 0 14px; letter-spacing: -.015em; color: var(--ink); }
+h2 { font: 400 58px/1.1 var(--serif); margin: 0 0 26px; letter-spacing: -.015em; color: var(--ink); }
+h2::after { content: ""; display: block; width: 92px; height: 3px; margin-top: 16px; background: var(--ink); }
+
+.sub { font: 400 29px/1.45 var(--sans); color: var(--ink-soft); margin: 0 0 28px; }
+
+.big  { font: 700 88px/1.05 var(--sans); letter-spacing: -.025em; font-variant-numeric: tabular-nums; margin: 0; }
+.huge { font: 700 142px/1 var(--sans); letter-spacing: -.035em; font-variant-numeric: tabular-nums; margin: 0; }
+.accent { color: var(--petrol); }
+.warn   { color: var(--crimson); }
+
+ul { margin: 8px 0 0; padding: 0; list-style: none; }
+li {
+  position: relative;
+  font: 400 34px/1.42 var(--sans);
+  margin-bottom: 20px; padding-left: 34px;
+  color: var(--ink);
+}
+li::before { content: ""; position: absolute; left: 0; top: .62em; width: 16px; height: 2px; background: var(--petrol); }
+li b { font-weight: 700; }
+
+table { border-collapse: collapse; width: 100%; margin: 4px 0 18px; }
+th, td {
+  font: 400 33px/1.3 var(--sans);
+  padding: 15px 22px 15px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--rule-2);
+}
+th { font-size: 20px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.total td { border-top: 2px solid var(--ink); border-bottom: none; font-weight: 700; }
+/* Наша строка среди чужих эталонов: выделена, но не подводит итог — жирная
+   черта сверху читалась бы как сумма там, где суммы нет. */
+tr.ours td { font-weight: 700; background: rgba(15, 85, 104, .07); box-shadow: inset 4px 0 0 var(--petrol); padding-left: 14px; }
+
+code { font-family: var(--mono); font-size: .88em; }
+
+/* Цепочка контура: этапы — плашки, стрелки — воздух между ними. */
+.chain { font: 400 29px/2.1 var(--sans); color: var(--ink-soft); margin: 4px 0 0; }
+.chain b {
+  font-weight: 600; color: var(--ink);
+  background: rgba(15, 85, 104, .10);
+  border-bottom: 2px solid var(--petrol);
+  padding: 5px 11px;
+  white-space: nowrap;
+}
+
+.two { display: flex; gap: 60px; align-items: flex-start; }
+.two > div { flex: 1; }
+.label {
+  font: 600 18px/1 var(--sans);
+  letter-spacing: .16em; text-transform: uppercase;
+  color: var(--ink-soft);
+  margin: 0 0 12px;
+}
+
+/* Титульный — единственный тёмный разворот в колоде. Он открывает доклад и
+   не должен читаться как ещё один содержательный слайд: у него другая земля,
+   центрированный блок и та же рейка, только вывернутая. */
+section[data-kind="title"] { background: var(--ink); }
+section[data-kind="title"] .rail { background: #1d2226; border-right-color: #333a40; }
+section[data-kind="title"] .rail-num,
+section[data-kind="title"] h1 { color: var(--paper); }
+section[data-kind="title"] .rail-vert,
+section[data-kind="title"] .eyebrow,
+section[data-kind="title"] .sub,
+section[data-kind="title"] .src { color: #9aa3ab; }
+section[data-kind="title"] .slide-head,
+section[data-kind="title"] .src { border-color: #333a40; }
+section[data-kind="title"] .stamp { background: transparent; border-color: #444c53; color: #9aa3ab; }
+section[data-kind="title"] .rail-tick { background: var(--amber); }
+section[data-kind="title"] li { color: #d8dce0; }
+section[data-kind="title"] li::before { background: var(--amber); }
+section[data-kind="title"] .accent { color: #4fb3cc; }
+section[data-kind="title"] .src::before { background: var(--amber); }
+section[data-kind="title"] .src code { color: #cfd5da; }
+section[data-kind="title"] .slide-body { justify-content: center; padding-bottom: 44px; }
+
+/* Запасные слайды не входят в семь минут — и это видно, не читая отметку. */
+section.backup { background: var(--paper-2); }
+section.backup .rail { background: #e6e0d3; }
+section.backup h2::after { background: var(--rule); }
+
+/* === 5. Появление содержимого: одна волна на слайд ======================= */
+
+section.active .slide-body > * { animation: rise .42s cubic-bezier(.2,.7,.3,1) backwards; }
+section.active .slide-body > *:nth-child(1) { animation-delay: .04s; }
+section.active .slide-body > *:nth-child(2) { animation-delay: .10s; }
+section.active .slide-body > *:nth-child(3) { animation-delay: .16s; }
+section.active .slide-body > *:nth-child(4) { animation-delay: .22s; }
+section.active .slide-body > *:nth-child(5) { animation-delay: .28s; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* === 6. Полоса хода доклада ============================================== */
+
+.progress { position: fixed; left: 0; bottom: 0; height: 4px; background: var(--amber); transition: width .28s ease; z-index: 50; }
+.hint {
+  position: fixed; right: 18px; bottom: 16px;
+  font: 400 13px/1 var(--sans); color: #7d858c;
+  z-index: 50; user-select: none;
+  transition: opacity .6s ease;
+}
+/* Подсказка нужна первые секунды, дальше она просто лежит на слайде. */
+.hint.faded { opacity: 0; }
+
+/* === 7. Обзор: клавиша «о» — все слайды разом ============================ */
+
+body.overview .deck-viewport { overflow: auto; background: #1b1e21; }
+body.overview .deck-stage {
+  position: static; width: auto; height: auto;
+  transform: none !important; background: none; box-shadow: none;
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 18px; padding: 22px;
+}
+body.overview .deck-stage > section {
+  position: relative; inset: auto;
+  visibility: visible; opacity: 1; pointer-events: auto;
+  width: 1920px; height: 1080px;
+  transform: scale(.225); transform-origin: 0 0;
+  margin: 0 -1488px -837px 0;
+  outline: 1px solid #3a4046;
+  cursor: pointer;
+}
+body.overview .progress, body.overview .hint { display: none; }
+
+/* === 8. Печать: все двенадцать слайдов, по одному на страницу ============ */
+
+@media print {
+  html, body { width: 1920px; height: auto; overflow: visible; background: #fff; }
+  .deck-viewport { position: static; overflow: visible; background: #fff; }
+  .deck-stage { position: static; width: auto; height: auto; transform: none !important; box-shadow: none; background: none; }
+  .deck-stage > section {
+    position: relative; inset: auto;
+    visibility: visible !important; opacity: 1 !important;
+    width: 1920px; height: 1080px;
+    transform: none !important; margin: 0 !important;
+    break-after: page; page-break-after: always;
+    outline: none !important;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: #eceff2;
-    color: var(--ink);
-    font: 16px/1.5 "PT Sans", "Segoe UI", system-ui, sans-serif;
-  }
-  .deck { padding: 24px 12px 80px; }
-  section {
-    position: relative;
-    width: min(1120px, 96vw);
-    /* min-height вместо aspect-ratio: жёсткая пропорция вместе с overflow:hidden
-       молча срезала нижние строки — на «главном» слайде 5 так пропадал целый
-       пункт (найдено критиком 02.09). Пусть лучше слайд станет выше пропорции,
-       чем потеряет текст. */
-    min-height: calc(min(1120px, 96vw) * 9 / 16);
-    margin: 0 auto 22px;
-    padding: 46px 56px 52px;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    box-shadow: 0 1px 3px rgba(0,0,0,.08);
-    display: flex;
-    flex-direction: column;
-  }
-  h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -.01em; }
-  h2 { font-size: 27px; margin: 0 0 18px; letter-spacing: -.01em; }
-  .sub { color: var(--muted); font-size: 17px; margin: 0 0 22px; }
-  .big { font-size: 60px; font-weight: 700; letter-spacing: -.02em; line-height: 1.05; }
-  .huge { font-size: 84px; font-weight: 700; letter-spacing: -.03em; line-height: 1; }
-  .accent { color: var(--accent); }
-  .warn { color: var(--warn); }
-  table { border-collapse: collapse; font-size: 20px; margin: 6px 0 12px; }
-  th, td { padding: 7px 16px 7px 0; text-align: left; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.total td { border-top: 1px solid var(--line); font-weight: 700; }
-  ul { margin: 4px 0 0; padding-left: 22px; font-size: 20px; }
-  li { margin-bottom: 9px; }
-  .chain { font-size: 18px; line-height: 1.9; color: var(--ink); }
-  .chain b { background: #eef3fb; padding: 2px 7px; border-radius: 3px; font-weight: 600; }
-  .src {
-    position: absolute; left: 56px; right: 56px; bottom: 18px;
-    font-size: 13px; color: var(--muted); border-top: 1px solid var(--line);
-    padding-top: 8px;
-  }
-  .num-slide { position: absolute; top: 18px; right: 26px; font-size: 13px; color: var(--muted); }
-  .two { display: flex; gap: 44px; align-items: flex-start; }
-  .two > div { flex: 1; }
-  .label { font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-  .backup { background: #fbfaf6; }
-  .backup h2::after { content: " · запасной"; color: var(--muted); font-size: 17px; font-weight: 400; }
-  @media print {
-    body { background: #fff; }
-    .deck { padding: 0; }
-    section { margin: 0; border: none; border-radius: 0; box-shadow: none;
-              width: 100%; min-height: 100vh; page-break-after: always; }
-    section:last-child { page-break-after: auto; }
-  }
+  .deck-stage > section:last-child { break-after: auto; page-break-after: auto; }
+  .deck-stage > section.overflowing::after { display: none; }
+  /* Титульный печатается светлым. На экране он тёмный, но в печати фон
+     рисуется только при включённой галочке «фоновая графика», а без неё
+     светлый текст лёг бы белым по белому и слайд пропал бы целиком. PDF,
+     который уходит жюри, не должен зависеть от чужой настройки печати. */
+  section[data-kind="title"] { background: #fff; }
+  section[data-kind="title"] .rail { background: #fff; border-right-color: var(--rule); }
+  section[data-kind="title"] .rail-num,
+  section[data-kind="title"] h1,
+  section[data-kind="title"] li { color: var(--ink); }
+  section[data-kind="title"] .rail-vert,
+  section[data-kind="title"] .eyebrow,
+  section[data-kind="title"] .sub,
+  section[data-kind="title"] .src { color: var(--ink-soft); }
+  section[data-kind="title"] .slide-head,
+  section[data-kind="title"] .src { border-color: var(--rule-2); }
+  section[data-kind="title"] .stamp { border-color: var(--rule); color: var(--ink-soft); }
+  section[data-kind="title"] .accent { color: var(--petrol); }
+  section[data-kind="title"] .src code { color: var(--ink); }
+
+  section.active .slide-body > * { animation: none; }
+  .progress, .hint { display: none !important; }
+}
+
+/* === 9. Уважение к настройке «меньше движения» =========================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .2s !important; }
+}
 </style>
 </head>
 <body>
-<div class="deck">
+<div class="deck-viewport">
+<div class="deck-stage">
 
-<section>
-  <div class="num-slide">1 / 9 · 0:30</div>
-  <h1>Многоагентная система с суррогатными моделями</h1>
-  <p class="sub">Трек 2 · Модель Z · 103 скважины · горизонт управления 2007–2025</p>
-  <p class="big accent" style="margin-top:26px">ЧДД считает ваш расчётчик</p>
-  <ul style="margin-top:18px">
-    <li>Своей формулы ЧДД в проекте нет и быть не должно — расхождение с вашим
-      пересчётом означает дисквалификацию.</li>
-    <li>Расчётчик вендорен побайтово; тест сверяет нашу обвязку с прямым запуском
-      до последнего знака (1e-9).</li>
-  </ul>
+<section data-kind="title">
+  <div class="rail"><span class="rail-num">1</span><span class="rail-tick"></span><span class="rail-vert">доклад</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">1 / 9 · 0:30</span></div>
+  <div class="slide-body">
+    <h1>Многоагентная система<br>с суррогатными моделями</h1>
+    <p class="sub" style="margin-bottom:22px">Трек 2 · Модель Z · 103 скважины · горизонт управления 2007–2025</p>
+    <p class="big accent">ЧДД считает ваш расчётчик</p>
+    <ul style="margin-top:28px">
+      <li>Своей формулы ЧДД в проекте нет и быть не должно — расхождение с вашим
+        пересчётом означает дисквалификацию.</li>
+      <li>Расчётчик вендорен побайтово; тест сверяет нашу обвязку с прямым запуском
+        до последнего знака (1e-9).</li>
+    </ul>
+  </div>
   <div class="src">Источник: <code>vendor/CHDD_PYTHON</code> 7.0.2-negative-row-filter; тест паритета</div>
 </section>
 
-<section>
-  <div class="num-slide">2 / 9 · 0:45</div>
-  <h2>Заявляемое число</h2>
-  <table>
-    <tr><td>базовый (исторический) сценарий</td><td class="num">11 851,8</td></tr>
-    <tr><td>наш сценарий</td><td class="num">13 133,8</td></tr>
-    <tr class="total"><td>прирост</td><td class="num">+1 281,9 &nbsp;(+10,8 %)</td></tr>
-  </table>
-  <p class="sub" style="margin:8px 0 0">млн руб. · <code>runs/matched-0995</code> ·
-    прогон 24.08 на четырёх процессах MPI · дисконт от 2007</p>
-  <ul style="margin-top:20px">
-    <li>Отбор ×1.5, закачка — <b>не общим множителем</b>, а по достигнутому:
-      каждой скважине назначено то, что она в расчёте взяла.</li>
-    <li>Файл и число получены <b>одним</b> расчётом. Пара «файл от одного прогона,
-      число от другого» — самый дешёвый способ разойтись с собственной заявкой.</li>
-    <li>Самый доходный посчитанный сценарий даёт 13 645,7 (+15,1 %). Мы его
-      <b>не заявляем</b>: больше половины его закачки идёт на пределе давления,
-      то есть число определяло бы не наше расписание, а модель околоскважинной
-      зоны (слайд 9).</li>
-  </ul>
+<section data-kind="talk">
+  <div class="rail"><span class="rail-num">2</span><span class="rail-tick"></span><span class="rail-vert">доклад</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">2 / 9 · 0:45</span></div>
+  <div class="slide-body">
+    <h2>Заявляемое число</h2>
+    <table>
+      <tr><td>базовый (исторический) сценарий</td><td class="num">11 851,8</td></tr>
+      <tr><td>наш сценарий</td><td class="num">13 133,8</td></tr>
+      <tr class="total"><td>прирост</td><td class="num">+1 281,9 &nbsp;(+10,8 %)</td></tr>
+    </table>
+    <p class="sub" style="margin:0 0 16px">млн руб. · <code>runs/matched-0995</code> ·
+      прогон 24.08 на четырёх процессах MPI · дисконт от 2007</p>
+    <ul>
+      <li>Отбор ×1.5, закачка — <b>не общим множителем</b>, а по достигнутому:
+        каждой скважине назначено то, что она в расчёте взяла.</li>
+      <li>Файл и число получены <b>одним</b> расчётом. Пара «файл от одного прогона,
+        число от другого» — самый дешёвый способ разойтись с собственной заявкой.</li>
+      <li>Самый доходный посчитанный сценарий даёт 13 645,7 (+15,1 %). Мы его
+        <b>не заявляем</b>: больше половины его закачки идёт на пределе давления,
+        то есть число определяло бы не наше расписание, а модель околоскважинной
+        зоны (слайд 9).</li>
+    </ul>
+  </div>
   <div class="src">Источники: docs/submission.md (разделы 1 и 3), тег submit-2026-08-24.1</div>
 </section>
 
-<section>
-  <div class="num-slide">3 / 9 · 0:45</div>
-  <h2>Контур: как это получено</h2>
-  <p class="chain">
-    состояние фонда → диагноз по марже → режимы →
-    <b>wells_schedule.inc</b> → <b>OPM Flow</b> → выгрузка 14 колонок →
-    <b>ЧДД вашим расчётчиком</b>
-  </p>
-  <p class="big" style="margin-top:24px">11 минут <span class="sub" style="font-size:22px">полный прогон истории 1991–2025</span></p>
-  <ul style="margin-top:14px">
-    <li>Замкнут целиком и прогнан не один раз: каждый прогон записан в журнал с
-      коммитом, конфигом и seed.</li>
-    <li>Один вход без ручных шагов между ними — требование п. 3.2.3 ТЗ.</li>
-  </ul>
+<section data-kind="talk">
+  <div class="rail"><span class="rail-num">3</span><span class="rail-tick"></span><span class="rail-vert">доклад</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">3 / 9 · 0:45</span></div>
+  <div class="slide-body">
+    <h2>Контур: как это получено</h2>
+    <p class="chain">
+      состояние фонда → диагноз по марже → режимы →
+      <b>wells_schedule.inc</b> → <b>OPM Flow</b> → выгрузка 14 колонок →
+      <b>ЧДД вашим расчётчиком</b>
+    </p>
+    <p class="big" style="margin-top:36px">11 минут</p>
+    <p class="sub" style="margin:10px 0 0">полный прогон истории 1991–2025</p>
+    <ul style="margin-top:26px">
+      <li>Замкнут целиком и прогнан не один раз: каждый прогон записан в журнал с
+        коммитом, конфигом и seed.</li>
+      <li>Один вход без ручных шагов между ними — требование п. 3.2.3 ТЗ.</li>
+    </ul>
+  </div>
   <div class="src">Источники: scripts/run_all.py; docs/experiments.md</div>
 </section>
 
-<section>
-  <div class="num-slide">4 / 9 · 1:00</div>
-  <h2>Откуда взялись деньги: вклад групп</h2>
-  <table>
-    <tr><td>закачка в обводнённую зону</td><td class="num">+565,3</td></tr>
-    <tr><td>закачка в невыработанную</td><td class="num">+541,5</td></tr>
-    <tr><td>добывающие</td><td class="num">+306,0</td></tr>
-    <tr class="total"><td>сумма = прирост, зазор тождества</td><td class="num">0,000000</td></tr>
-  </table>
-  <p class="big accent" style="margin-top:10px">78,3 % даёт закачка</p>
-  <p class="sub" style="margin-top:10px">Разложение по Шепли: 8 полных гидродинамических
-    расчётов, 1 ч 48 мин. Не оценка по важности признаков, а равенство с проверкой.
-    Считалось на сценарии ×1.5/×1.6 (прирост 1 412,8), а не на заявляемом: план
-    коалиций — восемь расчётов, и повторять его под каждую правку заявки не за что.</p>
+<section data-kind="talk">
+  <div class="rail"><span class="rail-num">4</span><span class="rail-tick"></span><span class="rail-vert">доклад</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">4 / 9 · 1:00</span></div>
+  <div class="slide-body">
+    <h2>Откуда взялись деньги: вклад групп</h2>
+    <table>
+      <tr><td>закачка в обводнённую зону</td><td class="num">+565,3</td></tr>
+      <tr><td>закачка в невыработанную</td><td class="num">+541,5</td></tr>
+      <tr><td>добывающие</td><td class="num">+306,0</td></tr>
+      <tr class="total"><td>сумма = прирост, зазор тождества</td><td class="num">0,000000</td></tr>
+    </table>
+    <p class="big accent" style="margin-top:14px">78,3 % даёт закачка</p>
+    <p class="sub" style="margin:20px 0 0;font-size:27px">Разложение по Шепли: 8 полных гидродинамических
+      расчётов, 1 ч 48 мин. Не оценка по важности признаков, а равенство с проверкой.
+      Считалось на сценарии ×1.5/×1.6 (прирост 1 412,8), а не на заявляемом: план
+      коалиций — восемь расчётов, и повторять его под каждую правку заявки не за что.</p>
+  </div>
   <div class="src">Источники: Р-85; docs/experiments.md, «Точный вклад групп в ЧДД»</div>
 </section>
 
-<section>
-  <div class="num-slide">5 / 9 · 1:00 · главный</div>
-  <h2>Почему группы, а не агент на скважину</h2>
-  <div class="two">
-    <div>
-      <p class="label">сумма одиночных вкладов</p>
-      <p class="big">1 254,6</p>
+<section data-kind="main">
+  <div class="rail"><span class="rail-num">5</span><span class="rail-tick"></span><span class="rail-vert">главный</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">5 / 9 · 1:00 · главный</span></div>
+  <div class="slide-body">
+    <h2>Почему группы, а не агент на скважину</h2>
+    <div class="two">
+      <div>
+        <p class="label">сумма одиночных вкладов</p>
+        <p class="big">1 254,6</p>
+      </div>
+      <div>
+        <p class="label">фактический прирост</p>
+        <p class="big">1 412,8</p>
+      </div>
+      <div style="flex:1.15">
+        <p class="label">синергия пары, млн руб.</p>
+        <p class="huge warn">−211,4</p>
+      </div>
     </div>
-    <div>
-      <p class="label">фактический прирост</p>
-      <p class="big">1 412,8</p>
-    </div>
+    <p class="sub" style="margin:24px 0 0;font-size:27px">Пара «закачка в обводнённое × закачка в
+      невыработанное». Это не разность двух чисел слева: там сумма всех вкладов,
+      здесь один парный член разложения — и он отрицательный.</p>
+    <ul style="margin-top:16px">
+      <li>Две группы закачки, работая вместе, дают <b>меньше</b>, чем поодиночке:
+        они делят один пласт и мешают друг другу.</li>
+      <li>Изолированный скважинный агент этого не видит по построению — отсюда
+        иерархия «планировщик → исполнители» и общий сигнал ЧДД.</li>
+    </ul>
   </div>
-  <p class="huge warn" style="margin-top:18px">−211,4</p>
-  <p class="sub">синергия <b>пары</b> «закачка в обводнённое × закачка в невыработанное»,
-    млн руб. Это не разность двух чисел выше: там сумма всех вкладов, здесь один
-    парный член разложения — и он отрицательный.</p>
-  <ul style="margin-top:8px">
-    <li>Две группы закачки, работая вместе, дают <b>меньше</b>, чем поодиночке:
-      они делят один пласт и мешают друг другу.</li>
-    <li>Изолированный скважинный агент этого не видит по построению — отсюда
-      иерархия «планировщик → исполнители» и общий сигнал ЧДД.</li>
-  </ul>
   <div class="src">Источники: Р-85, Р-104; docs/experiments.md (план коалиций)</div>
 </section>
 
-<section>
-  <div class="num-slide">6 / 9 · 0:45</div>
-  <h2>Где система себя останавливает</h2>
-  <table>
-    <tr><th></th><th class="num">ошибка прогноза</th></tr>
-    <tr><td>поиск выключен</td><td class="num">−105,1 (занижение)</td></tr>
-    <tr><td>поиск включён</td><td class="num">+1 350,9 (завышение)</td></tr>
-  </table>
-  <p class="sub" style="margin-top:6px">Оптимизатор тянет решение туда, где суррогат
-    ошибается в нашу пользу. Это механика, а не гипотеза.</p>
-  <p class="big" style="margin-top:16px">200 → <span class="accent">116 отбраковано</span></p>
-  <ul style="margin-top:10px">
-    <li>Покоординатная проверка пропускает все 200 сдвинутых режимов;
-      <b>сценарное расстояние</b> отбраковывает 116.</li>
-    <li>Кандидат вне области доверия не принимается — он идёт на полный расчёт.</li>
-  </ul>
+<section data-kind="talk">
+  <div class="rail"><span class="rail-num">6</span><span class="rail-tick"></span><span class="rail-vert">доклад</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">6 / 9 · 0:45</span></div>
+  <div class="slide-body">
+    <h2>Где система себя останавливает</h2>
+    <table>
+      <tr><th></th><th class="num">ошибка прогноза</th></tr>
+      <tr><td>поиск выключен</td><td class="num">−105,1 (занижение)</td></tr>
+      <tr><td>поиск включён</td><td class="num">+1 350,9 (завышение)</td></tr>
+    </table>
+    <p class="sub" style="margin:0 0 24px;font-size:27px">Оптимизатор тянет решение туда, где суррогат
+      ошибается в нашу пользу. Это механика, а не гипотеза.</p>
+    <p class="big">200 → <span class="warn">116 отбраковано</span></p>
+    <ul style="margin-top:28px">
+      <li>Покоординатная проверка пропускает все 200 сдвинутых режимов;
+        <b>сценарное расстояние</b> отбраковывает 116.</li>
+      <li>Кандидат вне области доверия не принимается — он идёт на полный расчёт.</li>
+    </ul>
+  </div>
   <div class="src">Источники: Р-111, Р-114; docs/experiments.md (шлюз доверия)</div>
 </section>
 
-<section>
-  <div class="num-slide">7 / 9 · 1:00 · не сокращать</div>
-  <h2>Что мы не заявляем</h2>
-  <ul style="font-size:21px">
-    <li>Лучший кандидат цикла — <b>+461 млн</b>, это <b>36 %</b> от простого правила
-      заявки. Цикл слабее простого правила, и мы сдаём то, что лучше.</li>
-    <li>Соблюсти наш же потолок по воде стоило <b>19,1 млн</b>, а способом цикла
-      стоило бы <b>752,8</b>. Способ решает больше, чем ограничение.</li>
-    <li>Заявляемый сценарий просит стороннего водоисточника <b>на 27 % больше</b>
-      сегодняшнего (865 против 680 м³/сут). Мощность водозабора нам неизвестна.</li>
-    <li>Достижимость множителя отбора историей <b>не подтверждается</b>: у 43 скважин
-      из 70 режим за 18 лет не менялся больше чем на 2 %.</li>
-  </ul>
+<section data-kind="keep">
+  <div class="rail"><span class="rail-num">7</span><span class="rail-tick"></span><span class="rail-vert">не сокращать</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">7 / 9 · 1:00 · не сокращать</span></div>
+  <div class="slide-body">
+    <h2>Что мы не заявляем</h2>
+    <ul>
+      <li>Лучший кандидат цикла — <b>+461 млн</b>, это <b>36 %</b> от простого правила
+        заявки. Цикл слабее простого правила, и мы сдаём то, что лучше.</li>
+      <li>Соблюсти наш же потолок по воде стоило <b>19,1 млн</b>, а способом цикла
+        стоило бы <b>752,8</b>. Способ решает больше, чем ограничение.</li>
+      <li>Заявляемый сценарий просит стороннего водоисточника <b>на 27 % больше</b>
+        сегодняшнего (865 против 680 м³/сут). Мощность водозабора нам неизвестна.</li>
+      <li>Достижимость множителя отбора историей <b>не подтверждается</b>: у 43 скважин
+        из 70 режим за 18 лет не менялся больше чем на 2 %.</li>
+    </ul>
+  </div>
   <div class="src">Источники: Р-52, Р-93, Р-101; docs/submission.md, раздел 4</div>
 </section>
 
-<section>
-  <div class="num-slide">8 / 9 · 0:40</div>
-  <h2>Переносимость и воспроизводимость</h2>
-  <table>
-    <tr><td>SPE9 (промысловые единицы, TSTEP)</td><td>отвергнут: ECL-005, ECL-007</td></tr>
-    <tr><td>Norne (WCONHIST, дерево групп)</td><td>отвергнут: ECL-010, ECL-011</td></tr>
-    <tr class="total"><td>Модель Z</td><td>0 отказов</td></tr>
-  </table>
-  <p class="sub">Входной контроль чужого дека — 15 проверок с кодами отказа.</p>
-  <ul style="margin-top:8px">
-    <li>Это <b>не</b> значит, что мы посчитаем чужой дек. Это значит, что мы не
-      посчитаем его <b>молча неправильно</b>.</li>
-    <li>Условия кейса выражаются конфигурацией: 27 ключей, приёмка отрепетирована —
-      от условий до проверенного расписания 1,6 с.</li>
-  </ul>
+<section data-kind="talk">
+  <div class="rail"><span class="rail-num">8</span><span class="rail-tick"></span><span class="rail-vert">доклад</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">8 / 9 · 0:40</span></div>
+  <div class="slide-body">
+    <h2>Переносимость и воспроизводимость</h2>
+    <table>
+      <tr><td>SPE9 (промысловые единицы, TSTEP)</td><td>отвергнут: ECL-005, ECL-007</td></tr>
+      <tr><td>Norne (WCONHIST, дерево групп)</td><td>отвергнут: ECL-010, ECL-011</td></tr>
+      <tr class="total"><td>Модель Z</td><td>0 отказов</td></tr>
+    </table>
+    <p class="sub" style="margin:0 0 22px;font-size:27px">Входной контроль чужого дека — 15 проверок с кодами отказа.</p>
+    <ul>
+      <li>Это <b>не</b> значит, что мы посчитаем чужой дек. Это значит, что мы не
+        посчитаем его <b>молча неправильно</b>.</li>
+      <li>Условия кейса выражаются конфигурацией: 33 ключа, приёмка отрепетирована —
+        от условий до проверенного расписания 1,6 с.</li>
+    </ul>
+  </div>
   <div class="src">Источники: Р-73, Р-83, Р-135; docs/portability.md, docs/validation-case-rehearsal.md</div>
 </section>
 
-<section>
-  <div class="num-slide">9 / 9 · 0:35</div>
-  <h2>Итог и сверка с вашим расчётом</h2>
-  <table>
-    <tr><td>эталон, тНавигатор</td><td class="num">5 218,9</td><td class="num">−0,21 %</td></tr>
-    <tr class="total"><td>наш прогон, OPM Flow</td><td class="num">5 207,7</td><td class="num">—</td></tr>
-    <tr><td>эталон, OPM Flow</td><td class="num">5 157,0</td><td class="num">+0,98 %</td></tr>
-    <tr><td>разрыв между вашими расчётами</td><td class="num">61,9</td><td class="num">1,20 %</td></tr>
-  </table>
-  <p class="sub" style="margin-top:2px">млн руб., база 1991, chargeInitialPump = ДА —
-    система отсчёта вашей публикации; заявка считается от 2007.</p>
-  <ul style="margin-top:10px">
-    <li>По нефти с вашим OPM Flow сходимся на <b>0,01 %</b> за 32 года, по закачке —
-      в ноль, смен ЭЦН 145 против 145.</li>
-    <li>Границы называем сами: сверка сделана <b>на исторической истории</b>, а не на
-      нашем форсированном сценарии; <code>PINCHREG</code> никуда не делся, расчёт идёт
-      с ослабленным разбором.</li>
-  </ul>
-  <div class="src">Команда: python scripts/compare_reference.py --charge-initial-pump --brief</div>
+<section data-kind="talk">
+  <div class="rail"><span class="rail-num">9</span><span class="rail-tick"></span><span class="rail-vert">доклад</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">9 / 9 · 0:35</span></div>
+  <div class="slide-body">
+    <h2>Итог и сверка с вашим расчётом</h2>
+    <table>
+      <tr><td>эталон, тНавигатор</td><td class="num">5 218,9</td><td class="num">−0,21 %</td></tr>
+      <tr class="ours"><td>наш прогон, OPM Flow</td><td class="num">5 207,7</td><td class="num">—</td></tr>
+      <tr><td>эталон, OPM Flow</td><td class="num">5 157,0</td><td class="num">+0,98 %</td></tr>
+      <tr><td>разрыв между вашими расчётами</td><td class="num">61,9</td><td class="num">1,20 %</td></tr>
+    </table>
+    <p class="sub" style="margin:0 0 20px;font-size:27px">млн руб., база 1991, chargeInitialPump = ДА —
+      система отсчёта вашей публикации; заявка считается от 2007.</p>
+    <ul>
+      <li>По нефти с вашим OPM Flow сходимся на <b>0,01 %</b> за 32 года, по закачке —
+        в ноль, смен ЭЦН 145 против 145.</li>
+      <li>Границы называем сами: сверка сделана <b>на исторической истории</b>, а не на
+        нашем форсированном сценарии; <code>PINCHREG</code> никуда не делся, расчёт идёт
+        с ослабленным разбором.</li>
+    </ul>
+  </div>
+  <div class="src">Команда: <code>python scripts/compare_reference.py --charge-initial-pump --brief</code></div>
 </section>
 
 <section class="backup">
-  <div class="num-slide">запасной 1</div>
-  <h2>Интерфейс</h2>
-  <ul>
-    <li>Веб-платформа на FastAPI: прогоны, профили по скважинам, раскладка ЧДД по
-      годам, экономический предел скважин, баланс воды, сравнение сценариев.</li>
-    <li>Цикл запускается из интерфейса на любом готовом сценарии; решения показаны
-      с объяснением и с <b>происхождением</b> объяснения: модель, кэш, шаблон или
-      отвергнутый ответ.</li>
-    <li>Показ не требует ни симулятора, ни ключа API — только каталог прогона.</li>
-  </ul>
-  <div class="src">Запуск: python -m uvicorn aios.web.app:app · сценарий показа: docs/demo.md</div>
+  <div class="rail"><span class="rail-num">1</span><span class="rail-tick"></span><span class="rail-vert">запасной</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">запасной 1</span></div>
+  <div class="slide-body">
+    <h2>Интерфейс</h2>
+    <ul>
+      <li>Веб-платформа на FastAPI: прогоны, профили по скважинам, раскладка ЧДД по
+        годам, экономический предел скважин, баланс воды, сравнение сценариев.</li>
+      <li>Цикл запускается из интерфейса на любом готовом сценарии; решения показаны
+        с объяснением и с <b>происхождением</b> объяснения: модель, кэш, шаблон или
+        отвергнутый ответ.</li>
+      <li>Показ не требует ни симулятора, ни ключа API — только каталог прогона.</li>
+    </ul>
+  </div>
+  <div class="src">Запуск: <code>python -m uvicorn aios.web.app:app</code> · сценарий показа: docs/demo.md</div>
 </section>
 
 <section class="backup">
-  <div class="num-slide">запасной 2</div>
-  <h2>Языковая модель: зачем она здесь</h2>
-  <ul>
-    <li><b>Что делает:</b> связывает уже посчитанные факты в причинную цепочку —
-      что увидели, почему решили так, чем подтверждено.</li>
-    <li><b>Чего не делает шаблон:</b> связей между фактами он не видит по построению
-      и выдаёт одну формулировку на любой набор.</li>
-    <li><b>Цена связности измерена:</b> ASR 0,750 на живом ответе против 1,000 на
-      шаблоне — модель добавляет утверждения, которых в фактах нет.</li>
-    <li><b>Поэтому ей не доверены ни решения, ни числа.</b> 16.08 под неверный
-      результат уже было написано убедительное физическое объяснение; поймал ошибку
-      контрольный прогон, а не текст.</li>
-  </ul>
+  <div class="rail"><span class="rail-num">2</span><span class="rail-tick"></span><span class="rail-vert">запасной</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">запасной 2</span></div>
+  <div class="slide-body">
+    <h2>Языковая модель: зачем она здесь</h2>
+    <ul>
+      <li><b>Что делает:</b> связывает уже посчитанные факты в причинную цепочку —
+        что увидели, почему решили так, чем подтверждено.</li>
+      <li><b>Чего не делает шаблон:</b> связей между фактами он не видит по построению
+        и выдаёт одну формулировку на любой набор.</li>
+      <li><b>Цена связности измерена:</b> ASR 0,750 на живом ответе против 1,000 на
+        шаблоне — модель добавляет утверждения, которых в фактах нет.</li>
+      <li><b>Поэтому ей не доверены ни решения, ни числа.</b> 16.08 под неверный
+        результат уже было написано убедительное физическое обоснование; поймал ошибку
+        контрольный прогон, а не текст.</li>
+    </ul>
+  </div>
   <div class="src">Источники: Р-86; docs/explainability.md, «Зачем здесь языковая модель»</div>
 </section>
 
 <section class="backup">
-  <div class="num-slide">запасной 3</div>
-  <h2>Масштабируемость и цена переноса</h2>
-  <table>
-    <tr><td>переносится как есть</td><td>экономика, контракт 14 колонок, чтение дека,
-      входной контроль, 27 ключей ограничений, иерархия агентов</td></tr>
-    <tr><td>только через переобучение</td><td>веса суррогата, пороги, область доверия</td></tr>
-  </table>
-  <p class="big accent" style="margin-top:14px">≈ 60 прогонов ≈ 11 часов</p>
-  <p class="sub">столько стоит перенос суррогата на новый объект: порог качества
-    берётся с пятого пакета DoE (на четырёх медиана Skill по нефти −0,058).</p>
-  <ul style="margin-top:6px">
-    <li>Прогноз быстрее полного расчёта в <b>1 668 раз</b> (0,495 с против 825 с на
-      одной машине) — но скорость имеет смысл только вместе с точностью.</li>
-    <li>Честная граница: на настоящем чужом объекте контур не запускался.</li>
-  </ul>
+  <div class="rail"><span class="rail-num">3</span><span class="rail-tick"></span><span class="rail-vert">запасной</span></div>
+  <div class="slide-head"><span class="eyebrow">AIOS · трек 2 · Модель Z</span><span class="stamp">запасной 3</span></div>
+  <div class="slide-body">
+    <h2>Масштабируемость и цена переноса</h2>
+    <table>
+      <tr><td style="width:34%">переносится как есть</td><td>экономика, контракт 14 колонок, чтение дека,
+        входной контроль, 33 ключа ограничений, иерархия агентов</td></tr>
+      <tr><td>только через переобучение</td><td>веса суррогата, пороги, область доверия</td></tr>
+    </table>
+    <p class="big accent" style="margin-top:16px">≈ 60 прогонов ≈ 14 часов</p>
+    <p class="sub" style="margin:16px 0 0;font-size:27px">столько стоит перенос суррогата на новый объект: порог качества
+      берётся с пятого пакета DoE (на четырёх медиана Skill по нефти −0,058).</p>
+    <ul style="margin-top:12px">
+      <li>Прогноз быстрее полного расчёта в <b>1 668 раз</b> (0,495 с против 825 с на
+        одной машине) — но скорость имеет смысл только вместе с точностью.</li>
+      <li>Честная граница: на настоящем чужом объекте контур не запускался.</li>
+    </ul>
+  </div>
   <div class="src">Источник: docs/scalability.md; замер 01.09 (docs/experiments.md)</div>
 </section>
 
 </div>
+</div>
+
+<div class="progress" id="progress"></div>
+<div class="hint">→ ← Space · «о» — обзор · Ctrl+P — печать</div>
+
 <script>
-  // Навигация стрелками: слайд за слайдом, без библиотек — файл должен
-  // открываться на любой машине и без сети.
-  const slides = [...document.querySelectorAll('section')];
-  let index = 0;
-  function show(i) {
-    index = Math.max(0, Math.min(slides.length - 1, i));
-    slides[index].scrollIntoView({behavior: 'smooth', block: 'center'});
+// === Масштаб сцены под окно ================================================
+// Слайд свёрстан в 1920×1080 и целиком вписывается в окно. Так он одинаков на
+// проекторе, в записи трансляции и в PDF; текст не переливается по устройству.
+const stage = document.querySelector('.deck-stage');
+const slides = [...stage.querySelectorAll('section')];
+
+function fit() {
+  if (document.body.classList.contains('overview')) { stage.style.transform = ''; return; }
+  const scale = Math.min(innerWidth / 1920, innerHeight / 1080);
+  const left = (innerWidth - 1920 * scale) / 2;
+  const top = (innerHeight - 1080 * scale) / 2;
+  stage.style.transform = 'translate(' + left + 'px,' + top + 'px) scale(' + scale + ')';
+}
+
+// === Переполнение не прячется молча ========================================
+// 02.09 жёсткая пропорция с overflow:hidden уже съела пункт на слайде 5, и это
+// заметил человек, а не файл. Теперь слайд проверяет себя сам: содержимое выше
+// отведённого — красная рамка и строка в консоль.
+function checkOverflow(slide) {
+  const body = slide.querySelector('.slide-body');
+  const over = body.scrollHeight - body.clientHeight > 1;
+  slide.classList.toggle('overflowing', over);
+  if (over) {
+    console.warn('[slides] слайд не поместился:',
+      slide.querySelector('.stamp').textContent,
+      body.scrollHeight + ' > ' + body.clientHeight);
   }
-  addEventListener('keydown', (event) => {
-    if (['ArrowRight', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); show(index + 1); }
-    if (['ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); show(index - 1); }
-    if (event.key === 'Home') show(0);
-    if (event.key === 'End') show(slides.length - 1);
-  });
+  return over;
+}
+
+// === Показ =================================================================
+let index = 0;
+const TALK = 9;                     // девять слайдов доклада, дальше запасные
+
+function show(i) {
+  index = Math.max(0, Math.min(slides.length - 1, i));
+  slides.forEach((slide, n) => slide.classList.toggle('active', n === index));
+  checkOverflow(slides[index]);
+  const done = Math.min(index + 1, TALK) / TALK;
+  document.getElementById('progress').style.width = (100 * done) + '%';
+}
+
+addEventListener('keydown', (event) => {
+  if (['ArrowRight', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); show(index + 1); }
+  if (['ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); show(index - 1); }
+  if (event.key === 'Home') show(0);
+  if (event.key === 'End') show(slides.length - 1);
+  if (event.key === 'о' || event.key === 'o') { document.body.classList.toggle('overview'); fit(); }
+});
+
+// Клик по слайду в обзоре открывает его целиком.
+slides.forEach((slide, n) => slide.addEventListener('click', () => {
+  if (document.body.classList.contains('overview')) {
+    document.body.classList.remove('overview');
+    fit(); show(n);
+  }
+}));
+
+// Подсказка по клавишам гаснет через несколько секунд и возвращается на
+// движение мыши: на записи выступления она не должна лежать на слайде.
+const hint = document.querySelector('.hint');
+let hintTimer = setTimeout(() => hint.classList.add('faded'), 5000);
+addEventListener('mousemove', () => {
+  hint.classList.remove('faded');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => hint.classList.add('faded'), 5000);
+});
+
+addEventListener('resize', fit);
+addEventListener('beforeprint', () => document.body.classList.remove('overview'));
+
+fit();
+show(0);
+// Общий отчёт по всем слайдам при открытии: молчание в консоли означает, что
+// поместились все двенадцать.
+slides.forEach(checkOverflow);
 </script>
 </body>
 </html>

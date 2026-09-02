@@ -887,3 +887,51 @@ def test_slides_keep_the_nine_speaking_slides_and_mark_the_spares():
     assert slides.count('class="backup"') == 3
     for mark in ("1 / 9", "5 / 9 · 1:00 · главный", "7 / 9 · 1:00 · не сокращать", "9 / 9"):
         assert mark in slides, f"в слайдах нет отметки «{mark}»"
+
+
+def test_slides_name_the_limits_count_the_code_actually_has():
+    """«Сколько ключей ограничений» слайды берут не из памяти, а из `Limits`.
+
+    Слайды собраны 01.09, когда ключей было 27; за ночь 01→02.09 их стало 33, и
+    все документы это подхватили — кроме показываемого файла. Расхождение нашлось
+    02.09 сверкой слайдов с кодом, а не тестом: сторожа на это число не было.
+    Ставим его здесь, потому что слайд — единственный документ, который жюри
+    видит глазами, и правится он отдельно от всех остальных.
+    """
+    import dataclasses
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    from aios.config import Limits
+
+    count = len(dataclasses.fields(Limits))
+    slides = _read("docs/slides.html")
+
+    assert count == 33, "число ключей изменилось — обновить слайды и этот тест"
+    assert f"{count} ключа" in slides, f"слайды не называют {count} ключей [limits]"
+    assert "27 ключ" not in slides, "в слайдах осталось прежнее число ключей"
+
+
+def test_slides_price_of_transfer_follows_the_speed_measurement():
+    """Цена переноса в часах пересчитывается из замера, а не переписывается.
+
+    В слайдах стояло «≈ 60 прогонов ≈ 11 часов» при 825 с на расчёт: 11 часов —
+    это 60 × 660 с, то есть замер **первой** машины, тогда как ускорение 1 668 раз
+    рядом взято из замера второй. Ровно тот след дублирования, о котором
+    предупреждает `HANDOFF.md`: числа из двух разных замеров сошлись на одном
+    слайде. Считаем из `artifacts/forecast-speed.json` — он и есть источник.
+    """
+    import json
+
+    speed = json.loads(_read("artifacts/forecast-speed.json"))
+    ggdm_seconds = speed["ггдм_секунд"]
+    mlp = next(one for one in speed["замеры"] if one["модель"] == "MLP по сценариям DoE")
+
+    hours = round(60 * ggdm_seconds / 3600)
+    speedup = f"{mlp['быстрее ГГДМ, раз']:,.0f}".replace(",", " ")
+
+    slides = _read("docs/slides.html")
+    assert hours == 14, "замер изменился — обновить слайды"
+    assert f"≈ 60 прогонов ≈ {hours} часов" in slides, "слайды не называют цену переноса замером"
+    assert f"{speedup} раз" in slides, "слайды не называют измеренное ускорение"
+    assert "11 часов" not in slides, "в слайдах осталась цена переноса из чужого замера"
