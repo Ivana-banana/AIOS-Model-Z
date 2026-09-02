@@ -575,7 +575,7 @@ def test_handoff_opens_with_the_current_submission_before_historical_snapshots()
     opening = "\n".join(_read("HANDOFF.md").splitlines()[:50])
 
     assert "## Текущий срез заявки" in opening
-    assert "13 133,8 млн руб." in opening
+    assert "5 579,5 млн руб." in opening
     assert "runs/matched-0995/wells_schedule.inc" in opening
     assert "41d813345e95f9d484c792ee6312a270" in opening
     assert "submit-2026-08-24.1" in opening
