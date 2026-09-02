@@ -313,6 +313,61 @@ def test_the_deck_we_actually_compute_passes_every_static_check():
     assert len(deckcheck.notes(MODEL_Z)) == 4
 
 
+# ── разломы: заметка, а не отказ (замечание трекера 02.09.2026) ───────────────
+
+def test_a_deck_with_faults_is_computed_but_never_silently(tmp_path):
+    """Разлом не мешает собрать расписание — но молчать о нём нельзя.
+
+    Мы пишем только `SCHEDULE`, геометрию не трогаем, и разломы считает
+    симулятор. Отказывать значило бы не считать половину реальных
+    месторождений. Но наше правило компенсации считает баланс воды **по объекту
+    целиком**, а непроницаемый разлом делит пласт на блоки: поле-широкая
+    компенсация тогда выполняется на бумаге при недокомпенсации одного блока и
+    перекачке другого. Проверить это нашим стендом нечем — межблоковых перетоков
+    мы не считаем, — поэтому контроль называет факт и последствие.
+    """
+    path = deck(tmp_path, """FAULTS
+  'F1' 10 10 5 8 1 3 'X' /
+/
+MULTFLT
+  'F1' 0.0 /
+/
+
+SCHEDULE
+""")
+
+    assert deckcheck.check(path) == [], "разлом не повод отказать в сборке расписания"
+
+    notes = deckcheck.notes(path)
+    assert any("FAULTS" in one and "MULTFLT" in one for one in notes), (
+        f"разломы не названы ни одной заметкой: {notes}"
+    )
+    assert any("по объекту целиком" in one for one in notes), (
+        "заметка называет разлом, но не называет, чему он мешает"
+    )
+
+
+def test_transmissibility_edits_between_regions_are_named_too(tmp_path):
+    """`EDITNNC` и `MULTREGT` — тот же класс: связность блоков меняется правкой."""
+    path = deck(tmp_path, """MULTREGT
+  1 2 0.0 /
+/
+
+SCHEDULE
+""")
+
+    assert deckcheck.check(path) == []
+    assert any("MULTREGT" in one for one in deckcheck.notes(path))
+
+
+def test_a_deck_without_faults_says_nothing_about_them(tmp_path):
+    """Проверка не должна шуметь там, где разломов нет: иначе её перестанут читать."""
+    path = deck(tmp_path, """SCHEDULE
+""")
+
+    assert not [one for one in deckcheck.notes(path) if "разлом" in one]
+
+
 # ── три ложных срабатывания, найденных на открытых деках (docs/portability.md) ──
 
 def test_an_include_without_quotes_is_a_legal_form(tmp_path):
