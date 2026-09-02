@@ -18,16 +18,16 @@ def test_declared_npv_is_the_same_in_all_current_documents():
     for name in ("docs/submission.md", "docs/report.md", "docs/defence-final.md",
                  "docs/presentation.md", "docs/defence-qa.md",
                  "docs/submission-day.md"):
-        assert "13 133,8" in _read(name), f"{name} потерял заявляемый ЧДД"
+        assert "5 579,5" in _read(name), f"{name} потерял заявляемый ЧДД"
 
 
 def test_submission_pairs_declared_npv_with_same_run_baseline_and_uplift():
     submission = _read("docs/submission.md")
 
-    assert "13 133,8 млн руб." in submission
-    assert "11 851,8 млн руб." in submission
-    assert "+1 281,9 млн руб. (+10,8 %)" in submission
-    assert "| **по достигнутому — заявляем** | **13 133,8** | **+10,8 %** | **20,0 %** |" in submission
+    assert "5 579,5 млн руб." in submission
+    assert "5 300,5 млн руб." in submission
+    assert "+279,0 млн руб. (+5,26 %)" in submission
+    assert "| **по достигнутому — наш сценарий** | **13 133,8** | **+10,8 %** | **20,0 %** |" in submission
 
 
 def test_audit_uses_the_actual_uplift_percentage():
@@ -350,7 +350,7 @@ def test_the_scalability_concept_keeps_its_honest_boundary():
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
-    assert "Прирост заявляемого сценария | +1 281,9 млн руб. (+10,8 %)" in defence
+    assert "плюс 279,0 млн руб., или 5,3 процента" in defence
     assert "Прирост самого доходного сценария | +1 789,5 млн руб. (+15,1 %)" in defence
 
 
@@ -364,9 +364,9 @@ def test_the_jury_answers_carry_the_same_declared_triple():
     """
     answers = _read("docs/defence-qa.md")
 
-    assert "13 133,8" in answers
-    assert "11 851,8" in answers
-    assert "+1 281,9 млн руб. (+10,8 %)" in answers
+    assert "5 579,5" in answers
+    assert "5 300,5" in answers
+    assert "+279,0 млн руб. (+5,26 %)" in answers
     assert "прогон 24.08, каталог `runs/matched-0995`" in answers
     assert "13 264,6 − 13 133,8 = **130,8 млн руб.**" in answers
     assert "**20,0 %**" in answers
@@ -395,9 +395,9 @@ def test_the_presentation_keeps_the_slide_we_agreed_not_to_cut():
     presentation = _read("docs/presentation.md")
 
     assert "## Слайд 7. Что мы не заявляем" in presentation
-    assert "13 133,8" in presentation, "презентация потеряла заявляемый ЧДД"
+    assert "5 579,5" in presentation, "презентация потеряла заявляемый ЧДД"
     assert "`runs/matched-0995`, прогон 24.08" in presentation
-    assert "это 10,8 процента" in presentation
+    assert "это 5,3 процента" in presentation
     assert "27 процентов" in presentation, "нет оговорки про сторонний водоисточник"
     assert "втрое" in presentation, (
         "со слайда пропала главная оговорка про суррогат: он переоценивает отклик "
@@ -414,7 +414,7 @@ def test_the_declared_pair_names_the_run_it_came_from():
     submission = _read("docs/submission.md")
 
     assert "runs/matched-0995/wells_schedule.inc" in submission
-    assert "13 133,8 млн руб." in submission
+    assert "5 579,5 млн руб." in submission
 
 
 def test_the_previous_candidate_survives_only_as_history():
@@ -493,8 +493,8 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     ):
         assert command in sheet
     assert "submit-2026-08-24.1" in sheet
-    assert "11 851,8" in sheet
-    assert "+1 281,9 млн руб. (+10,8 %)" in sheet
+    assert "5 300,5" in sheet
+    assert "+279,0 млн руб. (+5,26 %)" in sheet
     assert "подменяет секцию SCHEDULE целиком; история включена" in sheet
     assert "подтверждённой трекером на КТ-2 31.08.2026 (В-03 закрыт)" in sheet
     assert "В-03 не получен" not in sheet
@@ -873,7 +873,7 @@ def test_slides_carry_the_claimed_triple_and_the_reference_check():
     """
     slides = _read("docs/slides.html")
 
-    for number in ("13 133,8", "11 851,8", "+1 281,9", "+10,8 %"):
+    for number in ("5 579,5", "5 300,5", "+279,0", "+5,26 %"):
         assert number in slides, f"слайды не называют {number}"
     for number in ("5 218,9", "5 207,7", "5 157,0", "1,20 %"):
         assert number in slides, f"слайды не называют число сверки {number}"
