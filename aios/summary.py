@@ -194,11 +194,19 @@ def monthly_rows(case: str | Path,
 
 
 def sanity_problems(rows: list[dict[str, Any]],
-                    max_liquid_rate: float = 500.0) -> list[str]:
+                    max_liquid_rate: float = 500.0,
+                    min_reservoir_pressure: float | None = None,
+                    max_reservoir_pressure: float | None = None) -> list[str]:
     """Санити-чеки на границе «симулятор → экономика».
 
     Симулятор и суррогат не падают, а тихо врут, поэтому физический диапазон
     проверяется явно, до того как числа попадут в ЧДД.
+
+    `min_reservoir_pressure` и `max_reservoir_pressure` — пределы **пластового**
+    давления (колонка `THP`, это `WBP9`): снизу у добывающих, сверху у
+    нагнетательных. Роль строки определяется так же, как действующий фонд, —
+    по `WLPR` и `WWIR`. None у обоих означает «предел неизвестен, не проверяем»:
+    выдуманная граница остановила бы прогон на числе, которого никто не измерял.
     """
     problems: list[str] = list(_monthly_step_problems(rows))
     previous: dict[str, dict[str, float]] = {}
@@ -224,6 +232,18 @@ def sanity_problems(rows: list[dict[str, Any]],
             problems.append(f"{where}: одновременно добыча и закачка")
         if row["BHP"] < 0 or row["THP"] < 0:
             problems.append(f"{where}: отрицательное давление")
+        if (min_reservoir_pressure is not None
+                and row["WLPR"] > 0 and row["THP"] < min_reservoir_pressure):
+            problems.append(
+                f"{where}: пластовое давление {row['THP']:.6g} < "
+                f"{min_reservoir_pressure:g} атм у добывающей"
+            )
+        if (max_reservoir_pressure is not None
+                and row["WWIR"] > 0 and row["THP"] > max_reservoir_pressure):
+            problems.append(
+                f"{where}: пластовое давление {row['THP']:.6g} > "
+                f"{max_reservoir_pressure:g} атм у нагнетательной"
+            )
 
         last = previous.get(well)
         if last is not None:

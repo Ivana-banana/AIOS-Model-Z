@@ -327,7 +327,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"нет выгрузки в {confirmed_dir}", file=sys.stderr)
             return 1
 
-        problems = summary.sanity_problems(rows)
+        problems = summary.sanity_problems(
+            rows,
+            min_reservoir_pressure=config.limits.min_reservoir_pressure_atm,
+            max_reservoir_pressure=config.limits.max_reservoir_pressure_atm,
+        )
         if problems:
             print(f"санити-чеки расчёта: нарушений {len(problems)}")
             for line in problems[:10]:

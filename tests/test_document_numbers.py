@@ -272,6 +272,79 @@ def test_letter_maps_field_injection_and_external_water_to_separate_limits():
     assert "доступный сторонний водоисточник" in letter
 
 
+def test_the_letter_no_longer_asks_the_question_answered_at_the_checkpoint():
+    """В-03 закрыт вслух на КТ-2 31.08 — спрашивать его письмом больше нельзя.
+
+    Вопрос, на который ответ уже получен, в письме организаторам стоит дороже
+    пустой строки: он показывает, что мы не услышали ответ, и ставит под сомнение
+    остальные пять. Нумерация вопросов при этом сдвинулась, и на неё ссылаются
+    `BLOCKED.md` и `docs/kt2-plan.md` — расхождение ссылок ловится здесь же.
+    """
+    letter = _read("docs/letter-to-organisers.md")
+
+    assert "пять вопросов" in letter
+    assert "Как подключается `wells_schedule.inc`" not in letter
+    assert "подменяющий секцию целиком, — правильная" not in letter
+    assert "получен вслух на КТ-2 31.08" in letter
+    assert "## 1. Состав фонда в вашем экспортёре (В-04)" in letter
+    assert "## 5. Значение `chargeInitialPump` при оценке" in letter
+    assert "## 6." not in letter
+
+    for name in ("BLOCKED.md", "docs/kt2-plan.md"):
+        assert "вопросами 4 и 5" in _read(name), (
+            f"{name} ссылается на прежние номера вопросов письма"
+        )
+
+    blocked = _read("BLOCKED.md")
+    assert "**В-03 СНЯТ 31.08**" in blocked
+    assert "## 1. Вопрос организаторам В-04 (В-03 закрыт 31.08)" in blocked
+
+    decisions = _read("docs/decisions.md")
+    assert "Р-130" in decisions
+    assert "КТ-2, 31.08.2026, трекер, запись 06:39" in decisions
+
+
+def test_the_llm_rationale_answers_the_question_the_tracker_asked():
+    """Требование ТЗ п. 3.1 — обосновать причину использования, а не только вызвать.
+
+    Трекер сформулировала это отдельным пунктом (КТ-2, запись 03:15). Раздел
+    обязан отвечать на три вещи сразу: зачем модель здесь, что она даёт сверх
+    шаблона **числом**, и почему ей не доверено производить числа и принимать
+    решения. Без последней части обоснование превращается в рекламу слоя.
+    """
+    rationale = _read("docs/llm-rationale.md")
+
+    assert "ASR" in rationale and "0,750" in rationale
+    assert "не принимает его" in rationale and "производит чисел" in rationale
+    assert "template-rejected" in rationale
+    assert "16.08" in rationale, "история про обоснование под неверный результат"
+    assert "Границы: чего это обоснование не доказывает" in rationale
+
+    assert "llm-rationale.md" in _read("README.md"), "раздел не найти из README"
+    assert "llm-rationale.md" in _read("docs/report.md"), "отчёт на него не ссылается"
+
+
+def test_the_scalability_concept_keeps_its_honest_boundary():
+    """Трекер назвала слабое место сама — концепция обязана его признавать.
+
+    «Если вы обучаете MLP, то переносим на другое месторождение — у вас всё
+    сломается» (КТ-2, запись 04:20). Раздел, который обходит это молчанием,
+    сильнее не выглядит: на защите первым спросят именно про перенос весов.
+    Поэтому тест держит три уровня — что переносится само, что переобучением с
+    измеренной ценой, и что не переносится вовсе.
+    """
+    scalability = _read("docs/scalability.md")
+
+    assert "Переносится архитектурно" in scalability
+    assert "Переносится только переобучением" in scalability
+    assert "Не переносится вовсе" in scalability
+    assert "60 сценариев" in scalability, "цена переноса названа числом"
+    assert "825 с" in scalability, "цена переноса переведена во время замером 01.09"
+    assert "не проверялось" in scalability, "границы разбора не названы"
+
+    assert "scalability.md" in _read("README.md"), "концепцию не найти из README"
+
+
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
@@ -421,7 +494,8 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     assert "11 851,8" in sheet
     assert "+1 281,9 млн руб. (+10,8 %)" in sheet
     assert "подменяет секцию SCHEDULE целиком; история включена" in sheet
-    assert "В-03 не получен" in sheet
+    assert "подтверждённой трекером на КТ-2 31.08.2026 (В-03 закрыт)" in sheet
+    assert "В-03 не получен" not in sheet
     assert "всем 103 скважинам с режимом после 01.01.2007" in sheet
     assert "не получен (В-04)" in sheet
     assert "docs/submission-day.md" in _read("README.md")
@@ -433,7 +507,8 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
 def test_submission_does_not_reopen_resolved_blockers():
     submission = _read("docs/submission.md")
 
-    assert "В-03 и В-04" in submission
+    assert "Организаторам остаётся В-04" in submission
+    assert "В-03 закрыт ответом трекера на" in submission
     assert "пп. 3, 4 и 6 уже закрыты" in submission
     assert "Открытые вопросы организаторам** — четыре" not in submission
 

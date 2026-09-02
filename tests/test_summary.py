@@ -206,7 +206,7 @@ def test_injection_only_well_is_reported(tmp_path):
 
 def _sanity_row(data, *, well="1", wlpt=0.0, womt=0.0, wwit=0.0,
                 wlpt_diff=0.0, womt_diff=0.0, wwit_diff=0.0,
-                wlpr=0.0, wwir=0.0):
+                wlpr=0.0, wwir=0.0, thp=120.0):
     """Строка контракта под проверки напрямую, без симулятора.
 
     Так собирает строки и суррогат: накопленные величины и приращения приходят
@@ -216,9 +216,52 @@ def _sanity_row(data, *, well="1", wlpt=0.0, womt=0.0, wwit=0.0,
     return {
         "DATA": data, "well": well,
         "WLPT": wlpt, "WLPR": wlpr, "WOMT": womt, "WOMR": 0.0,
-        "WWIR": wwir, "WWIT": wwit, "THP": 120.0, "BHP": 80.0, "WEFF": 1.0,
+        "WWIR": wwir, "WWIT": wwit, "THP": thp, "BHP": 80.0, "WEFF": 1.0,
         "WLPT_Diff": wlpt_diff, "WOMT_Diff": womt_diff, "WWIT_Diff": wwit_diff,
     }
+
+
+def test_reservoir_pressure_is_not_checked_without_limits():
+    """Умолчание — «предел неизвестен»: выдуманная граница уронила бы прогон зря."""
+    rows = [_sanity_row("2014-01-01", wlpr=10.0, thp=5.0),
+            _sanity_row("2014-01-01", well="9", wwir=10.0, thp=900.0)]
+    assert summary.sanity_problems(rows) == []
+
+
+def test_reservoir_pressure_below_the_floor_is_reported_for_producers():
+    rows = [_sanity_row("2014-01-01", wlpr=10.0, thp=45.0)]
+    found = summary.sanity_problems(rows, min_reservoir_pressure=50.0)
+    assert found == ["2014-01-01 скв. 1: пластовое давление 45 < 50 атм у добывающей"]
+
+
+def test_reservoir_pressure_above_the_ceiling_is_reported_for_injectors():
+    rows = [_sanity_row("2014-01-01", well="9", wwir=10.0, thp=310.0)]
+    found = summary.sanity_problems(rows, max_reservoir_pressure=300.0)
+    assert found == ["2014-01-01 скв. 9: пластовое давление 310 > 300 атм у нагнетательной"]
+
+
+def test_each_bound_applies_to_its_own_role_only():
+    """Нагнетательная не обязана держать нижнюю границу добывающей, и наоборот.
+
+    Роль берётся так же, как действующий фонд, — по `WLPR` и `WWIR`: другого
+    признака в контракте эталонного расчётчика нет.
+    """
+    rows = [_sanity_row("2014-01-01", wlpr=10.0, thp=310.0),
+            _sanity_row("2014-01-01", well="9", wwir=10.0, thp=45.0)]
+    assert summary.sanity_problems(rows, min_reservoir_pressure=50.0,
+                                   max_reservoir_pressure=300.0) == []
+
+
+def test_the_declared_scenario_keeps_reservoir_pressure_under_300():
+    """Замер 01.09 на заявке: 291,8 атм максимум у нагнетательных, 300 не превышено.
+
+    База даёт 282,2 — то есть заявка съела 9,6 атм запаса, и 17 строк подошли
+    выше 290. Если кейс задаст верхнюю границу 300, заявка проходит; если ниже —
+    нет. Замер закреплён здесь, чтобы это было числом, а не памятью.
+    """
+    rows = [_sanity_row("2014-01-01", well="9", wwir=10.0, thp=291.8)]
+    assert summary.sanity_problems(rows, max_reservoir_pressure=300.0) == []
+    assert summary.sanity_problems(rows, max_reservoir_pressure=290.0)
 
 
 def test_negative_increment_and_the_drop_it_explains_are_one_problem():

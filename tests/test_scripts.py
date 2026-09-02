@@ -30,7 +30,7 @@ REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "r
             "docx_to_text.py", "profiles.py", "pack_npv.py",
             "surrogate_warnings.py", "build_scaled_case.py", "check_deck.py",
             "forcing_check.py", "check_package.py", "check_release_tag.py",
-            "check_submission.py")
+            "check_submission.py", "forecast_speed.py", "pressure_check.py")
 PYTHON_ENTRYPOINTS = tuple(sorted(path.name for path in SCRIPTS.glob("*.py")))
 
 
@@ -608,7 +608,11 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert code == 1
     assert "другими параметрами" in capsys.readouterr().err
 
-    monkeypatch.setattr(run_cycle.summary, "sanity_problems", lambda _rows: ["отрицательный объём"])
+    # `**_limits` здесь не формальность: цикл передаёт в проверку пределы
+    # пластового давления из конфигурации, и заглушка без них снова поймает
+    # рассогласование вызова — за этим тест и стоит.
+    monkeypatch.setattr(run_cycle.summary, "sanity_problems",
+                        lambda _rows, **_limits: ["отрицательный объём"])
     code = run_cycle.main([
         "--from", str(source.parent), "--confirm", str(tmp_path / "out"),
         "--no-tune-rates", "--config", str(config),
