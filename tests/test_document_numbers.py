@@ -282,16 +282,18 @@ def test_the_letter_no_longer_asks_the_question_answered_at_the_checkpoint():
     """
     letter = _read("docs/letter-to-organisers.md")
 
-    assert "пять вопросов" in letter
+    assert "шесть вопросов" in letter
     assert "Как подключается `wells_schedule.inc`" not in letter
     assert "подменяющий секцию целиком, — правильная" not in letter
     assert "получен вслух на КТ-2 31.08" in letter
     assert "## 1. Состав фонда в вашем экспортёре (В-04)" in letter
-    assert "## 5. Значение `chargeInitialPump` при оценке" in letter
-    assert "## 6." not in letter
+    assert "## 3. Точные границы коридора баланса воды" in letter
+    assert "## 6. Значение `chargeInitialPump` при оценке" in letter
+    assert "## 7." not in letter
+    assert "пять вопросов" not in letter, "шапка письма отстала от состава вопросов"
 
     for name in ("BLOCKED.md", "docs/kt2-plan.md"):
-        assert "вопросами 4 и 5" in _read(name), (
+        assert "вопросами 5 и 6" in _read(name), (
             f"{name} ссылается на прежние номера вопросов письма"
         )
 
