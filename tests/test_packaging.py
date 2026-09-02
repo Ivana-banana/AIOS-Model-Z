@@ -268,3 +268,29 @@ def test_readme_does_not_expand_mit_beyond_the_licence_boundary():
 
     assert "`docs/screenshots/`, `manus-answered/`" in readme
     assert "`docs/` (кроме\n`docs/method/`)" not in readme
+def test_launch_check_survives_a_reworded_readme():
+    """Сторож инструкции запуска ищет смысл, а не буквальные заголовки.
+
+    02.09 README переоформили под защиту — разделы стали нумерованными, — и
+    проверка объявила пакет неполным при полностью сохранившейся инструкции.
+    """
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.check_package import _readme_has_launch
+
+    root = Path(__file__).resolve().parent.parent
+    assert _readme_has_launch(root / "README.md"), "настоящий README обязан проходить"
+
+
+def test_launch_check_still_fails_without_the_single_entry_point(tmp_path):
+    """И всё же проверяет: README без единой команды прогона не проходит."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.check_package import _readme_has_launch
+
+    readme = tmp_path / "README.md"
+    readme.write_text("# Проект\n\n## Установка\n\n## Запуск\n", encoding="utf-8")
+
+    assert not _readme_has_launch(readme)

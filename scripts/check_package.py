@@ -161,10 +161,19 @@ def _missing(paths: tuple[Path, ...]) -> str:
 
 
 def _readme_has_launch(path: Path) -> bool:
+    """Есть ли в README установка, запуск и единая команда прогона.
+
+    Ищется смысл, а не буквальные заголовки: 02.09 README переоформили под защиту
+    (разделы стали нумерованными), и проверка объявила пакет неполным при
+    полностью сохранившейся инструкции. Сторож, срабатывающий на смену заголовка,
+    отвлекает ровно тогда, когда его читают внимательнее всего — в день отправки.
+    """
     if not path.is_file():
         return False
-    text = path.read_text(encoding="utf-8")
-    return "## Установка" in text and "## Сквозной прогон" in text
+    text = path.read_text(encoding="utf-8").lower()
+    has_install = "установка" in text
+    has_launch = "запуск" in text or "сквозной прогон" in text
+    return has_install and has_launch and "run_all.py" in text
 
 
 def _docker_licence_problem(path: Path) -> str:
