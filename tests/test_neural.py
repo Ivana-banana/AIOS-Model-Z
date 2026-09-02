@@ -836,6 +836,52 @@ def test_a_well_without_a_model_is_named_not_silently_dropped():
     )
 
 
+def test_a_well_absent_from_training_is_named_though_it_vanishes_from_the_forecast():
+    """Скважина, которой в обучении не было вовсе, обязана быть названа.
+
+    Это не тот случай, что в тесте выше. Там скважина есть в датасете, но модели
+    ей не досталось. Здесь её нет нигде: ни в `models`, ни в `control_wells`, ни
+    в опорном расписании — она приходит только в расписании, которое просят
+    оценить. Ровно так выглядит перенос на новую скважину: кейс, чужой дек, ввод
+    из бурения.
+
+    Поведение проверено прогоном 02.09 и оно двойственное, поэтому и закреплено:
+    `predict` идёт по `bundle.models`, поэтому строк по новой скважине нет **ни
+    одной** и ЧДД считается по остатку фонда, — но `_unlearned_controls` называет
+    её отдельной пометкой. Молчаливой потери нет; есть прогноз по остатку фонда с
+    названной причиной, и решение о доверии принимает тот, кто читает пометку.
+
+    Тест стережёт обе половины. Исчезновение из прогноза — поведение по
+    построению, а не дефект: сказать про скважину, которой модель не видела,
+    суррогату нечем. Дефектом было бы молчание.
+    """
+    frame = _dataset_frame()
+    bundle = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+    surrogate = NeuralSurrogate.create(bundle, _schedule(rate=95.0), require_quality=False)
+
+    newcomer = [
+        ScheduleStep(
+            step.date,
+            step.producers + (ProducerControl("99", "OPEN", "LRAT", 95.0, 50.0),),
+            step.injectors,
+        )
+        for step in _schedule(rate=95.0)
+    ]
+
+    assert "99" not in set(bundle.models), "проверка вырождена: скважина известна модели"
+
+    forecast_wells = {str(row["well"]) for row in surrogate.predict(newcomer)}
+    assert "99" not in forecast_wells, (
+        "поведение изменилось: незнакомая скважина попала в прогноз — "
+        "проверить, чем именно её посчитали"
+    )
+
+    warnings = surrogate.in_training_range(newcomer)
+    assert any("99" in warning for warning in warnings), (
+        f"незнакомая скважина исчезла из прогноза молча: {warnings}"
+    )
+
+
 class SlopeModel:
     """Модель, чей прогноз зависит от управления, а не от одного времени.
 
