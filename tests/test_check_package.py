@@ -22,7 +22,9 @@ def _package(root: Path) -> tuple[Path, Path]:
         "docs/report.md": "",
         "docs/surrogate.md": "",
         "docs/submission.md": "| **ЧДД** | **13 271,8 млн руб.** |\n",
-        "README.md": "## Установка\n## Сквозной прогон\n",
+        # инструкция запуска проверяется по смыслу, а не по буквальным заголовкам
+        # (02.09): установка, запуск и единая команда прогона
+        "README.md": "## Установка\n## Сквозной прогон\npython scripts/run_all.py\n",
         "config.toml": "[doe]\nseed = 20260817\n",
         "docker/Dockerfile": (
             "COPY LICENSE /opt/aios/\n"
