@@ -492,7 +492,7 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
         "python scripts/check_submission.py runs/matched-0995/wells_schedule.inc",
     ):
         assert command in sheet
-    assert "submit-2026-08-24.1" in sheet
+    assert "submit-2026-09-02" in sheet
     assert "5 300,5" in sheet
     assert "+279,0 млн руб. (+5,26 %)" in sheet
     assert "подменяет секцию SCHEDULE целиком; история включена" in sheet
@@ -502,7 +502,7 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     assert "не получен (В-04)" in sheet
     assert "docs/submission-day.md" in _read("README.md")
     assert "все шесть проверок" in _read("README.md")
-    assert "в **отдельной чистой копии** `submit-2026-08-24.1`" in sheet
+    assert "в **отдельной чистой копии** `submit-2026-09-02`" in sheet
     assert "вернуть в текущий `main`" in sheet
 
 
@@ -578,7 +578,7 @@ def test_handoff_opens_with_the_current_submission_before_historical_snapshots()
     assert "5 579,5 млн руб." in opening
     assert "runs/matched-0995/wells_schedule.inc" in opening
     assert "41d813345e95f9d484c792ee6312a270" in opening
-    assert "submit-2026-08-24.1" in opening
+    assert "submit-2026-09-02" in opening
 
 
 # --- Числа сверки 30–31.08: документ против пересчёта ------------------------
