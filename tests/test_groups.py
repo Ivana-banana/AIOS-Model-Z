@@ -149,3 +149,22 @@ def test_stability_is_high_when_the_split_does_not_depend_on_the_window():
     })
 
     assert stability(rows, SINCE, draws=5, seed=3) == pytest.approx(1.0)
+
+
+def test_stability_does_not_pass_when_bootstrap_loses_comparable_wells():
+    """ARI пустой выборки равен 1 формально, но устойчивость группы не доказывает."""
+    rows = _history(5, {
+        "1": {
+            "WLPR": np.array([100.0, 0.0, 0.0, 0.0, 0.0]),
+            "WOMR": np.array([50.0, 0.0, 0.0, 0.0, 0.0]),
+        },
+    })
+
+    assert stability(rows, SINCE, draws=10, seed=0) == 0.0
+
+
+def test_stability_requires_at_least_one_bootstrap_draw():
+    rows = _history(3, {"1": {"WLPR": np.full(3, 100.0)}})
+
+    with pytest.raises(ValueError, match="число выборок"):
+        stability(rows, SINCE, draws=0, seed=0)

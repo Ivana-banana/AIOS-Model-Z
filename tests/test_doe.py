@@ -562,6 +562,36 @@ def tiny_project(tmp_path):
     return config
 
 
+def test_rebuilding_a_package_invalidates_completed_cases(tmp_path, capsys):
+    """Новый `RUN.DATA` нельзя сочетать с отметкой от прежнего расчёта.
+
+    Повторная сборка может поменять расписание сценария, но оставляет каталог
+    тем же. Если не снять `.doe-done`, `run_doe.py` увидит старый `.UNSMRY` и
+    пропустит расчёт уже другого входного дека.
+    """
+    from scripts import build_doe, run_doe
+
+    root = tmp_path / "pack"
+    arguments = [
+        "--samples", "2", "--run-root", str(root),
+        "--config", str(tiny_project(tmp_path)),
+    ]
+    assert build_doe.main(arguments) == 0
+
+    cases = sorted(root.glob("doe-*"))
+    for case in cases:
+        (case / "RUN.UNSMRY").write_text("старый результат", encoding="utf-8")
+        (case / ".doe-done").write_text("2026-08-18", encoding="utf-8")
+
+    assert build_doe.main(arguments) == 0
+    assert all((case / "RUN.UNSMRY").is_file() for case in cases)
+    assert not any((case / ".doe-done").exists() for case in cases)
+
+    capsys.readouterr()
+    assert run_doe.main([str(root), "2", "--dry-run"]) == 0
+    assert "готово: 0, в очереди: 2" in capsys.readouterr().out
+
+
 def test_the_manifest_carries_the_periods_the_dataset_builder_expects(tmp_path):
     """Схема стыка: `from` ISO-датой, периоды по возрастанию, первый — control_start.
 

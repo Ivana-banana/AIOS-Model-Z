@@ -217,6 +217,17 @@ def test_an_uncalibrated_margin_is_not_silently_treated_as_zero_risk():
     assert any("не калибрована" in reason for reason in reasons)
 
 
+def test_margin_loader_uses_only_the_configured_family_and_names_missing_file(tmp_path):
+    corpus = tmp_path / "pairs.csv"
+    corpus.write_text(("100,90,manual,manual\n100,80,search,search\n") * 5,
+                      encoding="utf-8")
+
+    margin = trust.margin_from_pairs(corpus, family="search")
+
+    assert margin.samples == 5
+    assert not trust.margin_from_pairs(tmp_path / "missing.csv", family="search").calibrated
+
+
 def test_a_covered_candidate_with_calibration_is_not_routed_to_a_full_run():
     region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)
     near = region.distance(trust.profile(flat({"prod:1": 1.0, "prod:2": 1.0})))
@@ -648,3 +659,27 @@ def test_the_margin_is_negative_when_the_model_never_overpromises():
     assert "нужен" in on_search.reason
     assert all(predicted > actual for predicted, actual in search), (
         "на кандидатах оптимизатора суррогат завышает — знак остатка разделяет семейства")
+
+
+def test_the_nightly_seeds_take_the_corpus_past_the_worst_observed_error():
+    """Ночной пакет заказан не «на глазок»: 19 пар — первое n, где запас не максимум.
+
+    При α = 0,1 индекс ⌈(n+1)·0,9⌉ равен n вплоть до n = 18, то есть любой корпус
+    меньше 19 пар отдаёт в качестве запаса худшую наблюдённую ошибку: одна
+    неудачная пара двигает гарантию целиком. Сторож держит связь между числом
+    seed'ов в рабочем конфиге и уже собранным корпусом — урезали `search_seeds`,
+    тест падает.
+    """
+    import math
+
+    from aios import config as config_module
+
+    settings = config_module.load(ROOT / "config.toml")
+    collected = trust.margin_from_pairs(settings.trust.pairs_file,
+                                        family=settings.trust.pairs_family)
+    total = collected.samples + len(settings.trust.search_seeds)
+    index = math.ceil((total + 1) * (1 - collected.alpha))
+
+    assert index < total, (
+        f"{collected.samples} пар плюс {len(settings.trust.search_seeds)} seed'ов дают {total}: "
+        "запас останется максимумом ошибок")

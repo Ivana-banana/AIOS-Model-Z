@@ -31,6 +31,7 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -253,6 +254,7 @@ def choose_joint_rates(
     weight: float = TRUST_WEIGHT,
     norms_file: Path = economics.NORMS_FILE,
     start: dict[tuple[str, str], float] | None = None,
+    seed: int | None = None,
 ) -> list[JointRateChoice]:
     """Координатный поиск для суррогата с межскважинными связями.
 
@@ -321,6 +323,10 @@ def choose_joint_rates(
             *(("production", well) for well in producer_wells),
         )
     ]
+    if seed is not None:
+        # Координатный поиск зависит от порядка: это не скрываем, а делаем
+        # воспроизводимым источником независимых кандидатов для калибровки.
+        random.Random(seed).shuffle(controls)
     # Точка старта поиска. По умолчанию — «как в опорном расписании», то есть
     # единицы. Заданная извне карта позволяет спросить то, что иначе спросить
     # нельзя: **даёт ли поиск что-то сверх уже найденного сценария**. Ключ карты
@@ -752,8 +758,35 @@ def apply_choices(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
 def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
     """Отчёт о подборе — в лог, UI и презентацию."""
     changed = [choice for choice in choices if choice.changed]
+    # Диагностика относится ко всему прогону, в том числе к случаю «лучше
+    # исходного нет»: именно тогда иначе легко не заметить, что выбирать было
+    # не из полного набора.
+    withheld = [choice for choice in choices if getattr(choice, "outside_training", ())]
+    joint = bool(choices) and isinstance(choices[0], JointRateChoice)
+    pruning: list[str] = []
+    if joint:
+        pruning.append(
+            f"Набор кандидатов: точек управления {len(choices)}; "
+            f"урезан у {len(withheld)}."
+        )
+    if withheld:
+        discarded: dict[float, int] = {}
+        for choice in withheld:
+            for multiplier in choice.outside_training:
+                discarded[multiplier] = discarded.get(multiplier, 0) + 1
+        pruning += [
+            f"  у точек с урезанием часть кандидатов вне обучения не рассматривалась: "
+            f"{len(withheld)} из {len(choices)}",
+            "  урезание кандидатов: " + "; ".join(
+                f"×{multiplier:g} — {count} управлений (вне обучающего покрытия)"
+                for multiplier, count in sorted(discarded.items())
+            ),
+        ]
     if not changed:
-        return f"Режимы не менялись: рассмотрено {len(choices)} скважин, лучше исходного нет."
+        return "\n".join([
+            f"Режимы не менялись: рассмотрено {len(choices)} скважин, лучше исходного нет.",
+            *pruning,
+        ])
 
     gain = sum(choice.gain_m for choice in changed)
     stopped = sum(1 for choice in changed if choice.multiplier == 0)
@@ -770,10 +803,8 @@ def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
     # Считаем по ВСЕМ решениям, а не только по изменённым: управление, у которого
     # кандидатов отбросили, а режим остался прежним, иначе не попадёт в отчёт —
     # а знать, что выбор был неполным, важно именно там
-    withheld = [c for c in choices if getattr(c, "outside_training", ())]
-    if withheld:
-        lines.insert(1, f"  управлений, где часть кандидатов вне обучения не "
-                        f"рассматривалась: {len(withheld)} из {len(choices)}")
+    if pruning:
+        lines[1:1] = pruning
     lines.extend(f"  {choice}" for choice in sorted(changed, key=lambda item: -item.gain_m))
     return "\n".join(lines)
 

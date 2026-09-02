@@ -117,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="куда писать пары; каталог docs/data/ ведётся в git, "
                              "в отличие от data/ — файл крошечный и он часть довода")
     parser.add_argument("--alpha", type=float, default=trust.DEFAULT_ALPHA)
+    parser.add_argument("--append", action="store_true",
+                        help="сохранить уже собранные пары; новые заменить только при том же имени прогона")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     arguments = parser.parse_args(argv)
 
@@ -170,13 +172,30 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(arguments.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    existing_models: dict[str, str] = {}
+    if arguments.append and out.is_file():
+        existing: list[tuple[str, float, float, str, float | None]] = []
+        with out.open(newline="", encoding="utf-8") as handle:
+            for row in csv.reader(handle):
+                if not row:
+                    continue
+                existing.append((row[2], float(row[0]), float(row[1]),
+                                 row[3] if len(row) > 3 else "manual",
+                                 float(row[4]) if len(row) > 4 and row[4] else None))
+                existing_models[row[2]] = row[5] if len(row) > 5 else ""
+        names = {row[0] for row in rows_out}
+        rows_out = [row for row in existing if row[0] not in names] + rows_out
+        for name in names:
+            existing_models.pop(name, None)
     model_sha = checksum(Path(arguments.model))
     with out.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         for name, predicted, actual, family, distance in rows_out:
+            # Для новой строки это по-прежнему шестая колонка `[..., model_sha]`;
+            # у сохранённой строки нельзя подменять отпечаток новым артефактом.
             writer.writerow([f"{predicted:.6f}", f"{actual:.6f}", name, family,
                              "" if distance is None else f"{distance:.4f}",
-                             model_sha])
+                             existing_models.get(name, model_sha)])
     print()
     print(f"пар собрано: {len(rows_out)} → {out}")
 

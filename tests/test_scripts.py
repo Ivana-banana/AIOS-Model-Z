@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 
 #: Скрипты, на которые ссылаются документация и Dockerfile.
-REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_doe.py", "run_cycle.py",
+REQUIRED = ("build_case.py", "run_flow.sh", "export_rows.py", "build_doe.py", "run_doe.py", "run_cycle.py", "calibrate_search.py",
             "transcribe.py", "build_dataset.py", "train_surrogate.py", "run_all.py",
             "docx_to_text.py", "profiles.py", "pack_npv.py",
             "surrogate_warnings.py", "build_scaled_case.py", "check_deck.py",
@@ -622,6 +622,7 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     `run_all.py`.
     """
     import csv
+    import json
 
     from conftest import make_row
     from test_dataset import _tiny_project
@@ -664,6 +665,8 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
 
     assert code == 0, printed
     assert "суррогат:" in printed
+    marker = json.loads((tmp_path / "out" / "cycle.json").read_text(encoding="utf-8"))
+    assert marker["decision_identity"]["tune_rates"] is False
 
     # Хвост Р-47: кейс уезжает считаться на другую машину, а `rows.csv` в его
     # каталоге не появится — его пишет `export_rows.py` уже по результату
@@ -673,6 +676,16 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert note.is_file(), printed
     assert "прогноз цикла считался одной плотностью" in note.read_text(encoding="utf-8")
     assert "на каких плотностях:" in printed
+
+    # Маркер пишется в первом шаге, а сравнение происходит прежде чтения
+    # выгрузки: случайно потерянный `--no-tune-rates` не должен заново запускать
+    # поиск с настройкой дебитов и выдавать его прогноз за старый кейс.
+    code = run_cycle.main([
+        "--from", str(source.parent), "--confirm", str(tmp_path / "out"),
+        "--config", str(config),
+    ])
+    assert code == 1
+    assert "другими параметрами" in capsys.readouterr().err
 
     # `**_limits` здесь не формальность: цикл передаёт в проверку пределы
     # пластового давления из конфигурации, и заглушка без них снова поймает
@@ -817,6 +830,21 @@ def test_no_call_passes_an_argument_the_callee_does_not_accept():
     mismatches = [line for path in modules + scripts for line in _keyword_mismatches(path)]
 
     assert mismatches == [], "\n".join(mismatches)
+
+
+def test_search_calibration_runs_every_config_seed_through_full_cycle(tmp_path):
+    from scripts.calibrate_search import commands
+
+    plan = commands(model="artifacts/surrogate.joblib", base=Path("runs/base"),
+                    out_root=tmp_path, config="config.toml", seeds=(11, 12),
+                    processes=2, flow_args="--parsing-strictness=low",
+                    pairs=Path("docs/data/pairs.csv"), family="search")
+
+    runs = [command for command in plan if command[1].endswith("run_all.py")]
+    assert [command[command.index("--search-seed") + 1] for command in runs] == ["11", "12"]
+    assert all("--skip-base" in command and "--surrogate-model" in command for command in runs)
+    assert plan[-1][-2:] == ["--config", "config.toml"]
+    assert "--append" in plan[-1]
 
 
 def test_run_all_confirms_with_the_same_surrogate_it_planned_with():
@@ -1068,6 +1096,81 @@ def test_the_cycle_records_which_surrogate_built_the_case(tmp_path):
     assert plain != trained
 
 
+def test_cycle_confirmation_command_reuses_every_decision_option(tmp_path):
+    """Напечатанное подтверждение обязано воспроизвести исходный план буквально.
+
+    Раньше хвост команды содержал только `--confirm` и `--from`. Если первый
+    запуск был с другим набором множителей, без настройки дебитов, опорным
+    расписанием или явным seed, команда из собственного вывода молча собирала
+    другой план и ставила рядом его прогноз с фактом старого кейса.
+    """
+    import shlex
+
+    from scripts import run_cycle
+
+    command = run_cycle.confirmation_command(
+        case_dir=tmp_path / "policy case",
+        source=tmp_path / "base case",
+        config_path=tmp_path / "project config.toml",
+        no_tune_rates=True,
+        surrogate_model=str(tmp_path / "surrogate model.joblib"),
+        base_schedule=str(tmp_path / "starting schedule.inc"),
+        multipliers=(0.75, 1.0, 1.25),
+        search_seed=17,
+    )
+
+    assert shlex.split(command) == [
+        "python", "scripts/run_cycle.py", "--confirm", str(tmp_path / "policy case"),
+        "--from", str(tmp_path / "base case"),
+        "--config", str(tmp_path / "project config.toml"),
+        "--no-tune-rates",
+        "--surrogate-model", str(tmp_path / "surrogate model.joblib"),
+        "--base-schedule", str(tmp_path / "starting schedule.inc"),
+        "--multipliers", "0.75,1.0,1.25",
+        "--search-seed", "17",
+    ]
+
+
+def test_cycle_refuses_confirmation_with_a_different_decision_plan(tmp_path, capsys):
+    """Новый маркер запрещает подтвердить кейс параметрами другого поиска.
+
+    Отказ должен случиться до чтения истории и запуска суррогата: иначе
+    ошибочная команда тратит минуты на пересборку плана, который всё равно не
+    соответствует уже посчитанному кейсу.
+    """
+    import json
+
+    from test_dataset import _tiny_project
+
+    from scripts import run_cycle
+
+    config_path = _tiny_project(tmp_path)
+    source = tmp_path / "runs" / "base"
+    case_dir = tmp_path / "policy"
+    case_dir.mkdir()
+    config = run_cycle.config_module.load(config_path)
+    plan = run_cycle.decision_identity(
+        source=source,
+        config_path=config_path,
+        tune_rates=False,
+        multipliers=None,
+        search_seed=config.run.seed,
+        base_schedule=None,
+    )
+    (case_dir / "cycle.json").write_text(
+        json.dumps({"decision_identity": plan}), encoding="utf-8"
+    )
+
+    code = run_cycle.main([
+        "--from", str(source), "--confirm", str(case_dir), "--config", str(config_path),
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "другими параметрами" in captured.err
+    assert "нет результата расчёта" not in captured.err
+
+
 def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
     """Кейс без `cycle.json` собран до Р-100 — это не повод отказывать."""
     from scripts import run_cycle
@@ -1077,6 +1180,7 @@ def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
     (tmp_path / "cycle.json").write_text('{"surrogate_identity": {"surrogate": "MLP"}}',
                                          encoding="utf-8")
     assert run_cycle.written_identity(tmp_path) == {"surrogate": "MLP"}
+    assert run_cycle.written_decision_identity(tmp_path) is None
 
     (tmp_path / "cycle.json").write_text("не json", encoding="utf-8")
     assert run_cycle.written_identity(tmp_path) is None, "битый файл не должен ронять прогон"
@@ -1129,6 +1233,50 @@ def test_base_schedule_starts_the_search_from_the_scenario_not_from_the_deck(tmp
 
     assert seen["start_multipliers"] == {("production", "1"): 1.5}
     assert "старт:" in capsys.readouterr().out
+
+
+def test_search_calibration_can_match_the_mpi_layout_of_the_existing_corpus(tmp_path, capsys):
+    """Пары считаются на том же числе процессов, что base и уже собранный корпус.
+
+    `runs/base`, `inj-1.6`, `matched-0995` и `policy` посчитаны на 4 процессах
+    MPI, а `[run].processes` в конфиге — 2. Разбиение области на процессы слегка
+    меняет результат, поэтому калибровочный прогон обязан уметь повторить среду
+    корпуса, не переписывая конфиг под текущую машину.
+    """
+    from scripts.calibrate_search import main
+
+    code = main(["--model", "artifacts/surrogate.joblib", "--out-root", str(tmp_path),
+                 "--processes", "4", "--dry-run"])
+    printed = capsys.readouterr().out.splitlines()
+
+    assert code == 0
+    runs = [line for line in printed if "run_all.py" in line]
+    assert runs, "план пуст"
+    assert all("--processes 4" in line for line in runs)
+
+
+def test_search_calibration_resumes_past_seeds_that_already_have_an_export(tmp_path):
+    """Возобновление пропускает посчитанное, но собирает пары по всем каталогам.
+
+    Пакет идёт около восьми часов; падение на девятом прогоне не должно стоить
+    восьми часов заново. Готовность seed'а — `rows.csv`: именно его читает
+    `collect_pairs.py`. Сбор в конце идёт по всем каталогам, включая пропущенные,
+    иначе возобновлённая ночь потеряет уже посчитанные пары.
+    """
+    from scripts.calibrate_search import commands
+
+    done = tmp_path / "search-seed-11"
+    done.mkdir()
+    (done / "rows.csv").write_text("DATA,well\n", encoding="utf-8")
+
+    plan = commands(model="artifacts/surrogate.joblib", base=Path("runs/base"),
+                    out_root=tmp_path, config="config.toml", seeds=(11, 12),
+                    processes=4, flow_args="--parsing-strictness=low",
+                    pairs=Path("docs/data/pairs.csv"), family="search", resume=True)
+
+    runs = [command for command in plan if command[1].endswith("run_all.py")]
+    assert [command[command.index("--search-seed") + 1] for command in runs] == ["12"]
+    assert str(done) in plan[-1], "пропущенный seed обязан попасть в сбор пар"
 
 
 #: Скрипты, которые ничего не печатают сами, — им `reconfigure` не нужен.

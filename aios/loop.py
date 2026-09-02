@@ -22,7 +22,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from aios import balance, economics, optimise, planner
+from aios import balance, economics, optimise, planner, trust
 from aios.deck import ScheduleStep
 from aios.margin import Norms
 from aios.policy import Action, apply, explain, plan_conversions, plan_shutdowns
@@ -74,6 +74,9 @@ class CycleResult:
     """Подтверждён ли прирост полным расчётом ГГДМ. Пока False — это прогноз."""
 
     rows: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    raw_chdd_m: float | None = None
+    safe_chdd_m: float | None = None
+    margin: trust.OptimismMargin | None = None
 
     @property
     def gain_m(self) -> float:
@@ -92,6 +95,17 @@ class CycleResult:
             f"Прирост:               {self.gain_m:+,.1f} млн руб. ({status})",
             "",
         ]
+        if self.margin is None:
+            lines += ["Конформный запас: не считался — прогноз с запасом недоступен.", ""]
+        elif not self.margin.calibrated:
+            lines += [f"Конформный запас: НЕ КАЛИБРОВАН — {self.margin.reason}", ""]
+        else:
+            lines += [
+                f"Конформный запас: {self.margin.value:+,.1f} млн руб. ({self.margin.samples} пар).",
+                f"Прогноз после запаса: {self.safe_chdd_m:,.1f} млн руб. "
+                f"(сырой {self.raw_chdd_m:,.1f} млн руб.)",
+                "",
+            ]
         if self.excluded_rows:
             lines[-1:] = [
                 f"ВНИМАНИЕ: исключено строк прогноза {self.excluded_rows} — "
@@ -127,6 +141,8 @@ def run_cycle(surrogate: Surrogate,
               fluids: Fluids | None = None,
               multipliers: tuple[float, ...] | None = None,
               start_multipliers: dict[tuple[str, str], float] | None = None,
+              margin: trust.OptimismMargin | None = None,
+              search_seed: int | None = None,
               norms_file: Path = economics.NORMS_FILE) -> CycleResult:
     """Пройти цикл один раз: спрогнозировать, продиагностировать, решить, оценить.
 
@@ -173,6 +189,8 @@ def run_cycle(surrogate: Surrogate,
                 # не мешает применить область одной модели к прогнозу другой.
                 # `None` у артефактов до 22.08 — поиск работает как раньше
                 region=getattr(getattr(surrogate, "bundle", None), "trust_region", None),
+                margin=margin,
+                seed=search_seed,
                 norms_file=norms_file,
             )
         else:
@@ -216,6 +234,9 @@ def run_cycle(surrogate: Surrogate,
 
     rows = surrogate.predict(steps)
     result = _npv(rows, start_date, norms_file)
+    region = getattr(getattr(surrogate, "bundle", None), "trust_region", None)
+    distance = optimise._distance_of(surrogate, steps, region)
+    safe_chdd = trust.safe_value(result.chdd_m, distance, margin)
 
     warnings = list(surrogate.in_training_range(steps))
     # предел дебита жидкости — из таблицы ЭЦН тех нормативов, по которым считается
@@ -234,6 +255,9 @@ def run_cycle(surrogate: Surrogate,
         problems=tuple(problems),
         excluded_rows=result.excluded_negative_rows,
         rows=rows,
+        raw_chdd_m=result.chdd_m,
+        safe_chdd_m=safe_chdd,
+        margin=margin,
     )
 
 

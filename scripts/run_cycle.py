@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from aios import (  # noqa: E402
     optimise,
     pvt,  # noqa: E402
     summary,
+    trust,
 )
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
@@ -70,6 +72,76 @@ def written_identity(case_dir: Path) -> dict[str, str] | None:
     except (OSError, ValueError):
         return None
 
+
+def file_identity(path: str | Path | None) -> dict[str, str] | None:
+    """Путь и отпечаток файла, от которого зависит найденный план.
+
+    Путь сохраняем разрешённым, чтобы относительный путь первого запуска и
+    абсолютный путь команды подтверждения не считались разными входами.
+    """
+    if path is None:
+        return None
+    item = Path(path)
+    identity = {"path": str(item.resolve())}
+    if item.is_file():
+        identity["sha256"] = hashlib.sha256(item.read_bytes()).hexdigest()
+    return identity
+
+
+def decision_identity(*, source: Path, config_path: str | Path, tune_rates: bool,
+                      multipliers: tuple[float, ...] | None, search_seed: int,
+                      base_schedule: str | Path | None) -> dict[str, object]:
+    """Входы, от которых зависят решения уже собранного цикла.
+
+    `--confirm` заново выполняет поиск, чтобы восстановить его прогноз. Поэтому
+    одного совпадения суррогата недостаточно: иной seed, набор множителей или
+    опорное расписание дают другой план, хотя факт относится к старому кейсу.
+    """
+    return {
+        "source": str(source.resolve()),
+        "config": file_identity(config_path),
+        "tune_rates": tune_rates,
+        "multipliers": list(multipliers) if multipliers is not None else None,
+        "search_seed": search_seed,
+        "base_schedule": file_identity(base_schedule),
+    }
+
+
+def written_decision_identity(case_dir: Path) -> dict[str, object] | None:
+    """Входы, записанные новым маркером; старый маркер остаётся допустимым."""
+    marker = case_dir / "cycle.json"
+    if not marker.is_file():
+        return None
+    try:
+        identity = json.loads(marker.read_text(encoding="utf-8")).get("decision_identity")
+    except (OSError, ValueError):
+        return None
+    return identity if isinstance(identity, dict) else None
+
+
+def confirmation_command(*, case_dir: str | Path, source: Path,
+                         config_path: str | Path, no_tune_rates: bool,
+                         surrogate_model: str | None,
+                         base_schedule: str | None,
+                         multipliers: tuple[float, ...] | None,
+                         search_seed: int) -> str:
+    """Команда, которая повторяет все значимые параметры первого запуска."""
+    command = [
+        "python", "scripts/run_cycle.py", "--confirm", str(case_dir),
+        "--from", str(source), "--config", str(config_path),
+    ]
+    if no_tune_rates:
+        command.append("--no-tune-rates")
+    if surrogate_model:
+        command.extend(("--surrogate-model", surrogate_model))
+    if base_schedule:
+        command.extend(("--base-schedule", base_schedule))
+    if multipliers is not None:
+        command.extend(("--multipliers", ",".join(str(value) for value in multipliers)))
+    command.extend(("--search-seed", str(search_seed)))
+    return shlex.join(command)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--from", dest="source", default=None,
@@ -89,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="набор множителей поиска через запятую, например "
                              "0.75,1.0,1.25; по умолчанию — набор из aios.optimise")
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
+    parser.add_argument("--search-seed", type=int, default=None,
+                        help="seed порядка координат совместного поиска; по умолчанию [run].seed")
     arguments = parser.parse_args(argv)
 
     config = config_module.load(arguments.config)
@@ -103,11 +177,31 @@ def main(argv: list[str] | None = None) -> int:
             print("в наборе множителей обязан быть 1.0 — режим «как есть» это база",
                   file=sys.stderr)
             return 1
+    source = Path(arguments.source) if arguments.source else config.case.run_dir
+    search_seed = arguments.search_seed if arguments.search_seed is not None else config.run.seed
+    if arguments.confirm:
+        confirmed_dir = Path(arguments.confirm)
+        written_plan = written_decision_identity(confirmed_dir)
+        current_plan = decision_identity(
+            source=source,
+            config_path=arguments.config,
+            tune_rates=not arguments.no_tune_rates,
+            multipliers=multipliers,
+            search_seed=search_seed,
+            base_schedule=arguments.base_schedule,
+        )
+        if written_plan is not None and written_plan != current_plan:
+            print("кейс собран другими параметрами поиска, чем идёт подтверждение:",
+                  file=sys.stderr)
+            print(f"  в кейсе:        {written_plan}", file=sys.stderr)
+            print(f"  в этой команде: {current_plan}", file=sys.stderr)
+            print("Передайте ту же команду, которой кейс собирался: параметры поиска, "
+                  "конфиг и опорное расписание должны совпасть.", file=sys.stderr)
+            return 1
     # плотности по PVT-регионам скважин; пометка печатается всегда — молча
     # посчитать чужой пласт по нашей плотности нельзя (ТЗ п. 4.3)
     deck_fluids = pvt.fluids_by_well(config.case.model_dir)
     print(f"плотности: {deck_fluids.note}")
-    source = Path(arguments.source) if arguments.source else config.case.run_dir
     case_name = config.case.case_name
 
     # Проверка до чтения, а не после: без .UNSMRY resdata бросает OSError
@@ -186,6 +280,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"суррогат: {selected.name}")
+    margin = trust.margin_from_pairs(config.trust.pairs_file,
+                                     family=config.trust.pairs_family)
+    if margin.calibrated:
+        print(f"конформный запас: {margin.value:+.1f} млн руб. "
+              f"({margin.samples} пар семейства {config.trust.pairs_family})")
+    else:
+        print(f"конформный запас: НЕ КАЛИБРОВАН — {margin.reason}")
     result = loop.run_cycle(
         selected.model,
         base_steps,
@@ -199,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
         limits=config.limits,
         multipliers=multipliers,
         start_multipliers=start_multipliers,
+        margin=margin,
+        search_seed=search_seed,
         norms_file=config.economics.norms_file,
         # см. пояснение выше: цикл считает прогноз одной плотностью, а
         # подеквенные идут в выгрузку, из которой берётся заявляемое число
@@ -297,10 +400,21 @@ def main(argv: list[str] | None = None) -> int:
     marker.write_text(
         json.dumps({
             "surrogate_identity": surrogate_identity(arguments.surrogate_model, selected.name),
+            "decision_identity": decision_identity(
+                source=source,
+                config_path=arguments.config,
+                tune_rates=not arguments.no_tune_rates,
+                multipliers=multipliers,
+                search_seed=search_seed,
+                base_schedule=arguments.base_schedule,
+            ),
             "multipliers": list(multipliers) if multipliers else None,
             "tune_rates": not arguments.no_tune_rates,
             "forecast_chdd_m": result.chdd_m,
             "forecast_gain_m": result.gain_m,
+            "safe_forecast_chdd_m": result.safe_chdd_m,
+            "optimism_margin": margin.value,
+            "margin_reason": margin.reason,
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -327,7 +441,16 @@ def main(argv: list[str] | None = None) -> int:
     print('  docker run --rm -v "$PWD:$PWD" -w "$PWD" aios \\')
     print(f"      scripts/run_flow.sh {shown} "
           f"{config.run.processes} --parsing-strictness=low")
-    print(f"  python scripts/run_cycle.py --confirm {arguments.out} --from {source}")
+    print("  " + confirmation_command(
+        case_dir=arguments.out,
+        source=source,
+        config_path=arguments.config,
+        no_tune_rates=arguments.no_tune_rates,
+        surrogate_model=arguments.surrogate_model,
+        base_schedule=arguments.base_schedule,
+        multipliers=multipliers,
+        search_seed=search_seed,
+    ))
     return 0
 
 

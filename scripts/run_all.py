@@ -60,7 +60,8 @@ def plan(base_dir: Path,
          flow_args: Sequence[str],
          config_path: str,
          skip_base: bool,
-         surrogate_model: str | None = None) -> list[tuple[str, list[str]]]:
+         surrogate_model: str | None = None,
+         search_seed: int | None = None) -> list[tuple[str, list[str]]]:
     """Список шагов «название → команда». Отдельной функцией — чтобы проверять.
 
     `--skip-base` нужен не для удобства: базовый прогон стоит 11 минут и не
@@ -85,6 +86,8 @@ def plan(base_dir: Path,
              "--from", str(base_dir), "--out", str(policy_dir), "--config", config_path]
     if surrogate_model:
         cycle += ["--surrogate-model", surrogate_model]
+    if search_seed is not None:
+        cycle += ["--search-seed", str(search_seed)]
     steps.append(("цикл управления: состояние → решения → расписание", cycle))
     steps.append((
         "расчёт получившегося сценария на ГГДМ",
@@ -99,6 +102,8 @@ def plan(base_dir: Path,
                "--confirm", str(policy_dir), "--from", str(base_dir), "--config", config_path]
     if surrogate_model:
         confirm += ["--surrogate-model", surrogate_model]
+    if search_seed is not None:
+        confirm += ["--search-seed", str(search_seed)]
     steps.append(("подтверждение прироста полным расчётом", confirm))
     return steps
 
@@ -173,7 +178,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="показать команды и выйти, ничего не запуская")
     parser.add_argument("--surrogate-model", default=None,
                         help="обученный суррогат для шага 3; без него цикл идёт "
-                             "на тривиальном бейзлайне")
+                        "на тривиальном бейзлайне")
+    parser.add_argument("--search-seed", type=int, default=None,
+                        help="seed порядка координат поиска")
     parser.add_argument("--config", default=str(config_module.DEFAULT_PATH))
     arguments = parser.parse_args(argv)
 
@@ -194,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         config_path=arguments.config,
         skip_base=arguments.skip_base,
         surrogate_model=arguments.surrogate_model,
+        search_seed=arguments.search_seed,
     )
 
     if arguments.dry_run:
