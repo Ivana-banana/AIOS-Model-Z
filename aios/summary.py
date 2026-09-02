@@ -45,6 +45,12 @@ INJECTOR_VECTORS = ("WWIR", "WWIT")
 #: симулятором — тогда колонка THP заполняется нулями, на ЧДД это не влияет.
 PRESSURE_VECTORS = ("WBP9",)
 
+#: Векторы, которые monthly_rows реально читает по каждой скважине (WBP9 сюда не
+#: входит — его отсутствие законно, см. PRESSURE_VECTORS). Если по скважине есть
+#: хоть один из них, обязаны быть все: частичный набор — тот же силент-нулевой
+#: подлог, что и полностью пустая секция, только на уровне одной скважины.
+REQUIRED_WELL_VECTORS = ("WOPT", "WWPT", "WWIT", "WOPR", "WLPR", "WWIR", "WBHP")
+
 #: Всё, что секция пишет по скважинам. Отсюда же проверяется, что выгрузка её
 #: вообще несёт: списывать этот набор третьим местом нельзя — разойдётся.
 SECTION_VECTORS = (*PRODUCER_VECTORS, *INJECTOR_VECTORS, *PRESSURE_VECTORS)
@@ -143,6 +149,16 @@ def monthly_rows(case: str | Path,
             "в поставке организаторов приходит пустым."
         )
 
+    for well in names:
+        present = [v for v in REQUIRED_WELL_VECTORS if f"{v}:{well}" in known]
+        missing = [v for v in REQUIRED_WELL_VECTORS if f"{v}:{well}" not in known]
+        if present and missing:
+            raise ValueError(
+                f"В выгрузке {case} по скважине {well} есть часть векторов "
+                f"({', '.join(present)}), но не хватает {', '.join(missing)}: "
+                "недостающие величины иначе подставятся нулями и выдадут себя "
+                "за реальную физику."
+            )
 
     rows: list[dict[str, Any]] = []
     for well in names:

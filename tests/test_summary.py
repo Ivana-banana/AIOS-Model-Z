@@ -16,7 +16,7 @@ from aios import economics, summary
 
 def _write_case(tmp_path, monthly_oil_m3, monthly_water_m3, monthly_injection_m3=None,
                 oil_rate=None, liquid_rate=None, injection_rate=None,
-                well="1", start=datetime(2014, 1, 1)):
+                well="1", start=datetime(2014, 1, 1), vectors=None):
     """Синтетический расчёт: одна скважина, месячные отчётные шаги.
 
     Накопленные задаются приращениями, мгновенные — значениями на шаге.
@@ -33,12 +33,15 @@ def _write_case(tmp_path, monthly_oil_m3, monthly_water_m3, monthly_injection_m3
     injection_rate = injection_rate or [value / 31.0 for value in injections]
 
     writer = Summary.writer(str(tmp_path / "CASE"), start, 10, 10, 3)
-    for keyword, unit in (
+    all_vectors = (
         ("WOPT", "SM3"), ("WWPT", "SM3"), ("WWIT", "SM3"),
         ("WOPR", "SM3/DAY"), ("WLPR", "SM3/DAY"), ("WWIR", "SM3/DAY"),
         ("WBHP", "BARSA"), ("WBP9", "BARSA"),
-    ):
-        writer.add_variable(keyword, wgname=well, unit=unit)
+    )
+    requested = {keyword for keyword, _ in all_vectors} if vectors is None else set(vectors)
+    for keyword, unit in all_vectors:
+        if keyword in requested:
+            writer.add_variable(keyword, wgname=well, unit=unit)
 
     oil = water = injection = 0.0
     days = 0.0
@@ -50,14 +53,14 @@ def _write_case(tmp_path, monthly_oil_m3, monthly_water_m3, monthly_injection_m3
         injection += injections[step]
         days += 31.0
         t_step = writer.add_t_step(step + 1, sim_days=days)
-        t_step[f"WOPT:{well}"] = oil
-        t_step[f"WWPT:{well}"] = water
-        t_step[f"WWIT:{well}"] = injection
-        t_step[f"WOPR:{well}"] = oil_rate[step]
-        t_step[f"WLPR:{well}"] = liquid_rate[step]
-        t_step[f"WWIR:{well}"] = injection_rate[step]
-        t_step[f"WBHP:{well}"] = 80.0
-        t_step[f"WBP9:{well}"] = 120.0
+        values = {
+            "WOPT": oil, "WWPT": water, "WWIT": injection,
+            "WOPR": oil_rate[step], "WLPR": liquid_rate[step],
+            "WWIR": injection_rate[step], "WBHP": 80.0, "WBP9": 120.0,
+        }
+        for keyword, value in values.items():
+            if keyword in requested:
+                t_step[f"{keyword}:{well}"] = value
     writer.fwrite()
     return tmp_path / "CASE"
 
@@ -355,6 +358,8 @@ def test_an_export_without_our_summary_section_is_refused_not_read_as_zeros(tmp_
 
     with pytest.raises(ValueError, match="SUMMARY"):
         summary.monthly_rows(tmp_path / "CASE", wells=["1"])
+
+
 def test_watercut_limit_lives_apart_from_the_physical_sanity_checks():
     """Обводнённость — условие кейса, а не физика, и считается отдельной функцией.
 
@@ -394,3 +399,18 @@ def test_watercut_is_counted_by_mass_not_by_volume():
     problems = summary.case_problems(rows, max_watercut=0.749)
 
     assert len(problems) == 1 and "0.75" in problems[0]
+
+
+def test_an_export_with_only_part_of_the_well_vectors_is_refused(tmp_path):
+    """Частичная SUMMARY-секция — не нулевая физика недостающих колонок.
+
+    Проверка «нет ни одного вектора» защищала только полностью пустую секцию.
+    Если в кейс попал один `WOPT`, остальные величины подставлялись нулями, и
+    неполная выгрузка выглядела обычным, просто очень странным расчётом.
+    """
+    case = _write_case(
+        tmp_path, monthly_oil_m3=[100.0], monthly_water_m3=[900.0], vectors=("WOPT",)
+    )
+
+    with pytest.raises(ValueError, match="WWPT"):
+        summary.monthly_rows(case)
