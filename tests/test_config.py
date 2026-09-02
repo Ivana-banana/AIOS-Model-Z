@@ -57,7 +57,7 @@ def test_repository_config_loads():
     loaded = config.load()
 
     assert loaded.case.control_start == date(2007, 1, 1)
-    assert loaded.economics.start_date == date(2007, 1, 1)
+    assert loaded.economics.start_date == date(1991, 1, 1)
     assert loaded.case.model_dir.name == "Model_Z_OPM"
     assert loaded.fluids.oil_density == pytest.approx(913.0765883224138)
     assert loaded.run.seed == 20260817
@@ -110,11 +110,25 @@ def test_no_silent_defaults(tmp_path):
         config.load(path)
 
 
-def test_control_start_matches_the_organisers_export_script():
-    """01.01.2007 — та же дата, с которой начинает выгрузку script_1.py."""
+def test_control_start_and_discount_base_are_deliberately_different():
+    """Управление с 2007, дисконт с 1991 — и это не рассогласование, а ответ.
+
+    До 02.09 обе даты стояли на 01.01.2007, и тест утверждал их равенство:
+    01.01.2007 — та же дата, с которой начинает выгрузку `script_1.py`
+    организаторов. 02.09 трекер ответила на вопрос 5 письма, что расчёт ведётся
+    **с 1991 года**, и даты разошлись осознанно (Р-158). Равенство здесь больше
+    не инвариант, а неравенство — да: одно и то же расписание в этих двух
+    системах отсчёта даёт 13 133,8 и 5 579,5 млн руб., то есть перепутать их
+    означает разойтись с пересчётом организаторов и быть снятыми (ТЗ п. 6.4).
+
+    `control_start` при этом не сдвигается: управление участнику передают с
+    01.01.2007, и именно с этой даты экспортёр организаторов берёт строки.
+    """
     loaded = config.load()
+
     assert loaded.case.control_start == date(2007, 1, 1)
-    assert loaded.economics.start_date == loaded.case.control_start
+    assert loaded.economics.start_date == date(1991, 1, 1)
+    assert loaded.economics.start_date != loaded.case.control_start
 
 
 # ── значения, а не только наличие ключей ─────────────────────────────────────
