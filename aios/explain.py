@@ -58,6 +58,41 @@ RESPONSE_SCHEMA = {
     "additionalProperties": False,
 }
 
+#: Схема ответа на вопрос инженера. Отдельная от `RESPONSE_SCHEMA`, потому что
+#: вопрос — это другая задача: объяснение всегда имеет три части («что увидели»,
+#: «почему», «чем подтверждено»), а ответ на вопрос имеет одну и обязан честно
+#: сказать, когда фактов не хватает. Пустой `answer` при непустом `missing` —
+#: законный ответ, и это лучшее, что модель может сделать с вопросом не по фактам.
+ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {
+            "type": "string",
+            "description": "Ответ на вопрос по переданным фактам. Два-четыре предложения.",
+        },
+        "missing": {
+            "type": "string",
+            "description": (
+                "Каких фактов не хватило для полного ответа. Пустая строка, "
+                "если хватило всех."
+            ),
+        },
+    },
+    "required": ["answer", "missing"],
+    "additionalProperties": False,
+}
+
+#: Добавка к системной подсказке, когда инженер задал вопрос. Правила те же:
+#: числа только из фактов, решений не принимать. Разница одна — отвечать на
+#: заданное, а не пересказывать решение целиком.
+QUESTION_RULES = """\
+
+Инженер задал вопрос по этому решению. Ответь на него, соблюдая правила выше.
+Если фактов для ответа не хватает — скажи об этом прямо в поле `missing` и не
+подставляй правдоподобное число вместо отсутствующего. Отвечать на вопросы, не
+относящиеся к этому решению, не нужно: так и напиши.
+"""
+
 SYSTEM_PROMPT = """\
 Ты — слой интерпретируемости многоагентной системы управления фондом нефтяных
 скважин. Твоя задача — объяснить инженеру уже принятое решение на русском языке.
@@ -493,9 +528,46 @@ def _cache_path(settings: Settings, fingerprint: str) -> Path | None:
     return Path(settings.cache_dir) / f"{fingerprint}.json"
 
 
+def _compose_answer(payload: dict[str, str]) -> str:
+    """Ответ на вопрос и, если чего-то не хватило, честная приписка об этом."""
+    parts = [payload.get("answer", "").strip()]
+    missing = payload.get("missing", "").strip()
+    if missing:
+        parts.append(f"Чего не хватило для полного ответа: {missing}")
+    return "\n\n".join(part for part in parts if part)
+
+
 def _compose(payload: dict[str, str]) -> str:
     parts = [payload.get("what_happened", ""), payload.get("why", ""), payload.get("confirmation", "")]
     return "\n\n".join(part.strip() for part in parts if part.strip())
+
+
+def answer(evidence: Evidence,
+           settings: Settings,
+           question: str,
+           *,
+           client: MessagesClient | None = None) -> Explanation:
+    """Ответить на вопрос инженера по тем же фактам, что и объяснение.
+
+    Зачем это отдельно от `explain`. Объяснение отвечает на вопрос, которого
+    никто не задавал: «почему так решили». На защите спрашивают другое — «а что
+    с этой скважиной», «почему не больше», «чем это подтверждено», — и слой
+    интерпретируемости, который умеет только монолог, на такие вопросы не
+    отвечает. Требование регламента при этом ровно про диалог: решение обязано
+    быть объяснимо человеку, а не изложено ему.
+
+    Чем это **не** является: моделью не спрашивают решения и не дают ей считать.
+    Факты те же самые, проверка чисел та же самая (`unverified_numbers` и
+    `_broken_tuples`), отказ такой же — ответ с выдуманным числом отбрасывается
+    целиком. Вопрос попадает в отпечаток, поэтому кэш у каждого вопроса свой.
+
+    Пустой вопрос — не ошибка, а отсутствие вопроса: возвращается обычное
+    объяснение.
+    """
+    question = question.strip()
+    if not question:
+        return explain(evidence, settings, client=client)
+    return _talk(evidence, settings, question=question, client=client)
 
 
 def explain(evidence: Evidence,
@@ -517,7 +589,27 @@ def explain(evidence: Evidence,
     Отказ языковой модели никогда не роняет цикл: объяснение — это отчётность о
     решении, а не само решение.
     """
+    return _talk(evidence, settings, question="", client=client)
+
+
+def _talk(evidence: Evidence,
+          settings: Settings,
+          *,
+          question: str,
+          client: MessagesClient | None = None) -> Explanation:
+    """Общий путь объяснения и ответа на вопрос: кэш → модель → проверка → шаблон.
+
+    Единственная разница между двумя вызовами — что просят у модели и по какой
+    схеме она отвечает. Всё остальное — кэш, отпечаток, барьеры проверки чисел,
+    порядок отказов — обязано быть общим, иначе ответ на вопрос окажется слабее
+    защищён, чем объяснение, и по коду этого не будет видно.
+    """
     fingerprint = evidence.fingerprint()
+    if question:
+        # вопрос входит в отпечаток: у каждого вопроса свой кэш, и ответ на один
+        # вопрос не выдаётся за ответ на другой
+        fingerprint = hashlib.sha256(
+            f"{fingerprint}|{question}".encode()).hexdigest()[:16]
 
     cached = _cache_path(settings, fingerprint)
     if cached is not None and cached.is_file():
@@ -551,16 +643,21 @@ def explain(evidence: Evidence,
         response = client.messages.create(
             model=settings.model,
             max_tokens=settings.max_tokens,
-            system=SYSTEM_PROMPT,
+            system=SYSTEM_PROMPT + (QUESTION_RULES if question else ""),
             # temperature на claude-opus-5 не принимается: детерминизм даёт кэш,
             # а не параметр выборки. Глубину рассуждения задаёт effort.
             output_config={
                 "effort": settings.effort,
-                "format": {"type": "json_schema", "schema": RESPONSE_SCHEMA},
+                "format": {"type": "json_schema",
+                           "schema": ANSWER_SCHEMA if question else RESPONSE_SCHEMA},
             },
-            messages=[{"role": "user", "content": evidence.prompt()}],
+            messages=[{"role": "user", "content": (
+                evidence.prompt() if not question
+                else f"{evidence.prompt()}\n\nВОПРОС ИНЖЕНЕРА: {question}"
+            )}],
         )
-        text = _compose(json.loads(_first_text(response)))
+        payload = json.loads(_first_text(response))
+        text = _compose_answer(payload) if question else _compose(payload)
     except Exception as error:  # noqa: BLE001 — любая проблема слоя не должна ронять цикл
         return Explanation(
             text=template_text(evidence),

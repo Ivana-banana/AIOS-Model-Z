@@ -134,6 +134,42 @@
     </p>
   </div>
   {% endif %}
+
+  <h3 style="margin-top:22px">Спросить агента об этом решении</h3>
+  <p class="muted">
+    Тот же слой и та же проверка: модель отвечает <b>только</b> по посчитанным
+    фактам, а ответ с числом, которого в расчёте нет, отвергается целиком.
+    Решений модель не принимает и не считает.
+  </p>
+  <form method="get" action="/run/{{ run.name }}/cycle"
+        style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end">
+    <input type="hidden" name="model" value="{{ options.model }}">
+    <input type="hidden" name="mode" value="{{ 'full' if options.tune_rates else 'stops' }}">
+    <input type="hidden" name="lookback" value="{{ options.lookback_months }}">
+    <label style="flex:1 1 420px">Вопрос<br>
+      <input type="text" name="question" maxlength="500" style="width:100%"
+             value="{{ question }}"
+             placeholder="почему прирост не подтверждён?">
+    </label>
+    <button type="submit">Спросить</button>
+  </form>
+
+  {% if reply %}
+  <div style="margin-top:14px; padding:12px 14px; border:1px solid var(--border); border-radius:8px">
+    <p class="muted" style="margin:0 0 8px">Вопрос: {{ question }}</p>
+    <pre style="white-space:pre-wrap; margin:0">{{ reply.text }}</pre>
+    <p class="muted" style="margin:10px 0 0">
+      Чем получено:
+      {% if reply.source == 'llm' %}<strong>языковой моделью</strong> ({{ reply.model }}), проверка чисел пройдена.
+      {% elif reply.source == 'cache' %}<strong>из кэша</strong> — этот вопрос по этим фактам уже задавали.
+      {% elif reply.source == 'template-rejected' %}<strong>ответ модели отвергнут:</strong> в нём появились числа, которых нет в расчёте
+        ({{ reply.rejected_numbers|join(', ') }}). Показано шаблонное объяснение.
+      {% elif reply.source == 'template-failed' %}<strong>вызов модели не состоялся</strong> (<code>{{ reply.failure }}</code>). Показано шаблонное объяснение.
+      {% else %}<strong>шаблоном</strong> — слой выключен в конфигурации либо недоступен, и на вопрос он не отвечает.
+      {% endif %}
+    </p>
+  </div>
+  {% endif %}
 </section>
 {% endif %}
 

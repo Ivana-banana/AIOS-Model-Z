@@ -2,7 +2,12 @@
 # руками — это и требование регламента к воспроизводимости, и способ поднять
 # облачную машину под пакетные прогоны.
 #
-#   docker build -t aios -f docker/Dockerfile .
+#   docker build --platform linux/amd64 -t aios -f docker/Dockerfile .
+#
+# `--platform linux/amd64` не украшение: ниже пакеты ставятся с
+# `--require-hashes`, а в `requirements.lock` лежат хэши колёс только под
+# linux-x86_64. На arm64 (Apple Silicon) сборка упадёт на несовпадении хэшей —
+# и это правильное поведение lock-файла, а не его дефект.
 #   docker run --rm -v "$PWD:/work" -w /work aios python scripts/build_case.py
 #   docker run --rm -v "$PWD:/work" -w /work aios scripts/run_flow.sh runs/base/RUN.DATA 8
 #

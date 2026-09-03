@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}AIOS · {{ status }}{% endblock %}
+{% block content %}
+<section>
+  <h2>{{ status }} — {{ heading }}</h2>
+  <p>{{ detail }}</p>
+  {% if hint %}<p class="muted">{{ hint }}</p>{% endif %}
+  <p><a href="/">← к списку прогонов</a></p>
+</section>
+{% endblock %}

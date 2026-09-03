@@ -124,6 +124,51 @@ class Schedule:
         return _sorted_wells(set(self.producer_wells) | set(self.injector_wells))
 
 
+#: Ключевые слова, которые действительно начинают блок. Всё остальное, что
+#: похоже на ключевое слово, — данные записи.
+#:
+#: Зачем нужен список, хотя раньше хватало шаблона `[A-Z][A-Z0-9]{1,11}`. Этот
+#: шаблон совпадает и с именем скважины: дек, где имена не закавычены (`P1`
+#: вместо `'P1'`), разбирался в **пустой** блок, потому что первый же токен
+#: записи закрывал только что открытое ключевое слово. Молча: `WCONPROD` с
+#: незакавыченным именем давал ноль добывающих скважин и ни одной ошибки, то
+#: есть на деке валидационного кейса скважина исчезла бы из фонда вместе со своей
+#: экономикой (ревизия 03.09, 2.3 #1, воспроизведено на `parse_schedule_text`).
+#:
+#: Полного списка Eclipse тут нет и не нужно: нам важны те, что встречаются в
+#: SCHEDULE и в шапке дека. Неизвестное ключевое слово в **незакрытом** блоке
+#: по-прежнему сольётся с ним — это малформед-дек, и о нём говорит входной
+#: контроль (`aios.deckcheck`), а не парсер.
+BLOCK_KEYWORDS = frozenset({
+    # режим скважин и время
+    "WCONPROD", "WCONINJE", "WCONHIST", "WCONINJH", "WELOPEN", "WELTARG", "WEFAC",
+    "WELSPECS", "WELSPECL", "COMPDAT", "COMPDATL", "COMPDATMD", "WELLTRACK",
+    "WPIMULT", "WELSEGS", "COMPSEGS", "WSEGVALV", "WLIST", "WTEST", "WECON",
+    "WPOLYMER", "WSALT", "WTRACER", "WGRUPCON", "WDFAC", "WFRICTN",
+    "DATES", "TSTEP", "TIME", "SKIPREST", "RESTART",
+    # группы и объект
+    "GCONPROD", "GCONINJE", "GRUPTREE", "GRUPNET", "GEFAC", "GECON", "GCONSUMP",
+    "NODEPROP", "BRANPROP",
+    # управление расчётом и вывод
+    "RPTSCHED", "RPTRST", "RPTPRINT", "TUNING", "TUNINGDP", "NEXTSTEP", "NUPCOL",
+    "DRSDT", "DRVDT", "VAPPARS", "AQUCT", "AQUFETP", "AQUANCON", "MULTFLT",
+    "SUMMARY", "SCHEDULE", "END", "ENDBOX", "BOX", "INCLUDE", "SAVE", "TERMINATE",
+    "WSEGITER", "ACTIONX", "ENDACTIO", "UDQ", "UDADIMS", "PYACTION",
+    "ACTION", "ACTIONG", "ACTIONR", "ACTIONS", "ACTIONW", "WELCNTL",
+    # секции и шапка: их читает входной контроль дека и сборка кейса
+    "RUNSPEC", "GRID", "EDIT", "PROPS", "REGIONS", "SOLUTION", "START",
+    "TABDIMS", "DIMENS", "WELLDIMS", "EQLDIMS", "REGDIMS", "AQUDIMS", "GRIDOPTS",
+    "METRIC", "FIELD", "LAB", "OIL", "WATER", "GAS", "DISGAS", "VAPOIL",
+    "UNIFOUT", "UNIFIN", "NOSIM", "ENDSCALE", "RUNSUM", "MESSAGES", "TITLE",
+    "PVTO", "PVTW", "PVTG", "DENSITY", "ROCK", "PVTNUM", "SATNUM", "EQLNUM",
+    "FIPNUM", "MULTNUM", "FLUXNUM", "OPERNUM", "ACTNUM", "COORD", "ZCORN",
+    "PERMX", "PERMY", "PERMZ", "PORO", "NTG", "MULTX", "MULTY", "MULTZ",
+    "MULTPV", "EQUALS", "COPY", "ADD", "MULTIPLY", "OPERATE", "EDITNNC",
+    "MULTREGT", "FAULTS", "PINCH", "PINCHREG", "LGR", "CARFIN", "RADFIN",
+    "RADFIN4", "ENDFIN", "EQUIL", "PRESSURE", "SWAT", "SGAS", "RS", "RV",
+})
+
+
 def parse_keywords(text: str) -> list[Keyword]:
     """Разобрать текст в последовательность ключевых слов с записями."""
     tokens = _tokenize(text)
@@ -132,14 +177,14 @@ def parse_keywords(text: str) -> list[Keyword]:
     while index < len(tokens):
         token, at_line_start = tokens[index]
         index += 1
-        if not (at_line_start and _is_keyword(token)):
+        if not _starts_block(token, at_line_start):
             continue  # мусор вне блока: пропускаем, а не угадываем
         name = token
         records: list[tuple[str | None, ...]] = []
         current: list[str] = []
         while index < len(tokens):
             token, at_line_start = tokens[index]
-            if not current and at_line_start and _is_keyword(token):
+            if not current and _starts_block(token, at_line_start):
                 break  # блок без закрывающего '/' закрывается следующим ключевым словом
             index += 1
             if token == "/":
@@ -204,23 +249,21 @@ UNSUPPORTED_CONTROL_KEYWORDS = frozenset({
 
 
 #: Ключевые слова, у которых пустой блок означает не «нечего назначать», а
-#: непрочитанную запись. Ни одно из них в настоящем деке без записей не стоит:
-#: `WCONPROD` без записей не назначает режим никому, `DATES` без записей не
-#: заводит шаг. Пустой блок здесь — признак того, что разбор споткнулся.
+#: непрочитанную запись: `WCONPROD` без записей не назначает режим никому, `DATES`
+#: без записей не заводит шаг. В настоящем деке таких блоков не бывает.
 _KEYWORDS_THAT_MUST_HAVE_RECORDS = WELL_CONTROL_KEYWORDS | {"DATES", "WELSPECS"}
 
 
 def parse_schedule_text(text: str) -> Schedule:
     """Разобрать SCHEDULE-секцию из строки.
 
-    Отказывает, если блок режима разобрался **пустым**. Это единственный известный
-    нам признак того, что запись прочитана не до конца: имя скважины без кавычек
-    (`WCONPROD` и на следующей строке ` P1 OPEN LRAT …`) неотличимо от ключевого
-    слова, потому что и то и другое — заглавный токен в начале строки. Различить
-    их без таблицы всех ключевых слов Eclipse нельзя, а вот заметить последствие
-    можно: `WCONPROD` остаётся без записей, и скважина исчезает из фонда,
-    SUMMARY-секции и ЧДД **молча**. Отказ превращает молчание в отказ — по тому
-    же правилу, по которому мы не подставляем умолчания за организаторов.
+    Отказывает, если блок режима разобрался **пустым**. Это вторая сетка под
+    `BLOCK_KEYWORDS` (Р-177), а не замена ей: список закрывает известную причину
+    — имя скважины, принятое за ключевое слово, — а проверка ловит **последствие**
+    любой причины, включая ту, которой в списке ещё нет. Ключевое слово чужого
+    дека, не названное в `BLOCK_KEYWORDS`, разбирается как данные и попадает в
+    записи соседа; если при этом блок режима остаётся пустым, скважина исчезает из
+    фонда, SUMMARY-секции и ЧДД молча. Отказ превращает молчание в отказ.
     """
     keywords = parse_keywords(text)
 
@@ -229,11 +272,8 @@ def parse_schedule_text(text: str) -> Schedule:
     if empty:
         raise ValueError(
             f"блок {empty[0]} разобрался без записей — запись прочитана не до "
-            f"конца. Частая причина: имя скважины без кавычек в начале строки "
-            f"(строка {empty[0]}, следующая строка ` P1 OPEN …`): такой токен "
-            "неотличим от ключевого слова. "
-            f"Взять имена в кавычки либо записать запись на одной строке с "
-            f"ключевым словом"
+            f"конца. Проверить, все ли ключевые слова дека названы в BLOCK_KEYWORDS: "
+            f"не названное разбирается как данные и уходит в записи соседнего блока"
         )
 
     preamble: list[Keyword] = []
@@ -302,25 +342,23 @@ def format_date_record(value: date) -> str:
 
 
 def _tokenize(text: str) -> list[tuple[str, bool]]:
-    """Токены вместе с признаком «первый в своей строке».
+    """Токены с пометкой «первый в своей строке».
 
-    Признак нужен разбору ключевых слов: в Eclipse ключевое слово стоит в начале
-    строки, а данные записи — нет. Без него любой заглавный токен считался
-    ключевым словом, и запись `WCONPROD P1 OPEN LRAT …` разбиралась как четыре
-    пустых ключевых слова подряд (`P1`, `OPEN`, `LRAT`), а скважина исчезала из
-    фонда молча.
+    Пометка нужна разбору: ключевое слово в Eclipse стоит отдельной строкой, а
+    данные записи — после него. Без пометки токен `P1` в середине записи ничем не
+    отличается от ключевого слова, и один шаблон обслуживает оба смысла.
     """
     tokens: list[tuple[str, bool]] = []
     for line in text.splitlines():
-        line = strip_comment(line)
+        line = _strip_comment(line)
         if not line.strip():
             continue
-        found = _TOKEN_RE.findall(line)
-        tokens.extend((token, index == 0) for index, token in enumerate(found))
+        for position, token in enumerate(_TOKEN_RE.findall(line)):
+            tokens.append((token, position == 0))
     return tokens
 
 
-def strip_comment(line: str) -> str:
+def _strip_comment(line: str) -> str:
     """Убрать комментарий, не тронув `--` внутри кавычек.
 
     Простое `split("--")` режет запись посреди строки в кавычках: путь
@@ -344,6 +382,17 @@ def strip_comment(line: str) -> str:
 
 def _is_keyword(token: str) -> bool:
     return bool(_KEYWORD_RE.fullmatch(token))
+
+
+def _starts_block(token: str, at_line_start: bool) -> bool:
+    """Открывает ли токен новый блок.
+
+    Три условия сразу: токен стоит первым в своей строке, выглядит как ключевое
+    слово и **назван** в `BLOCK_KEYWORDS`. Последнее и отличает ключевое слово от
+    имени скважины: `P1` проходит первые два условия и раньше закрывал только что
+    открытый блок (ревизия 03.09, 2.3 #1).
+    """
+    return at_line_start and _is_keyword(token) and token.upper() in BLOCK_KEYWORDS
 
 
 def _expand_defaults(items: list[str]) -> tuple[str | None, ...]:

@@ -211,7 +211,14 @@ class TrustRegion:
                         for name in scenarios], dtype=float)
 
         spread = raw.std(axis=0)
-        moving = spread > 0
+        # Допуск, а не строгий ноль: у признака, которого DoE не двигал, размах
+        # выходит не нулём, а 8e-17 — арифметика с плавающей точкой. Признак
+        # тогда считается подвижным, стандартизация делит на почти ноль, и
+        # кандидат получает расстояние 4,7e15 вместо честного `inf` с причиной
+        # «DoE это управление не двигал». Оба исхода отбрасывают кандидата, но
+        # первый — числом, которое нельзя ни объяснить, ни записать в отчёт
+        # (найдено ревизией 03.09, 2.2 #4).
+        moving = spread > 1e-9
         frozen = tuple((key, float(raw[0, position]))
                        for position, key in enumerate(every) if not moving[position])
         if not moving.any():

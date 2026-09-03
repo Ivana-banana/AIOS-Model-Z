@@ -111,26 +111,24 @@ def compute_npv(
     нормативов передаётся явно — это проверяет
     `tests/test_validation_case.py::test_every_npv_call_names_its_norms`.
     """
-    # Неразбираемая дата у эталона не ошибка, а умолчание: `normalize_date`
-    # возвращает None, а `compute_calculation` подставляет минимальную дату данных
-    # (`chdd_model.py`, «requested_start = normalize_date(start_date) or min_date»).
-    # То есть `"2010"` или `"01 JAN 2010"` дают другой базовый год дисконтирования
-    # и другое ЧДД — без единого предупреждения. Ровно тот класс расхождения с
-    # пересчётом организаторов, который стоит дисквалификации, поэтому здесь отказ.
-    # `None` по-прежнему разрешён: это осознанный выбор умолчания эталона, и он
-    # виден в коде вызова.
-    if start_date is not None and chdd_model.normalize_date(start_date) is None:
-        raise ValueError(
-            f"эталон не разбирает дату {start_date!r} и молча возьмёт минимальную "
-            f"дату данных — а с ней другой год дисконтирования и другое ЧДД. "
-            f"Форматы, которые он понимает: ГГГГ-ММ-ДД, ДД.ММ.ГГГГ, ДД/ММ/ГГГГ, "
-            f"ГГГГ/ММ/ДД, ММ/ДД/ГГГГ, а также date и datetime"
-        )
-
     if assumptions is None or pumps is None:
         file_assumptions, file_pumps = load_norms(norms_file)
         assumptions = file_assumptions if assumptions is None else assumptions
         pumps = file_pumps if pumps is None else pumps
+
+    # Нераспознанная дата у эталона равна её отсутствию: `requested_start =
+    # normalize_date(start_date) or min_date` (`chdd_model.compute_calculation`).
+    # То есть `"2010"` или `"01 JAN 2010"` не ошибка, а тихий возврат к умолчанию
+    # — базовый год уезжает к первой дате данных, ЧДД меняется, предупреждений
+    # нет. Ровно та ловушка, от которой защищает обязательность аргумента, только
+    # с другой стороны: аргумент передан, а не понят. `None` по-прежнему законен —
+    # это осознанный выбор умолчания эталона, он виден в коде вызова.
+    if start_date is not None and chdd_model.normalize_date(start_date) is None:
+        raise ValueError(
+            f"начало расчёта не распознано эталоном: {start_date!r}. Эталон понимает "
+            "ISO (2007-01-01), точки, слэши и объекты date/datetime; нераспознанное "
+            "он молча заменяет первой датой данных, и заявляемое число уедет"
+        )
 
     raw = chdd_model.compute_calculation(
         list(records),

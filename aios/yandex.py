@@ -37,7 +37,7 @@ ENDPOINT = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
 API_KEY_ENV = "YANDEX_API_KEY"
 FOLDER_ENV = "YANDEX_FOLDER_ID"
 DEFAULT_MODEL = "yandexgpt/latest"
-TIMEOUT_SECONDS = 60.0
+TIMEOUT_SECONDS = 15.0
 
 
 @dataclass(frozen=True)

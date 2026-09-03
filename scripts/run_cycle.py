@@ -37,6 +37,7 @@ from aios import (  # noqa: E402
     summary,
     trust,
 )
+from aios import explain as explain_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 from aios.margin import Norms  # noqa: E402
@@ -140,6 +141,43 @@ def confirmation_command(*, case_dir: str | Path, source: Path,
         command.extend(("--multipliers", ",".join(str(value) for value in multipliers)))
     command.extend(("--search-seed", str(search_seed)))
     return shlex.join(command)
+
+
+def _write_explanation(out_dir: Path, result, surrogate_name: str, config) -> Path:
+    """Написать объяснение решения рядом с кейсом и вернуть путь к файлу.
+
+    Отказ слоя не роняет прогон: объяснение — отчётность о решении, а не само
+    решение. Но и молчать нельзя, поэтому источник (`llm`, `cache`, `template`,
+    `template-rejected`, `template-failed`) пишется в файл рядом с текстом: по
+    нему видно, объясняла модель или подставился шаблон.
+    """
+    path = out_dir / "explanation.json"
+    try:
+        explanation = explain_module.explain(
+            explain_module.evidence_from_cycle(
+                result, surrogate_name,
+                limits=config.limits, fluids=config.fluids),
+            config.explain,
+        )
+        record = {
+            "text": explanation.text,
+            "source": explanation.source,
+            "fingerprint": explanation.fingerprint,
+            "model": explanation.model,
+            "rejected_numbers": list(explanation.rejected_numbers),
+            "failure": explanation.failure,
+        }
+    except Exception as error:  # noqa: BLE001 — слой не должен уносить результат цикла
+        record = {"text": "", "source": "failed", "failure": f"{type(error).__name__}: {error}"}
+    try:
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+    except OSError as error:
+        # Запись тоже под защитой, а не только вызов модели: кейс к этому моменту
+        # уже собран и годен, и ронять прогон из-за недоступного файла отчётности
+        # — ровно то, чего обещает не делать докстринг выше (найдено критиком).
+        print(f"объяснение не записано: {error}", file=sys.stderr)
+    return path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -349,6 +387,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         confirmed = loop.confirm(result, rows, config.economics.start_date,
                                  base_rows=history,
+                                 # условия кейса пересчитываются на выгрузке ГГДМ,
+                                 # а не переносятся от прогноза суррогата (Р-171)
+                                 limits=config.limits, fluids=config.fluids,
                                  norms_file=config.economics.norms_file)
 
         print("--- подтверждение полным расчётом ---")
@@ -379,6 +420,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"закачка:                   {base_npv.injection_km3:.1f} → "
               f"{confirmed_npv.injection_km3:.1f} тыс. м3")
         print(f"подтверждено: {confirmed.confirmed}")
+
+        # Условия кейса на подтверждённой выгрузке — их считает `loop.confirm`
+        # по факту ГГДМ, а не по прогнозу (Р-171). Молчать о них здесь нельзя:
+        # это последний шаг единой команды, и именно её вывод читает проверяющий.
+        if confirmed.case_problems:
+            print()
+            print(f"УСЛОВИЯ КЕЙСА НАРУШЕНЫ ({len(confirmed.case_problems)}):",
+                  file=sys.stderr)
+            for line in confirmed.case_problems[:10]:
+                print(f"  ! {line}", file=sys.stderr)
+
+        # Ненулевой код при непригодном результате — не строгость, а честность.
+        # README велит проверяющему запускать `scripts/run_all.py`, последний шаг
+        # которого — этот самый `--confirm`; собственные замеры проекта дают на
+        # этом пути −63…−70 % ЧДД против бездействия. Прогон, завершившийся
+        # успехом на расписании втрое хуже истории, сообщает проверяющему
+        # неправду (Р-191).
+        if confirmed.case_problems or confirmed.gain_m <= 0:
+            print()
+            print("РЕЗУЛЬТАТ НЕПРИГОДЕН: "
+                  + ("прирост не положителен" if confirmed.gain_m <= 0
+                     else "нарушены условия кейса")
+                  + ". Сдавать это расписание нельзя; заявляемым остаётся то, "
+                    "что подтверждено (см. docs/submission.md).", file=sys.stderr)
+            return 2
         return 0
 
     print(result.summary())
@@ -410,6 +476,14 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "multipliers": list(multipliers) if multipliers else None,
             "tune_rates": not arguments.no_tune_rates,
+            # Система отсчёта прогноза. Без неё сравнение «обещал против факта»
+            # невозможно: маркеры, записанные при базе дисконтирования 2007,
+            # несопоставимы с фактом, посчитанным при 1991, а по числу этого не
+            # видно (Р-187). Источник нужен для той же цели: прирост считается
+            # от прогона, с которого цикл стартовал, а не от произвольного.
+            "start_date": config.economics.start_date.isoformat(),
+            "source_run": Path(source).name,
+            "norms_file": str(config.economics.norms_file),
             "forecast_chdd_m": result.chdd_m,
             "forecast_gain_m": result.gain_m,
             "safe_forecast_chdd_m": result.safe_chdd_m,
@@ -428,10 +502,18 @@ def main(argv: list[str] | None = None) -> int:
         model_dir=config.case.model_dir,
         forecast_fluids=config.fluids,
     )
+    # Слой интерпретируемости — часть единой команды, а не только интерфейса.
+    # До 03.09 объяснение рождалось лишь на странице цикла (`aios/web/app.py`),
+    # то есть автоматический прогон (п. 3.2.3 ТЗ) слой не задействовал вовсе и
+    # артефакта объяснения не оставлял. Объяснение пишется **тем же прогоном**,
+    # что и решение, — это требование `CLAUDE.md`, и файл рядом с кейсом
+    # доказывает его сам: другие числа туда попасть не могут (Р-180).
+    explanation_file = _write_explanation(Path(arguments.out), result, selected.name, config)
     print(f"кейс собран: {case.data_file}")
     print(f"расписание:  {case.schedule_file}")
     print(f"чем считался прогноз: {marker}")
     print(f"на каких плотностях:  {fluids_note}")
+    print(f"объяснение решения:   {explanation_file}")
     print()
     print("дальше — полный расчёт, без него прирост остаётся прогнозом:")
     # путь печатается относительным, когда кейс внутри репозитория, и абсолютным,

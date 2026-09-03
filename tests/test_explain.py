@@ -80,6 +80,69 @@ def answer(**overrides) -> dict[str, str]:
 
 # --- проверка чисел ---------------------------------------------------------
 
+def test_a_question_is_answered_from_the_same_facts(tmp_path):
+    """Вопрос инженера идёт через тот же слой и ту же проверку чисел (Р-184)."""
+    from aios.explain import Settings, answer
+
+    client = _FakeClient({"answer": "Прирост 1790.6 млн руб. подтверждён полным расчётом.",
+                          "missing": ""})
+    settings = Settings(enabled=True, cache_dir=tmp_path)
+
+    reply = answer(evidence(), settings, "чем подтверждён прирост?", client=client)
+
+    assert reply.source == "llm"
+    assert "1790.6" in reply.text
+    sent = client.messages.calls[0]
+    assert "ВОПРОС ИНЖЕНЕРА: чем подтверждён прирост?" in sent["messages"][0]["content"]
+    # схема ответа своя: у вопроса одна часть, а не три
+    schema = sent["output_config"]["format"]["schema"]
+    assert set(schema["required"]) == {"answer", "missing"}
+
+
+def test_a_question_answer_with_an_invented_number_is_rejected(tmp_path):
+    """Барьер проверки чисел работает и на ответе, а не только на объяснении."""
+    from aios.explain import Settings, answer
+
+    client = _FakeClient({"answer": "Прирост составил 2500.0 млн руб.", "missing": ""})
+
+    reply = answer(evidence(), Settings(enabled=True, cache_dir=tmp_path),
+                   "сколько дал прирост?", client=client)
+
+    assert reply.source == "template-rejected"
+    assert any("2500" in one for one in reply.rejected_numbers)
+
+
+def test_two_different_questions_do_not_share_one_cache_entry(tmp_path):
+    """Ответ на один вопрос не выдаётся за ответ на другой."""
+    from aios.explain import Settings, answer
+
+    settings = Settings(enabled=True, cache_dir=tmp_path)
+    first = _FakeClient({"answer": "Подтверждено полным расчётом.", "missing": ""})
+    second = _FakeClient({"answer": "Мощность ППД стендом не моделируется.", "missing": ""})
+
+    one = answer(evidence(), settings, "чем подтверждено?", client=first)
+    two = answer(evidence(), settings, "что не доказано?", client=second)
+
+    assert one.fingerprint != two.fingerprint
+    assert one.text != two.text
+    assert len(second.messages.calls) == 1, "второй вопрос обязан дойти до модели"
+
+
+def test_an_empty_question_falls_back_to_the_explanation(tmp_path):
+    """Пустой вопрос — это отсутствие вопроса, а не пустой ответ."""
+    from aios.explain import Settings, answer
+
+    client = _FakeClient({"what_happened": "Отбор вырос.", "why": "Так выгоднее.",
+                          "confirmation": "Подтверждено полным расчётом."})
+
+    reply = answer(evidence(), Settings(enabled=True, cache_dir=tmp_path), "   ",
+                   client=client)
+
+    assert reply.source == "llm"
+    schema = client.messages.calls[0]["output_config"]["format"]["schema"]
+    assert set(schema["required"]) == {"what_happened", "why", "confirmation"}
+
+
 def test_numbers_from_evidence_pass():
     assert unverified_numbers("прирост 1790.6 млн руб.", evidence()) == ()
 

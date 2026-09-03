@@ -447,21 +447,6 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             f"выше верхней {limits.water_tolerance:.10g}"
         )
 
-    if limits.enforce_water_balance:
-        if limits.water_balance_rule == "external_water":
-            result, water = _fit_injection_to_external_water(
-                result, forecast, fluids, limits.max_external_water_m3_per_day
-            )
-        else:
-            result, water = _fit_injection_to_water_corridor(
-                result, forecast, fluids,
-                rule=limits.water_balance_rule,
-                ceiling=limits.water_tolerance,
-                floor=limits.water_tolerance_min,
-                source_m3_per_day=limits.max_external_water_m3_per_day,
-            )
-        decisions.extend(water)
-
     if limits.max_field_liquid_m3_per_day is not None:
         if limits.field_limits_are_annual_average:
             result, liquid = _fit_liquid_to_annual_volume(
@@ -577,6 +562,38 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             | _events_holding_the_fund(result, limits),
         )
         decisions.extend(events)
+
+    # Баланс воды подбирается ПОСЛЕДНИМ, и это исправление, а не перестановка.
+    #
+    # До 03.09 коридор стоял первым. Каждая следующая срезка уменьшает отбор — а
+    # компенсация есть отношение закачки к отбору, — то есть поднимает
+    # компенсацию выше уже подобранного потолка. Замер ревизии: нетронутая
+    # история при «только коридоре» даёт ноль решений, а с добавленными пределами
+    # по фазам — **15 нарушений** коридора и компенсацию 1,41; полный цикл на
+    # репетиции — 16 нарушений и 133–141 %. С включённой проверкой fail-closed
+    # (Р-165) это означает, что ни один кандидат не проходит сертификацию, то
+    # есть контур отказывается от собственных решений (Р-189).
+    #
+    # Здесь же кончается то, что можно сделать одним проходом: база коридора
+    # берётся из **прогноза**, а прогноз посчитан для расписания ДО срезок. Чтобы
+    # коридор считался по тому отбору, который расписание реально даёт, нужен
+    # новый прогноз — а суррогата у планировщика нет и быть не должно. Эту часть
+    # доводит до неподвижной точки цикл (`loop.run_cycle`): он умеет спросить
+    # прогноз заново.
+    if limits.enforce_water_balance:
+        if limits.water_balance_rule == "external_water":
+            result, water = _fit_injection_to_external_water(
+                result, forecast, fluids, limits.max_external_water_m3_per_day
+            )
+        else:
+            result, water = _fit_injection_to_water_corridor(
+                result, forecast, fluids,
+                rule=limits.water_balance_rule,
+                ceiling=limits.water_tolerance,
+                floor=limits.water_tolerance_min,
+                source_m3_per_day=limits.max_external_water_m3_per_day,
+            )
+        decisions.extend(water)
 
     # Квота отменяет мероприятие снятием записи со шага, поэтому на выходе
     # расписание снова частично дельтовое — а вся арифметика ограничений (и наша,
@@ -905,6 +922,17 @@ def _fit_fund(steps: list[ScheduleStep],
        предела, закрываются худшие по удельной марже — тем же правилом, каким
        планировщик режет отбор при нехватке мощности. Без нормативов правило
        решать нечем, и это отказ, а не молчаливое «закроем первых попавшихся».
+
+       **Выбирают только добывающие, и это не вкусовое решение.** Удельная маржа
+       определена через поднятый объём (`_margin_per_liquid`), а у нагнетательной
+       объёма нет — для неё та же функция возвращает суммарную маржу в млн руб.,
+       то есть величину другого масштаба: −0,26 млн против ±0,0005 млн/м³ у
+       добывающих. В общем сорте нагнетательные оказывались худшими всегда, и
+       предел числа действующих скважин первым делом рубил закачку — при том что
+       срез закачки на Модели Z обрушивает нефть вчетверо (замер 20.08). Если
+       добывающих не хватило, чтобы уйти под предел, закачка закрывается, но
+       после них и с самой мелкой: крупная закачка держит пластовое давление
+       (ревизия 03.09, 2.1 #5).
     3. **Разрешённые к управлению** (`controllable_wells`) применяются **не
        здесь**: чтобы вернуть скважину к историческому режиму, нужно само
        историческое расписание, а планировщик его не видит — он получает уже
@@ -979,9 +1007,20 @@ def _fit_fund(steps: list[ScheduleStep],
             active += [control.well for control in injectors if control.status == "OPEN"]
             if len(active) > limit:
                 # закрываем худших по удельной марже: то же правило, что и при
-                # нехватке мощности по жидкости — иначе выбор был бы произвольным
-                worst = sorted(set(active), key=lambda well: margins.get(well, 0.0))
-                closing = set(worst[: len(active) - limit])
+                # нехватке мощности по жидкости — иначе выбор был бы произвольным.
+                # Ранжируются только добывающие: у нагнетательной удельной маржи
+                # нет, и в общем сорте она оказывалась худшей всегда (Р-163)
+                excess = len(active) - limit
+                producing = {control.well for control in producers
+                             if control.status == "OPEN"}
+                worst = sorted(producing, key=lambda well: margins.get(well, 0.0))
+                closing = set(worst[:excess])
+                if len(closing) < excess:
+                    # добывающих не хватило: остаток берём с самой мелкой закачки
+                    pumping = {control.well: control.rate or 0.0 for control in injectors
+                               if control.status == "OPEN"}
+                    closing |= set(sorted(pumping, key=lambda well: pumping[well])
+                                   [: excess - len(closing)])
                 for index, control in enumerate(producers):
                     if control.well in closing and control.status == "OPEN":
                         shut(control.well, "предел числа действующих скважин",
@@ -994,7 +1033,8 @@ def _fit_fund(steps: list[ScheduleStep],
                 for index, control in enumerate(injectors):
                     if control.well in closing and control.status == "OPEN":
                         shut(control.well, "предел числа действующих скважин",
-                             f"действующих {len(active)} > предела {limit}",
+                             f"действующих {len(active)} > предела {limit}; "
+                             "добывающих не хватило, закрыта самая мелкая закачка",
                              control.rate or 0.0)
                         injectors[index] = InjectorControl(control.well, control.fluid,
                                                            "SHUT", control.mode, None,
@@ -1338,7 +1378,26 @@ def _fit_liquid_to_annual_volume(
                 control.well, "SHUT" if reduced <= 0 else control.status,
                 control.mode, reduced or None, control.bhp,
             ))
-        result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
+
+        # Год, в котором бюджет отбора равен нулю, закрывает и закачку. Иначе
+        # получается год без добычи, но с закачкой: вода идёт в пласт, OPEX
+        # тратится, выручки нет вовсе — прямое следствие раздачи объёма ранним
+        # годам (Р-147). Компенсировать в такой год нечего: отбора нет, а правило
+        # баланса воды считает закачку от отбора (ревизия 03.09, 2.1 #6).
+        injectors = list(step.injectors)
+        if factor <= 0.0:
+            for index, control in enumerate(injectors):
+                if control.status != "OPEN":
+                    continue
+                decisions.append(Allocation(
+                    well=control.well, resource=f"{reason}, {step.date.year}",
+                    before=control.rate or 0.0, after=0.0,
+                    reason=(f"за {step.date.year} отбор закрыт целиком: закачка без "
+                            "добычи тратит OPEX без выручки, компенсировать нечего"),
+                ))
+                injectors[index] = InjectorControl(control.well, control.fluid, "SHUT",
+                                                   control.mode, None, control.bhp)
+        result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
     return result, decisions
 
 
@@ -1942,69 +2001,207 @@ def _fit_injection_to_water_corridor(
 
     Правило `external_water` сюда не попадает: оно целиком про источник и
     обслуживается `_fit_injection_to_external_water`.
+
+    **Коридор подбирается по годам накопительно, и это не уточнение, а условие
+    допустимости.** До 03.09 здесь считался один множитель на весь горизонт:
+    суммы `base` и `planned` брались за все годы сразу. Проверяется же коридор
+    иначе — `aios.balance.compensation_problems` ведёт бегущие накопленные суммы
+    и сверяет отношение **на конец каждого года**. Числа расходились не в
+    последнем знаке: закачка 1 800 м³ при отборе 1 000 в первый год и 300 при
+    1 000 во второй дают в сумме 1,05 — планировщик молчал, — а на конец первого
+    года 180 % против потолка 115 %. То есть расписание проходило планировщик и
+    оставалось недопустимым, причём именно тем классом отказа, который не виден
+    до полного расчёта (ревизия 03.09, 2.1 #2).
+
+    Поэтому здесь тот же счёт, что в аудите: год за годом, накопленным итогом.
+    Множитель у каждого года свой и подбирается так, чтобы накопленное отношение
+    на конец этого года легло в коридор; перебор предыдущего года не забывается,
+    а вычитается из того, что можно закачать в следующем.
+
+    Предел источника остаётся годовым: мощность — расход, накопить его нельзя,
+    поэтому он ограничивает **свой** год, а не сумму (Р-162 про тот же счёт по
+    месяцам в аудите).
     """
-    base = 0.0
-    produced_water = 0.0
-    planned = 0.0
-    stamps: set[str] = set()
+    years: dict[int, dict[str, float]] = {}
+    stamps_by_year: dict[int, set[str]] = {}
+    strays = 0
     for row in forecast:
+        stamp = str(row.get("DATA", ""))[:7]
+        if len(stamp) != 7 or not stamp[:4].isdigit():
+            strays += 1
+            continue
+        year = int(stamp[:4])
+        bucket = years.setdefault(year, {"base": 0.0, "produced": 0.0, "planned": 0.0})
+        stamps_by_year.setdefault(year, set()).add(stamp)
         oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
         if liquid_t > 0 and 0 <= oil_t <= liquid_t:
             water_m3 = (liquid_t - oil_t) * 1000.0 / fluids.water_density
-            produced_water += water_m3
-            base += water_m3
+            bucket["produced"] += water_m3
+            bucket["base"] += water_m3
             if rule == "compensation":
-                base += oil_t * 1000.0 / fluids.oil_density
-        planned += max(row["WWIT_Diff"], 0.0)
-        stamp = str(row.get("DATA", ""))[:7]
-        if len(stamp) == 7:
-            stamps.add(stamp)
+                bucket["base"] += oil_t * 1000.0 / fluids.oil_density
+        bucket["planned"] += max(row["WWIT_Diff"], 0.0)
 
-    if planned <= 0 or base <= 0:
+    if strays:
+        # Тихо подставить 365 суток или свалить всё в один год нельзя: коридор
+        # проверяется по календарным годам, и строка без даты означает, что счёт
+        # не с чем сверить. Лимит источника тем более суточный.
+        raise ValueError(
+            "коридору баланса воды нужна колонка DATA в каждой строке прогноза: "
+            f"без даты строку не отнести к году (строк без даты {strays})"
+        )
+    if not years:
+        # Пустой прогноз — это «сверять нечего», а не «данные испорчены». Так
+        # бывает на расписании без управляемых шагов: `NeuralSurrogate.predict`
+        # возвращает пустой список, и до 03.09 функция здесь тихо выходила
+        # (найдено критиком).
         return steps, []
 
-    allowed = base * ceiling
-    reason = (
-        f"закачка {planned:,.0f} м³ даёт компенсацию {planned / base:.2f} "
-        f"от отобранных {base:,.0f} м³ при потолке {ceiling:.2f}"
-        if rule == "compensation" else
-        f"закачка {planned:,.0f} м³ превышает добытую воду "
-        f"{base:,.0f} м³; источника сверх неё нет"
-    )
+    planned_total = sum(one["planned"] for one in years.values())
+    base_total = sum(one["base"] for one in years.values())
+    if planned_total <= 0 or base_total <= 0:
+        return steps, []
 
-    if source_m3_per_day is not None:
-        if not stamps:
-            # Тихо подставить 365 нельзя: на длинном горизонте это занизило бы
-            # доступную воду в разы и срезало бы закачку без всякой причины.
-            raise ValueError(
-                "лимиту стороннего источника нужна колонка DATA в прогнозе: он "
-                "задан в м³/сут, и без календаря его не с чем сравнивать"
+    factors: dict[int, float] = {}
+    reasons: dict[int, str] = {}
+    base_c = 0.0
+    injected_c = 0.0
+    for year in sorted(years):
+        bucket = years[year]
+        base_c += bucket["base"]
+        planned_y = bucket["planned"]
+        if planned_y <= 0:
+            continue
+
+        factor = 1.0
+        reason = ""
+
+        if base_c <= 0:
+            # Закачка есть, а возмещать нечего: отбора не было ни в этом году, ни
+            # раньше. Такое бывает на новом элементе заводнения — нагнетательная
+            # пущена раньше добывающей. Аудит для этого случая говорит
+            # «возмещать нечего» (`balance.compensation_problems`), и правильный
+            # множитель здесь ноль, а не деление на ноль (найдено критиком 03.09).
+            factors[year] = 0.0
+            reasons[year] = (
+                f"{year}: закачка {planned_y:,.0f} м³ при нулевом накопленном отборе — "
+                "возмещать нечего"
             )
-        days = balance.days_of(stamps)
-        by_source = produced_water + source_m3_per_day * days
-        if by_source < allowed:
-            allowed = by_source
+            continue
+
+        # верхняя граница: накопленное на конец года не выше базы × ceiling
+        room = base_c * ceiling - injected_c
+        if planned_y > room:
+            factor = max(room / planned_y, 0.0)
             reason = (
-                f"закачке нужно {(planned - produced_water) / days:,.0f} м³/сут воды "
-                f"со стороны при мощности источника {source_m3_per_day:,.10g} м³/сут"
+                f"{year}: накопленная закачка {injected_c + planned_y:,.0f} м³ даёт "
+                f"компенсацию {(injected_c + planned_y) / base_c:.2f} от отобранных "
+                f"{base_c:,.0f} м³ при потолке {ceiling:.2f}"
+                if rule == "compensation" else
+                f"{year}: накопленная закачка {injected_c + planned_y:,.0f} м³ превышает "
+                f"добытую воду {base_c:,.0f} м³; источника сверх неё нет"
             )
 
-    if planned > allowed:
-        return _scale_injection(steps, allowed / planned, reason)
+        # физика источника: своя вода этого года плюс мощность за его сутки.
+        # Воды, которой нет, никакая норма не создаёт — этот предел бьёт и
+        # верхнюю границу, и добор снизу.
+        if source_m3_per_day is not None:
+            days = balance.days_of(stamps_by_year[year])
+            by_source = bucket["produced"] + source_m3_per_day * days
+            if planned_y * factor > by_source:
+                factor = max(by_source / planned_y, 0.0)
+                reason = (
+                    f"{year}: закачке нужно "
+                    f"{(planned_y - bucket['produced']) / days:,.0f} м³/сут воды со "
+                    f"стороны при мощности источника {source_m3_per_day:,.10g} м³/сут"
+                )
 
-    if floor is None:
+        # нижняя граница коридора: добираем, но не выше того, что есть
+        if floor is not None:
+            required = base_c * floor - injected_c
+            if planned_y * factor < required:
+                wanted = required / planned_y
+                if source_m3_per_day is not None:
+                    days = balance.days_of(stamps_by_year[year])
+                    ceiling_by_source = (
+                        (bucket["produced"] + source_m3_per_day * days) / planned_y)
+                    wanted = min(wanted, ceiling_by_source)
+                if wanted > factor:
+                    factor = wanted
+                    reason = (
+                        f"{year}: накопленная закачка {injected_c + planned_y:,.0f} м³ "
+                        f"даёт компенсацию {(injected_c + planned_y) / base_c:.2f} от "
+                        f"базы правила {base_c:,.0f} м³ — ниже границы коридора "
+                        f"{floor:.2f}"
+                    )
+
+        injected_c += planned_y * factor
+        if abs(factor - 1.0) > 1e-12:
+            factors[year] = factor
+            reasons[year] = reason
+
+    if not factors:
         return steps, []
+    return _scale_injection_by_year(steps, factors, reasons)
 
-    # Добор ограничен той же доступной водой: `allowed` уже её учитывает.
-    required = min(base * floor, allowed)
-    if planned >= required:
-        return steps, []
+def _injecting(control: InjectorControl, rate: float) -> InjectorControl:
+    """Запись закачки с новой приёмистостью; ноль закрывает скважину.
 
-    return _scale_injection(
-        steps, required / planned,
-        f"закачка {planned:,.0f} м³ даёт {planned / base:.2f} от базы правила "
-        f"{base:,.0f} м³ — ниже границы коридора {floor:.2f}",
-    )
+    Открытая нагнетательная с приёмистостью 0 — недопустимая запись: `WCONINJE`
+    в режиме `RATE` требует уставку, и `schedule.validate` отвергает такую строку
+    («открытая скважина не может закачивать ноль»). Множитель ноль появляется у
+    коридора законно — например, в год, когда возмещать нечего (Р-178), — и
+    оставлять после него открытую скважину значило бы собирать расписание,
+    которое сами же браковали бы на выходе (Р-189).
+    """
+    if rate > 0:
+        return InjectorControl(control.well, control.fluid, control.status,
+                               control.mode, rate, control.bhp)
+    return InjectorControl(control.well, control.fluid, "SHUT", control.mode,
+                           None, control.bhp)
+
+
+def _scale_injection_by_year(steps: list[ScheduleStep],
+                             factors: dict[int, float],
+                             reasons: dict[int, str],
+                             ) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Изменить закачку каждого года своим множителем.
+
+    Отличие от `_scale_injection` — не в реализации, а в том, что множитель у
+    коридора баланса воды **годовой**: накопленное отношение проверяется на конец
+    каждого года, и один множитель на горизонт этому условию не отвечает (Р-170).
+    Решение по каждому году печатается один раз на скважину: иначе на девятнадцати
+    годах отчёт распухает в разы и перестаёт читаться. Имя ресурса остаётся
+    «закачка» — год назван в обосновании, а по имени ресурса решения группируют
+    и репетиция приёмки, и отчёт.
+    """
+    decisions: list[Allocation] = []
+    seen: set[tuple[int, str]] = set()
+    result: list[ScheduleStep] = []
+
+    for step in steps:
+        factor = factors.get(step.date.year, 1.0)
+        if factor == 1.0:
+            result.append(step)
+            continue
+        injectors = []
+        for control in step.injectors:
+            if control.status != "OPEN" or control.rate is None:
+                injectors.append(control)
+                continue
+            reduced = control.rate * factor
+            key = (step.date.year, control.well)
+            if key not in seen:
+                seen.add(key)
+                decisions.append(Allocation(
+                    well=control.well, resource="закачка",
+                    before=control.rate, after=reduced,
+                    reason=reasons.get(step.date.year, ""),
+                ))
+            injectors.append(_injecting(control, reduced))
+        result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
+
+    return result, decisions
 
 
 def _scale_injection(steps: list[ScheduleStep], factor: float,
@@ -2032,10 +2229,7 @@ def _scale_injection(steps: list[ScheduleStep], factor: float,
                     Allocation(well=control.well, resource="закачка",
                                before=control.rate, after=reduced, reason=reason)
                 )
-            injectors.append(
-                InjectorControl(control.well, control.fluid, control.status, control.mode,
-                                reduced, control.bhp)
-            )
+            injectors.append(_injecting(control, reduced))
         result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
 
     return result, decisions
@@ -2051,20 +2245,42 @@ def _fit_liquid_to_capacity(steps: list[ScheduleStep],
     Режем по возрастанию удельной маржи: первой уходит скважина, которая приносит
     меньше всех денег на кубометр поднятой жидкости. Это единственный порядок,
     который можно объяснить и защитить — остальные сводятся к «нам так показалось».
+
+    **Срезанная в ноль скважина остаётся закрытой до конца горизонта.** Мощность
+    объекта колеблется от месяца к месяцу, и без этого правила скважина у края
+    квоты открывается и закрывается каждый месяц: остановка и пуск — **два
+    отдельных** платных события по 1,0 млн руб. каждое, плюс скважина то входит,
+    то выходит из действующего фонда. На синтетическом примере (предел 100,
+    сосед колеблется 90/100) выходило пять мероприятий за шесть месяцев — то
+    есть 5 млн руб. за право поработать в трёх месяцах на 20 м³/сут (ревизия
+    03.09, 2.1 #4). Правило то же, что у минимального рентабельного дебита
+    (`_shut_below_minimum`), и по той же причине: коэффициент гистерезиса
+    пришлось бы выдумывать, а «выведена из-под квоты» — экономически осмысленное
+    состояние.
+
+    Пропорциональные срезки (`_fit_phase_to_capacity`, коридор воды) этого
+    правила не требуют: они уменьшают уставку, а не закрывают скважину, и
+    события не порождают вовсе.
     """
     value = _margin_per_liquid(forecast, norms, fluids)
     decisions: list[Allocation] = []
     result: list[ScheduleStep] = []
     reported: set[str] = set()
+    retired: set[str] = set()
 
     for step in steps:
+        held = [
+            ProducerControl(control.well, "SHUT", control.mode, None, control.bhp)
+            if control.well in retired and control.status == "OPEN" else control
+            for control in step.producers
+        ]
         working = [
-            control for control in step.producers
+            control for control in held
             if control.status == "OPEN" and control.liquid_rate
         ]
         total = sum(control.liquid_rate or 0.0 for control in working)
         if total <= capacity:
-            result.append(step)
+            result.append(ScheduleStep(step.date, tuple(held), step.injectors))
             continue
 
         # худшие по деньгам на кубометр — первыми под нож
@@ -2084,11 +2300,13 @@ def _fit_liquid_to_capacity(steps: list[ScheduleStep],
             excess -= cut
 
         producers = []
-        for control in step.producers:
+        for control in held:
             if control.well not in cuts:
                 producers.append(control)
                 continue
             new_rate = cuts[control.well]
+            if new_rate <= 0:
+                retired.add(control.well)
             if control.well not in reported:
                 reported.add(control.well)
                 decisions.append(

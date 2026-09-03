@@ -34,13 +34,20 @@ SOFTWARE.
 * `aios/`, `scripts/`, `tests/` — код и тесты;
 * `docs/` — кроме `docs/method/` и `docs/screenshots/` (см. ниже);
 * `docker/` — Dockerfile и сборочные материалы;
+* `runs/matched-0995/wells_schedule.inc` и `runs/matched-0995/npv.json` —
+  сдаваемый результат и машинный след его расчёта (Р-181). Файл управляющих
+  последовательностей сгенерирован нашим кодом по деку заказчика: сам файл наш,
+  описываемый им объект — нет. Остальное содержимое `runs/` в репозиторий не
+  входит;
 * документы в корне: `README.md`, `PLAN.md`, `CLAUDE.md`, `GIT.md`,
   `JOURNAL.md`, `HANDOFF.md`, `BLOCKED.md`, `MODIFICATIONS.md`,
-  `PROVENANCE_AND_RIGHTS.md`, `THIRD_PARTY_NOTICES.md`;
+  `STOP-BEFORE-SUBMIT.md`, `PROVENANCE_AND_RIGHTS.md`,
+  `THIRD_PARTY_NOTICES.md`;
 * конфигурация и зависимости: `config.toml`, `config-doe-wide.toml`,
   `config-nobalance.toml`, `config-limits-check.toml`, `config-rehearsal.toml`,
   `pyproject.toml`, `requirements.txt`,
-  `requirements-dev.txt`, `requirements.lock`, `.gitignore`, `.gitattributes`,
+  `requirements-dev.txt`, `requirements-tools.txt`, `requirements.lock`,
+  `.gitignore`, `.gitattributes`,
   `.dockerignore`.
 
 НЕ ПОКРЫВАЕТ и под MIT не переходит:

@@ -52,7 +52,32 @@ def _package(root: Path) -> tuple[Path, Path]:
     schedule.parent.mkdir()
     schedule.write_text("DATES\n 1 JAN 2007 /\n/\n", encoding="utf-8")
     model.write_bytes(b"model")
+    _trace(schedule, 13271.8)
     return schedule, model
+
+
+def _trace(schedule: Path, claimed: float, **overrides: object) -> Path:
+    """Машинный след расчёта рядом с расписанием — его пишет `verify_declared.py`.
+
+    С 03.09 пункт 6 без следа отказывает: «число вписано в документ» и «число
+    посчитано из этой выгрузки» — разные утверждения (Р-172).
+    """
+    import json
+
+    from aios import economics
+
+    record = {
+        "run": schedule.parent.name,
+        "chddM": claimed,
+        "claimedM": claimed,
+        "agreed": True,
+        "vendorVersion": economics.VENDOR_VERSION,
+        "scheduleMd5": hashlib.md5(schedule.read_bytes()).hexdigest(),
+    }
+    record.update(overrides)
+    path = schedule.parent / "npv.json"
+    path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def test_a_complete_package_passes_all_nine_requirements(tmp_path):
@@ -245,6 +270,72 @@ def test_the_audit_refuses_a_schedule_from_another_run(tmp_path):
     assert "runs/matched-0995" in checks["6"].detail
 
 
+def test_the_audit_needs_a_machine_trace_of_the_calculation(tmp_path):
+    """«Число в документе» и «число посчитано из этой выгрузки» — разные вещи.
+
+    До 03.09 пункт 6 проверял `md5` файла и наличие числа в `docs/submission.md`,
+    но не связь между ними: число вписано руками, машинного следа расчёта в
+    каталоге прогона не было вовсе (ревизия 03.09, 2.3 #9).
+    """
+    schedule, model = _package(tmp_path)
+    (schedule.parent / "npv.json").unlink()
+
+    checks = {item.number: item for item in audit(
+        tmp_path, schedule, model,
+        schedule_validator=lambda path: None,
+        model_validator=lambda path: None,
+    )}
+
+    assert not checks["6"].ready
+    assert "машинного следа" in checks["6"].detail
+    assert "verify_declared.py" in checks["6"].detail
+
+
+def test_a_trace_of_another_file_is_refused(tmp_path):
+    """След, посчитанный по другому расписанию, ничего не подтверждает."""
+    schedule, model = _package(tmp_path)
+    _trace(schedule, 13271.8, scheduleMd5="0" * 32)
+
+    checks = {item.number: item for item in audit(
+        tmp_path, schedule, model,
+        schedule_validator=lambda path: None,
+        model_validator=lambda path: None,
+    )}
+
+    assert not checks["6"].ready
+    assert "другому файлу расписания" in checks["6"].detail
+
+
+def test_a_trace_that_says_mismatch_is_refused(tmp_path):
+    """След с расхождением — отказ допуска, а не заметка."""
+    schedule, model = _package(tmp_path)
+    _trace(schedule, 13271.8, agreed=False, chddM=12000.0)
+
+    checks = {item.number: item for item in audit(
+        tmp_path, schedule, model,
+        schedule_validator=lambda path: None,
+        model_validator=lambda path: None,
+    )}
+
+    assert not checks["6"].ready
+    assert "расхождении" in checks["6"].detail
+
+
+def test_a_trace_sworn_to_another_number_is_refused(tmp_path):
+    """След, сверявшийся с другим числом, не подтверждает заявку."""
+    schedule, model = _package(tmp_path)
+    _trace(schedule, 12000.0)
+
+    checks = {item.number: item for item in audit(
+        tmp_path, schedule, model,
+        schedule_validator=lambda path: None,
+        model_validator=lambda path: None,
+    )}
+
+    assert not checks["6"].ready
+    assert "след сверялся" in checks["6"].detail
+
+
 def test_the_audit_refuses_changed_bytes_under_the_declared_name(tmp_path):
     """Правильный путь не заменяет побайтовую идентичность заявленному файлу."""
     root = tmp_path
@@ -259,6 +350,7 @@ def test_the_audit_refuses_changed_bytes_under_the_declared_name(tmp_path):
         f"`md5 {expected}` |\n",
         encoding="utf-8",
     )
+    _trace(schedule, 13133.8)
 
     ready = {check.number: check for check in audit(
         root, schedule, model,

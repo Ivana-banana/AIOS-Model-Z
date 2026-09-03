@@ -176,6 +176,83 @@ def test_every_npv_call_names_its_norms():
     )
 
 
+def test_the_liquid_limit_never_exceeds_the_vendor_ceiling(tmp_path: Path):
+    """Таблица ЭЦН кейса не может разрешить больше, чем принимает расчётчик.
+
+    У эталона потолок зашит литералом: `if row["WLPR"] > 500` в
+    `compute_calculation`. Пока предел брался как «правая граница старшего
+    насоса», таблица с насосом на 600 заставила бы наш валидатор пропустить 550,
+    а расчётчик организаторов отверг бы этот же файл с `ValueError` — на том
+    единственном прогоне, который оценивают (ревизия 03.09, 2.3 #4).
+    """
+    import shutil
+
+    from openpyxl import load_workbook
+
+    from aios import schedule as schedule_module
+
+    path = tmp_path / "Нормативы_с_большим_ЭЦН.xlsx"
+    shutil.copy(economics.NORMS_FILE, path)
+    book = load_workbook(path)
+    sheet = book["ЭЦН"]
+    for row in sheet.iter_rows(min_row=2):
+        if row[2].value in (500.0, 500):
+            row[2].value = 600.0
+            break
+    book.save(path)
+
+    _assumptions, pumps = economics.load_norms(path)
+    assert max(float(pump["max"]) for pump in pumps) == 600.0
+    assert schedule_module.liquid_limit(pumps) == 500.0
+
+    rows = [make_row(f"2014-{month:02d}-01", "A", wlpr=550.0, womr=90.0,
+                     liquid=16500.0, oil=2700.0) for month in (1, 2, 3)]
+    with pytest.raises(ValueError, match="500"):
+        economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                              start_date="2014-01-01", norms_file=path)
+
+
+def test_the_injection_pressure_limit_comes_from_the_case(tmp_path: Path):
+    """Предел давления нагнетания — из `[limits]`, а не литерал 300 от Модели Z.
+
+    Кейс со своим пределом ловил только планировщик; валидатор расписания и
+    предполётная проверка держали литерал, то есть кейс с потолком 250 атм
+    прошёл бы обе (ревизия 03.09, 2.3 #5).
+    """
+    from aios import schedule as schedule_module
+    from aios.deck import InjectorControl, ScheduleStep
+
+    steps = [ScheduleStep(date(2014, 1, 1), (),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 200.0, 280.0),))]
+
+    assert schedule_module.validate(steps) == []
+    problems = schedule_module.validate(steps, max_injection_bhp=250.0)
+    assert len(problems) == 1 and "280" in str(problems[0]) and "250" in str(problems[0])
+
+
+def test_an_unreadable_start_date_is_refused_not_replaced():
+    """Нераспознанную дату эталон молча меняет на первую дату данных.
+
+    `requested_start = normalize_date(start_date) or min_date` — то есть `"2010"`
+    не ошибка, а тихий возврат к умолчанию: базовый год уезжает, ЧДД меняется,
+    предупреждений нет (ревизия 03.09, 2.3 #3).
+    """
+    rows = [make_row(f"2014-{month:02d}-01", "A", wlpr=30.0, womr=15.0,
+                     liquid=900.0, oil=450.0) for month in (1, 2, 3)]
+
+    with pytest.raises(ValueError, match="не распознано"):
+        economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                              start_date="2010", norms_file=economics.NORMS_FILE)
+    with pytest.raises(ValueError, match="не распознано"):
+        economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                              start_date="01 JAN 2010", norms_file=economics.NORMS_FILE)
+
+    # осознанное умолчание эталона по-прежнему законно и видно в коде вызова
+    assert economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                                 start_date=None,
+                                 norms_file=economics.NORMS_FILE).chdd_m != 0.0
+
+
 def test_the_liquid_limit_travels_with_the_pump_table(alien_pumps: Path):
     """Предел дебита жидкости — из таблицы ЭЦН кейса, а не литерал 500 от Модели Z.
 
@@ -680,6 +757,235 @@ def test_uncontrollable_wells_keep_the_reference_regime():
     restored = _restore_uncontrolled(origin, changed, frozenset({"P1"}))
 
     assert [c.liquid_rate for c in restored[0].producers] == [45.0, 30.0]
+def test_an_exhausted_liquid_budget_closes_injection_too():
+    """Год без добычи не должен оставаться годом с закачкой.
+
+    Объём за горизонт раздаётся ранним годам (Р-147), поздним достаётся ноль, и
+    всем добывающим ставится SHUT. Закачку при этом не трогали: вода шла в пласт,
+    OPEX тратился, выручки не было (ревизия 03.09, 2.1 #6).
+    """
+    from aios import planner
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.margin import Norms
+
+    steps = [ScheduleStep(
+        date(2014 + index // 12, index % 12 + 1, 1),
+        (ProducerControl("P1", "OPEN", "LRAT", 100.0, 50.0),),
+        (InjectorControl("I1", "WATER", "OPEN", "RATE", 150.0, 300.0),),
+    ) for index in range(24)]
+
+    # объёма хватает меньше чем на год: второй год получит ноль
+    fitted, decisions = planner.enforce(
+        steps, _forecast(months=3), Norms.from_file(),
+        _limits(max_field_liquid_m3_total=100.0 * 30 * 6))
+
+    second = [step for step in fitted if step.date.year == 2015]
+    assert second, "второй год в расписании есть"
+    assert all(c.status == "SHUT" for step in second for c in step.producers)
+    assert all(c.status == "SHUT" for step in second for c in step.injectors), (
+        "закачка обязана закрыться вместе с отбором"
+    )
+    assert any("компенсировать нечего" in d.reason for d in decisions)
+
+
+def test_the_active_wells_limit_closes_producers_not_injectors():
+    """Предел числа действующих скважин рубил закачку первой.
+
+    Удельная маржа определена через поднятый объём, а у нагнетательной объёма
+    нет — `_margin_per_liquid` возвращает для неё суммарную маржу в млн руб.,
+    величину другого масштаба. В общем сорте нагнетательная всегда оказывалась
+    худшей, и предел закрывал именно её, хотя срез закачки на Модели Z
+    обрушивает нефть вчетверо (ревизия 03.09, 2.1 #5).
+    """
+    from aios import planner
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.margin import Norms
+
+    steps = [ScheduleStep(
+        date(2014, month, 1),
+        (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),
+         ProducerControl("P2", "OPEN", "LRAT", 30.0, 50.0)),
+        (InjectorControl("I1", "WATER", "OPEN", "RATE", 200.0, 300.0),),
+    ) for month in (1, 2, 3)]
+    forecast = _forecast(wells=("P1", "P2"))
+
+    fitted, decisions = planner.enforce(
+        steps, forecast, Norms.from_file(), _limits(max_active_wells=2))
+
+    injecting = [c.well for step in fitted for c in step.injectors if c.status == "OPEN"]
+    assert injecting, "закачка не должна закрываться, пока есть добывающие"
+    assert any(d.resource == "предел числа действующих скважин" for d in decisions)
+
+
+def test_the_active_wells_limit_reaches_injectors_when_producers_run_out():
+    """Если добывающих не хватило — закрывается самая мелкая закачка."""
+    from aios import planner
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.margin import Norms
+
+    steps = [ScheduleStep(
+        date(2014, month, 1),
+        (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),),
+        (InjectorControl("I1", "WATER", "OPEN", "RATE", 50.0, 300.0),
+         InjectorControl("I2", "WATER", "OPEN", "RATE", 300.0, 300.0)),
+    ) for month in (1, 2, 3)]
+
+    fitted, _ = planner.enforce(
+        steps, _forecast(), Norms.from_file(), _limits(max_active_wells=1))
+
+    still = {c.well for step in fitted for c in step.injectors if c.status == "OPEN"}
+    assert "I2" not in still or "I1" not in still
+    assert "I1" not in still, "мелкая закачка уходит раньше крупной"
+
+
+def test_uncontrollable_well_returns_to_reference_on_every_step():
+    """Опора — расписание-дельты: скважина упомянута раз, действует до конца.
+
+    Дефект ревизии 03.09 (2.1 #1): восстановление искало опорную запись по дате
+    в **дельтовом** расписании, и на шагах, где скважину не упоминали, оставляло
+    режим планировщика. То есть «управлять нельзя» действовало один месяц из
+    трёх, и увидеть это на тесте с полным фондом на каждом шаге нельзя.
+    """
+    from aios.deck import ProducerControl, ScheduleStep
+    from aios.loop import _restore_uncontrolled
+
+    origin = [
+        ScheduleStep(date(2014, 1, 1),
+                     (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),
+                      ProducerControl("P2", "OPEN", "LRAT", 30.0, 50.0)), ()),
+        ScheduleStep(date(2014, 2, 1), (), ()),
+        ScheduleStep(date(2014, 3, 1), (), ()),
+    ]
+    changed = _plan(producers=((45.0, 50.0), (45.0, 50.0)), injectors=())
+
+    restored = _restore_uncontrolled(origin, changed, frozenset({"P1"}))
+
+    assert [[c.liquid_rate for c in step.producers] for step in restored] == [
+        [45.0, 30.0], [45.0, 30.0], [45.0, 30.0]
+    ]
+
+
+def test_uncontrollable_well_cannot_gain_a_role_it_never_had():
+    """Запрещённой скважине нельзя **добавить** роль, а не только изменить её.
+
+    Найдено критиком 03.09: проход по записям кандидата не мог отменить
+    появление записи. Перевод запрещённой скважины под закачку добавлял
+    `WCONINJE`, которой в опоре нет; если в опоре скважина стояла закрытой,
+    перевод проходил молча и не ловился ничем — `controllable_wells` во всём
+    контуре проверяет только эта функция.
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.loop import _restore_uncontrolled
+
+    origin = [ScheduleStep(date(2014, 1, 1),
+                           (ProducerControl("P1", "SHUT", "LRAT", 0.0, 50.0),), ()),
+              ScheduleStep(date(2014, 2, 1), (), ())]
+    # планировщик перевёл её под закачку — при том что управлять ею нельзя
+    converted = [ScheduleStep(date(2014, 1, 1),
+                              (ProducerControl("P1", "SHUT", "LRAT", 0.0, 50.0),), ()),
+                 ScheduleStep(date(2014, 2, 1), (),
+                              (InjectorControl("P1", "WATER", "OPEN", "RATE",
+                                               30.0, 300.0),))]
+
+    restored = _restore_uncontrolled(origin, converted, frozenset())
+
+    assert all(not step.injectors for step in restored), "запись закачки обязана исчезнуть"
+    assert [c.status for step in restored for c in step.producers] == ["SHUT", "SHUT"]
+
+
+def test_a_controlled_well_keeps_its_new_role():
+    """Обратная сторона: разрешённой скважине перевод оставляют."""
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.loop import _restore_uncontrolled
+
+    origin = [ScheduleStep(date(2014, 1, 1),
+                           (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),), ())]
+    converted = [ScheduleStep(date(2014, 1, 1), (),
+                              (InjectorControl("P1", "WATER", "OPEN", "RATE",
+                                               30.0, 300.0),))]
+
+    restored = _restore_uncontrolled(origin, converted, frozenset({"P1"}))
+
+    assert [c.well for c in restored[0].injectors] == ["P1"]
+    assert not restored[0].producers
+
+
+def test_confirming_rechecks_the_case_conditions_on_the_real_rows():
+    """Подтверждение считает условия кейса по выгрузке ГГДМ, а не по прогнозу.
+
+    Найдено критиком 03.09: `confirm` переносил прогнозные `case_problems`, и
+    подтверждённый кандидат с реально нарушенным балансом воды выходил с пустым
+    списком нарушений и `is_improvement == True`.
+    """
+    from aios import loop
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.planner import Limits
+
+    steps = (ScheduleStep(date(2014, 1, 1),
+                          (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 200.0, 300.0),)),)
+    forecast = [make_row("2014-01-01", "P1", wlpr=30.0, womr=15.0, liquid=900.0, oil=450.0)]
+    # выгрузка ГГДМ: закачка втрое выше отбора — коридор нарушен
+    measured = forecast + [make_row("2014-01-01", "I1", wwir=200.0, injection=6000.0)]
+
+    result = loop.CycleResult(
+        base_chdd_m=1.0, chdd_m=2.0, actions=(), rate_choices=(), allocations=(),
+        steps=steps, warnings=(), problems=(), rows=forecast,
+    )
+    assert result.case_problems == ()
+
+    confirmed = loop.confirm(
+        result, measured, date(2014, 1, 1), base_rows=forecast,
+        limits=Limits(water_balance_rule="compensation", water_tolerance=1.1),
+    )
+
+    assert confirmed.confirmed
+    assert confirmed.case_problems, "нарушение обязано найтись на подтверждённой выгрузке"
+    assert not confirmed.is_improvement
+
+
+def test_uncontrollable_well_keeps_its_shut_status_from_the_reference():
+    """Возврат к опоре возвращает и статус, а не только уставку."""
+    from aios.deck import ProducerControl, ScheduleStep
+    from aios.loop import _restore_uncontrolled
+
+    origin = [
+        ScheduleStep(date(2014, 1, 1),
+                     (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),
+                      ProducerControl("P2", "SHUT", "LRAT", None, 50.0)), ()),
+        ScheduleStep(date(2014, 2, 1), (), ()),
+        ScheduleStep(date(2014, 3, 1), (), ()),
+    ]
+    changed = _plan(producers=((45.0, 50.0), (45.0, 50.0)), injectors=())
+
+    restored = _restore_uncontrolled(origin, changed, frozenset({"P1"}))
+
+    assert [step.producers[1].status for step in restored] == ["SHUT", "SHUT", "SHUT"]
+
+
+def test_restoring_a_well_that_breaks_an_object_limit_is_reported():
+    """Возврат к опоре идёт после планировщика и может сломать его срезку.
+
+    Это не лечится порядком: «управлять нельзя» и «объектный предел» могут
+    противоречить друг другу, и тогда кейс противоречив. Молчать нельзя —
+    условие обязано быть названо нарушенным (`case_problems`, А2 ревизии).
+    """
+    from aios import casecheck, loop
+
+    limits = _limits(max_field_liquid_m3_per_day=60.0,
+                     controllable_wells=frozenset({"P1"}))
+    steps = _plan(producers=((30.0, 50.0), (30.0, 50.0)), injectors=())
+    forecast = _forecast(wells=("P1", "P2"))
+
+    left = casecheck.violations(casecheck.check(steps, forecast, limits))
+    assert not left, "опора сама предел не нарушает"
+
+    broken = _plan(producers=((45.0, 50.0), (45.0, 50.0)), injectors=())
+    reported = loop._case_problems(broken, forecast, limits, None, [])
+
+    assert any("max_field_liquid_m3_per_day" in line for line in reported)
+
+
 def _switching(states, injecting=()):
     """Расписание одной скважины, где статус меняется от шага к шагу.
 

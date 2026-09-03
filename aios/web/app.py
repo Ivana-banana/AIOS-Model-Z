@@ -26,6 +26,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aios import balance as balance_module
 from aios import config as config_module
@@ -39,6 +40,14 @@ from aios.surrogate import fold_warnings
 from aios.web.charts import Series, bar_chart, line_chart
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+#: Заголовки страниц отказа. Текст самой причины приходит из `HTTPException`.
+ERROR_HEADINGS = {
+    400: "запрос не понят",
+    404: "такого здесь нет",
+    409: "так сделать нельзя",
+    500: "внутренняя ошибка",
+}
 
 NUMERIC_COLUMNS = tuple(column for column in economics.REQUIRED_COLUMNS if column not in ("DATA", "well"))
 QUALITY_TARGETS = ("WLPT_Diff", "WOMT_Diff")
@@ -277,6 +286,45 @@ def create_app(root: Path | None = None) -> FastAPI:
     project_root = root or Path(__file__).resolve().parent.parent.parent
     application = FastAPI(title="AIOS · трек 2 · Модель Z")
 
+    # Обработчик вешается на исключение **Starlette**, а не FastAPI: 404 на
+    # несуществующем маршруте (`/favicon.ico`, который браузер просит сам)
+    # порождает именно его, и обработчик, повешенный на `fastapi.HTTPException`,
+    # такой отказ не ловит — проверено запросом
+    @application.exception_handler(StarletteHTTPException)
+    def _refusal(request: Request, error: StarletteHTTPException) -> HTMLResponse:
+        """Отказ показывается страницей, а не голым JSON.
+
+        До 03.09 любой 4xx отдавал `{"detail": …}` — в том числе `/favicon.ico`,
+        который браузер запрашивает сам. На демо это выглядит как сломанный
+        сервис, хотя отказ законный и текст в нём осмысленный (ревизия 2.4 #4).
+        """
+        detail = error.detail if isinstance(error.detail, str) else str(error.detail)
+        try:
+            return _refusal_page(request, error.status_code, detail)
+        except Exception as broken:  # noqa: BLE001 — отказ обязан дойти до человека
+            # Если сломан сам шаблон, отказ всё равно должен быть виден и
+            # объясним. Молчаливое падение в голый 500 хуже некрасивого текста:
+            # оно превращает законный 404 в «сервис лежит» (Р-186).
+            return HTMLResponse(
+                f"<pre>{error.status_code}: {detail}\n\n"
+                f"страница отказа не отрисовалась: {type(broken).__name__}</pre>",
+                status_code=error.status_code,
+            )
+
+    def _refusal_page(request: Request, status: int, detail: str) -> HTMLResponse:
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="error.html",
+            status_code=status,
+            context={
+                "status": status,
+                "heading": ERROR_HEADINGS.get(status, "отказ"),
+                "detail": detail,
+                "hint": ("Список доступных прогонов — на главной странице."
+                         if status == 404 else ""),
+            },
+        )
+
     def runs() -> list[Run]:
         directory = project_root / "runs"
         if not directory.is_dir():
@@ -429,9 +477,116 @@ def create_app(root: Path | None = None) -> FastAPI:
             },
         )
 
+    @application.get("/forecast", response_class=HTMLResponse)
+    def forecast_page(request: Request, base: str = "base") -> HTMLResponse:
+        """Что суррогат обещал против того, что дала ГГДМ.
+
+        Главный вопрос трека 2 — «насколько можно верить быстрой модели» — до
+        03.09 отвечался только строкой в логе сквозного прогона. Здесь он
+        отвечается таблицей: прогноз цикла (`cycle.json`, написан **до** полного
+        расчёта) против ЧДД, посчитанного эталонным расчётчиком по выгрузке того
+        же каталога.
+
+        Прогон без `rows.csv` показывается со словами «полного расчёта не было»:
+        отсутствие подтверждения — это факт о прогоне, а не повод его скрыть.
+        """
+        configuration = settings()
+        start = configuration.economics.start_date.isoformat()
+        norms_file = configuration.economics.norms_file
+
+        # Кеш на время запроса: у каждой пары «прогон и его источник» ЧДД
+        # считается эталонным расчётчиком по выгрузке в 5 МБ, и один и тот же
+        # базовый прогон был источником у всех сразу. Замер критика 03.09 до
+        # правки: 8,5 с и шесть вызовов расчёта там, где нужны два (Р-186).
+        computed: dict[str, float | None] = {}
+
+        def chdd(run: Run) -> float | None:
+            if run.name in computed:
+                return computed[run.name]
+            rows = load_rows(run, configuration.fluids, deck_fluids().by_well)
+            computed[run.name] = None if not rows else economics.compute_npv(
+                rows, headers=economics.REQUIRED_COLUMNS,
+                start_date=start, norms_file=norms_file).chdd_m
+            return computed[run.name]
+
+        available = runs()
+        # База сравнения у каждого прогона своя: прирост считается от того
+        # прогона, с которого цикл стартовал (`source_run` в маркере), а не от
+        # произвольно выбранного. Аргумент `base` остаётся подсказкой для
+        # страницы, когда маркер источника не назвал.
+        base_run = next((one for one in available if one.name == base), None)
+
+        pairs: list[dict[str, Any]] = []
+        for run in available:
+            marker = run.path / "cycle.json"
+            if not marker.is_file():
+                continue
+            try:
+                forecast = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            # Сопоставимость проверяется, а не предполагается. Прогноз, записанный
+            # при базе дисконтирования 2007, и факт, посчитанный при 1991, — числа
+            # из разных систем отсчёта, и по их величине этого не видно. Маркеры
+            # до 03.09 базы не записывали вовсе: для них сравнение не проводится,
+            # и страница говорит об этом прямо (Р-187).
+            written_start = forecast.get("start_date")
+            comparable = written_start == start
+            source_name = forecast.get("source_run")
+            source_run = next((one for one in available if one.name == source_name),
+                              base_run if source_name is None else None)
+            source_fact = chdd(source_run) if source_run is not None else None
+
+            fact = chdd(run) if comparable else None
+            promised = forecast.get("forecast_gain_m") if comparable else None
+            # Прогон, названный источником самого себя, прироста не измеряет:
+            # разность выйдет нулём при любом решении. Такое бывает у запуска
+            # `--from runs/policy --out runs/policy`, и показывать «получено 0»
+            # значило бы выдать вырожденный случай за измерение (Р-186).
+            same = source_name == run.name
+            delivered = (None if same or fact is None or source_fact is None
+                         else fact - source_fact)
+            pairs.append({
+                "name": run.name,
+                "comparable": comparable,
+                "written_start": written_start,
+                "source": source_name,
+                "self_source": same,
+                "forecast_chdd": forecast.get("forecast_chdd_m") if comparable else None,
+                "fact_chdd": fact,
+                "promised": promised,
+                "delivered": delivered,
+                # Во сколько раз прогноз переоценил прирост. Знаменатель должен
+                # быть не просто положительным, а осмысленным: при полученных
+                # 1e-12 млн руб. отношение выходит ×5e12 — число, которое ничего
+                # не сообщает, кроме того, что делить было нечего. Порог в
+                # 1 млн руб. — цена одного мероприятия по методике, то есть
+                # наименьшая величина, которую вообще стоит обсуждать (Р-186).
+                "ratio": (promised / delivered
+                          if promised is not None and delivered is not None
+                          and delivered > 1.0 else None),
+                "surrogate": (forecast.get("surrogate_identity") or {}).get("surrogate", ""),
+            })
+
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="forecast.html",
+            context={
+                "pairs": pairs,
+                "base_name": base,
+                "settings": configuration,
+                "chart": bar_chart(
+                    [one["name"] for one in pairs if one["delivered"] is not None],
+                    [one["promised"] - one["delivered"]
+                     for one in pairs if one["delivered"] is not None],
+                ) if any(one["delivered"] is not None for one in pairs) else None,
+            },
+        )
+
     @application.get("/run/{name}/cycle", response_class=HTMLResponse)
     def cycle_page(request: Request, name: str, model: str = "decline",
-                   mode: str = "full", lookback: int | None = None) -> HTMLResponse:
+                   mode: str = "full", lookback: int | None = None,
+                   question: str = "") -> HTMLResponse:
         """Прогнать цикл МАС и показать решения.
 
         Запрос ничего не пишет на диск, поэтому он GET, а параметры запуска
@@ -446,15 +601,20 @@ def create_app(root: Path | None = None) -> FastAPI:
         # слой интерпретируемости: модель излагает уже принятое решение по
         # посчитанным фактам. Отказ слоя не должен ронять страницу — при любой
         # проблеме возвращается шаблонное объяснение (ТЗ п. 3.1)
+        # Вопрос инженера — тот же слой и та же проверка чисел, просто у модели
+        # спрашивают заданное, а не «почему так решили» (Р-184). Длина ограничена
+        # здесь, а не в модуле: это защита формы, а не слоя.
+        asked = question.strip()[:500]
         try:
-            explanation = explain_module.explain(
-                explain_module.evidence_from_cycle(
-                    cycle.result, cycle.surrogate_name,
-                    limits=configuration.limits, fluids=configuration.fluids),
-                configuration.explain,
-            )
+            evidence = explain_module.evidence_from_cycle(
+                cycle.result, cycle.surrogate_name,
+                limits=configuration.limits, fluids=configuration.fluids)
+            explanation = explain_module.explain(evidence, configuration.explain)
+            reply = (explain_module.answer(evidence, configuration.explain, asked)
+                     if asked else None)
         except Exception:  # noqa: BLE001 — объяснение не должно уносить результат цикла
             explanation = None
+            reply = None
         return TEMPLATES.TemplateResponse(
             request=request,
             name="cycle.html",
@@ -465,6 +625,8 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "surrogate_name": cycle.surrogate_name,
                 "warning_groups": fold_warnings(cycle.result.warnings),
                 "explanation": explanation,
+                "question": asked,
+                "reply": reply,
                 "options": options,
                 "case_dir": _case_directory(run.name, options),
                 "case_ready": cycle.deck_wells is not None and not cycle.result.problems,

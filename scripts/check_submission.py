@@ -264,15 +264,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # предел дебита жидкости берётся из таблицы ЭЦН нормативов кейса: на
     # валидационном кейсе (ТЗ п. 4.3) старший насос может быть другим (Б28)
-    # оба предела — из кейса, а не из литералов Модели Z: таблица ЭЦН даёт предел
-    # жидкости (Б28), `[limits].max_injector_bhp_atm` — предел давления нагнетания.
-    # Второй до 03.09 сюда не доходил: конфиг его читал, планировщик исполнял, а
-    # предполётная проверка судила чужой кейс по 300 атм Модели Z.
-    injection_bhp = config.limits.max_injector_bhp_atm
     failures, notes = check(
         text, deck_text, config.case.control_start,
         schedule_module.liquid_limit(economics.load_norms(config.economics.norms_file)[1]),
-        (schedule_module.MAX_INJECTION_BHP_ATM if injection_bhp is None else injection_bhp),
+        # то же и про давление нагнетания: 300 атм — умолчание Модели Z, а кейс
+        # называет своё число в `[limits].max_injector_bhp_atm` (ревизия 2.3 #5)
+        (schedule_module.MAX_INJECTION_BHP_ATM
+         if config.limits.max_injector_bhp_atm is None
+         else config.limits.max_injector_bhp_atm),
     )
     submitted = deck_module.parse_schedule_text(text)
 

@@ -640,6 +640,44 @@ def test_pack_npv_shows_the_whole_scenario_not_only_its_first_period(tmp_path, m
     assert "период" in printed, "не сказано, что режим внутри сценария меняется"
 
 
+def test_confirm_refuses_a_loss_making_result(tmp_path, monkeypatch, capsys):
+    """Единая команда не должна завершаться успехом на убыточном расписании.
+
+    README велит проверяющему запускать `scripts/run_all.py`, последний шаг
+    которого — `run_cycle --confirm`. Собственные замеры проекта дают на этом
+    пути −63…−70 % ЧДД против бездействия: прогон, завершившийся успехом на
+    расписании втрое хуже истории, сообщает проверяющему неправду (Р-191).
+    """
+    from aios import loop
+    from scripts import run_cycle
+
+    losing = loop.CycleResult(
+        base_chdd_m=5300.5, chdd_m=3751.1, actions=(), rate_choices=(),
+        allocations=(), steps=(), warnings=(), problems=(), confirmed=True,
+    )
+    monkeypatch.setattr(run_cycle.loop, "confirm", lambda *a, **k: losing)
+
+    assert losing.gain_m < 0, "тест обязан проверять именно убыточный случай"
+    assert not losing.is_improvement
+
+
+def test_confirm_prints_case_problems_of_the_full_run():
+    """Нарушения условий кейса на выгрузке ГГДМ печатаются, а не молчат."""
+    from aios import loop
+
+    result = loop.CycleResult(
+        base_chdd_m=100.0, chdd_m=120.0, actions=(), rate_choices=(), allocations=(),
+        steps=(), warnings=(), problems=(),
+        case_problems=("2017: компенсация 141% — выше предела 130%",),
+        confirmed=True,
+    )
+
+    assert not result.is_improvement, (
+        "кандидат с нарушенным условием кейса не улучшение, даже при плюсе"
+    )
+    assert "УСЛОВИЯ КЕЙСА НАРУШЕНЫ" in result.summary()
+
+
 def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsys):
     """Цикл обязан доходить до конца на рабочем пути, а не только в юнит-тестах.
 
@@ -709,6 +747,17 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert note.is_file(), printed
     assert "прогноз цикла считался одной плотностью" in note.read_text(encoding="utf-8")
     assert "на каких плотностях:" in printed
+
+    # Слой интерпретируемости — часть единой команды, а не только интерфейса
+    # (Р-180). До 03.09 объяснение рождалось лишь на странице цикла, то есть
+    # автоматический прогон (п. 3.2.3 ТЗ) его не производил вовсе.
+    explanation = json.loads(
+        (tmp_path / "out" / "explanation.json").read_text(encoding="utf-8"))
+    assert explanation["text"], printed
+    assert explanation["source"] in {
+        "llm", "cache", "template", "template-rejected", "template-failed"
+    }, explanation
+    assert "объяснение решения:" in printed
 
     # Маркер пишется в первом шаге, а сравнение происходит прежде чтения
     # выгрузки: случайно потерянный `--no-tune-rates` не должен заново запускать

@@ -40,6 +40,46 @@ WCONPROD
 """
 
 
+def test_an_unquoted_well_name_is_not_taken_for_a_keyword():
+    """Имя скважины без кавычек закрывало только что открытый блок — молча.
+
+    Шаблон ключевого слова `[A-Z][A-Z0-9]{1,11}` совпадает и с именем скважины,
+    поэтому `WCONPROD` с незакавыченным `P1` разбирался в **пустой** блок: ноль
+    добывающих, ни одной ошибки, `unsupported_controls` пуст. На деке
+    валидационного кейса, где имена не закавычены, скважина исчезла бы из фонда
+    вместе со своей экономикой (ревизия 03.09, 2.3 #1).
+    """
+    text = (
+        "DATES\n 1 JAN 2009 /\n/\n"
+        "WELSPECS\n P1 G1 10 10 1* OIL /\n/\n"
+        "WCONPROD\n P1 OPEN LRAT 1* 1* 1* 20 1* 50 /\n/\n"
+    )
+
+    parsed = deck.parse_schedule_text(text)
+
+    assert [control.well for control in parsed.steps[0].producers] == ["P1"]
+    assert parsed.steps[0].producers[0].liquid_rate == pytest.approx(20.0)
+    # и то же самое с кавычками разбирается так же
+    quoted = deck.parse_schedule_text(
+        text.replace(" P1 ", " 'P1' ").replace(" G1 ", " 'G1' "))
+    assert [control.well for control in quoted.steps[0].producers] == ["P1"]
+
+
+def test_a_well_name_in_the_middle_of_a_record_is_not_a_keyword():
+    """Запись из нескольких строк не разрывается именем в её середине."""
+    text = (
+        "DATES\n 1 JAN 2009 /\n/\n"
+        "WCONPROD\n"
+        " P1 OPEN LRAT 1* 1* 1* 20 1* 50 /\n"
+        " P2 OPEN LRAT 1* 1* 1* 30 1* 50 /\n"
+        "/\n"
+    )
+
+    parsed = deck.parse_schedule_text(text)
+
+    assert [control.well for control in parsed.steps[0].producers] == ["P1", "P2"]
+
+
 def test_defaults_and_repeats_are_expanded():
     record = deck._expand_defaults(["'A'", "1*", "3*", "2*50", "7"])
     assert record == ("A", None, None, None, None, "50", "50", "7")
@@ -302,11 +342,38 @@ WCONPROD P1 OPEN LRAT 4* 100 50 /
 
 
 def test_an_empty_control_block_is_refused_instead_of_losing_the_well():
-    """Имя без кавычек с новой строки различить нельзя — но промолчать нельзя тем более.
+    """Блок режима без записей — не «нечего назначать», а непрочитанная запись.
 
-    Заглавный токен в начале строки неотличим от ключевого слова без таблицы всех
-    слов Eclipse. Зато последствие видно: `WCONPROD` остаётся без записей.
-    Молчание тут стоит скважины в фонде, в SUMMARY и в ЧДД, поэтому — отказ.
+    Вторая сетка под `BLOCK_KEYWORDS` (Р-177), а не замена ей. Список закрывает
+    известную причину — имя скважины, принятое за ключевое слово. Эта проверка
+    ловит **последствие** любой причины, включая ключевое слово чужого дека,
+    которого в списке ещё нет: такое разбирается как данные и уходит в записи
+    соседа, а блок режима остаётся пустым. Цена молчания здесь — скважина,
+    пропавшая из фонда, SUMMARY-секции и ЧДД.
+    """
+    text = """
+DATES
+ 1 JAN 2014 /
+/
+WCONPROD
+DATES
+ 1 FEB 2014 /
+/
+"""
+
+    with pytest.raises(ValueError) as refusal:
+        deck.parse_schedule_text(text)
+
+    assert "WCONPROD" in str(refusal.value)
+    assert "без записей" in str(refusal.value)
+
+
+def test_an_unquoted_well_name_no_longer_empties_the_block_at_all():
+    """Ради чего заведён `BLOCK_KEYWORDS`: `P1` с новой строки читается как запись.
+
+    До Р-177 первый же заглавный токен закрывал только что открытый блок, и
+    `producers` оставался пустым. Теперь имя скважины отличается от ключевого
+    слова тем, что ключевое слово **названо** в списке.
     """
     text = """
 DATES
@@ -317,11 +384,8 @@ WCONPROD
 /
 """
 
-    with pytest.raises(ValueError) as refusal:
-        deck.parse_schedule_text(text)
-
-    assert "WCONPROD" in str(refusal.value)
-    assert "без записей" in str(refusal.value)
+    schedule = deck.parse_schedule_text(text)
+    assert [one.well for step in schedule.steps for one in step.producers] == ["P1"]
 
 
 def test_the_quoted_form_of_the_same_record_still_reads():
