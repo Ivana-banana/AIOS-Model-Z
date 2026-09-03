@@ -155,6 +155,13 @@
         <option value="stops">только остановка убыточных</option>
       </select>
     </label>
+    {% if neural_available %}
+    <p class="muted" style="flex-basis:100%; margin:0">
+      Совместный подбор режимов на обученной модели идёт больше часа — столько
+      веб-запрос не живёт, и страница ответит отказом с командой для терминала.
+      На обученной модели выбирайте «только остановка убыточных».
+    </p>
+    {% endif %}
     <label>Окно диагноза, мес.<br>
       <input type="number" name="lookback" min="1" max="60"
              value="{{ settings.policy.lookback_months }}" style="width:90px">

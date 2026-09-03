@@ -107,6 +107,57 @@ def client(project):
     return TestClient(create_app(project))
 
 
+def test_a_refusal_is_a_page_not_json(client):
+    """Отказ показывается страницей — в том числе на несуществующем маршруте.
+
+    До 03.09 любой 4xx отдавал `{"detail": …}`, включая `/favicon.ico`, который
+    браузер просит сам. На демо это выглядит как сломанный сервис, хотя отказ
+    законный (ревизия 03.09, 2.4 #4).
+    """
+    for url in ("/run/нет-такого", "/favicon.ico"):
+        answer = client.get(url)
+        assert answer.status_code == 404
+        assert answer.headers["content-type"].startswith("text/html"), url
+        assert "к списку прогонов" in answer.text
+
+
+def test_the_forecast_page_refuses_to_compare_across_frames(project):
+    """Прогноз из другой системы отсчёта не сравнивается, а помечается.
+
+    Маркер, записанный при базе дисконтирования 2007, и факт при 1991 — числа
+    из разных систем, и по их величине этого не видно: разница доходит до разов
+    (Р-182). Маркеры до 03.09 базу не записывали вовсе.
+    """
+    (project / "runs" / "base" / "cycle.json").write_text(
+        json.dumps({"forecast_chdd_m": 100.0, "forecast_gain_m": 50.0,
+                    "start_date": "2007-01-01", "source_run": "base"}),
+        encoding="utf-8")
+
+    answer = TestClient(create_app(project)).get("/forecast")
+
+    assert answer.status_code == 200
+    assert "другой системе отсчёта" in answer.text
+    assert "база 2007" in answer.text
+
+
+def test_the_forecast_page_compares_within_one_frame(project):
+    """В одной системе отсчёта страница показывает обещанное и полученное."""
+    (project / "runs" / "base" / "cycle.json").write_text(
+        json.dumps({"forecast_chdd_m": 100.0, "forecast_gain_m": 50.0,
+                    "start_date": "2014-01-01", "source_run": "base",
+                    "surrogate_identity": {"surrogate": "тривиальный бейзлайн"}}),
+        encoding="utf-8")
+
+    answer = TestClient(create_app(project)).get("/forecast")
+
+    assert answer.status_code == 200
+    assert "другой системе отсчёта" not in answer.text
+    assert "тривиальный бейзлайн" in answer.text
+    # прогон сравнивается сам с собой, поэтому полученный прирост равен нулю —
+    # проверяется, что сравнение вообще состоялось, а не его величина
+    assert "+50.0" in answer.text
+
+
 def test_index_lists_runs_and_configuration(client):
     response = client.get("/")
 

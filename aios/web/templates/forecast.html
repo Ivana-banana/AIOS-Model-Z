@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}AIOS · суррогат против факта{% endblock %}
+{% block content %}
+<section>
+  <h2>Что суррогат обещал и что дала ГГДМ</h2>
+  <p class="muted">
+    Прогноз берётся из <code>cycle.json</code> — он записан <b>до</b> полного
+    расчёта. Факт считает эталонный расчётчик организаторов по выгрузке того же
+    каталога. Прирост у каждого прогона считается от того прогона, с которого
+    цикл стартовал, а не от общей базы: иначе сравнивались бы разные точки
+    отсчёта.
+  </p>
+  <p class="muted">
+    Сравнение проводится только там, где прогноз записан в <b>той же системе
+    отсчёта</b>, что действует сейчас (база дисконтирования
+    {{ settings.economics.start_date.year }}). Маркеры, записанные при другой
+    базе, помечены и не сравниваются: по величине числа этого не видно, а разница
+    доходит до разов.
+  </p>
+
+  {% if not pairs %}
+    <p>Ни одного прогона с записанным прогнозом цикла (<code>cycle.json</code>) нет.
+       Он появляется после <code>python scripts/run_cycle.py --out runs/&lt;имя&gt;</code>.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>прогон</th><th>суррогат</th><th>прогноз ЧДД</th><th>факт ЧДД</th>
+        <th>обещал прирост</th><th>дала ГГДМ</th><th>переоценка</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for one in pairs %}
+      <tr>
+        <td>{{ one.name }}</td>
+        <td class="muted">{{ one.surrogate or "—" }}</td>
+        {% if not one.comparable %}
+        <td colspan="5" class="muted">
+          прогноз записан в другой системе отсчёта
+          ({% if one.written_start %}база {{ one.written_start[:4] }}{% else %}база не записана{% endif %})
+          — не сравнивается
+        </td>
+        {% else %}
+        <td>{{ "%.1f"|format(one.forecast_chdd) }}</td>
+        <td>
+          {% if one.fact_chdd is not none %}{{ "%.1f"|format(one.fact_chdd) }}
+          {% else %}<span class="muted">полного расчёта не было</span>{% endif %}
+        </td>
+        <td>{% if one.promised is not none %}{{ "%+.1f"|format(one.promised) }}{% else %}—{% endif %}</td>
+        <td>
+          {% if one.delivered is not none %}{{ "%+.1f"|format(one.delivered) }}
+          {% elif one.fact_chdd is not none %}<span class="muted">нет прогона «{{ one.source or base_name }}» для базы</span>
+          {% else %}<span class="muted">полного расчёта не было</span>{% endif %}
+        </td>
+        <td>
+          {% if one.ratio is not none %}<b>×{{ "%.1f"|format(one.ratio) }}</b>
+          {% else %}—{% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if chart %}
+  <h3>Разрыв «обещал минус получил», млн руб.</h3>
+  {{ chart|safe }}
+  {% endif %}
+  {% endif %}
+
+  <p class="muted">
+    Это и есть первый из двух разрывов, о которых мы говорим в отчёте: суррогат
+    обучен на конечном наборе прогонов, а оптимизатор целенаправленно ищет
+    максимум — то есть тянет решение туда, где модель ошибается оптимистично.
+    Поэтому любой найденный на суррогате оптимум подтверждается полным расчётом,
+    и заявляется подтверждённое число, а не обещанное.
+  </p>
+</section>
+{% endblock %}

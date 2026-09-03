@@ -445,6 +445,14 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "multipliers": list(multipliers) if multipliers else None,
             "tune_rates": not arguments.no_tune_rates,
+            # Система отсчёта прогноза. Без неё сравнение «обещал против факта»
+            # невозможно: маркеры, записанные при базе дисконтирования 2007,
+            # несопоставимы с фактом, посчитанным при 1991, а по числу этого не
+            # видно (Р-182). Источник нужен для той же цели: прирост считается
+            # от прогона, с которого цикл стартовал, а не от произвольного.
+            "start_date": config.economics.start_date.isoformat(),
+            "source_run": Path(source).name,
+            "norms_file": str(config.economics.norms_file),
             "forecast_chdd_m": result.chdd_m,
             "forecast_gain_m": result.gain_m,
             "safe_forecast_chdd_m": result.safe_chdd_m,

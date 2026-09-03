@@ -26,6 +26,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aios import balance as balance_module
 from aios import config as config_module
@@ -39,6 +40,14 @@ from aios.surrogate import fold_warnings
 from aios.web.charts import Series, bar_chart, line_chart
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+#: Заголовки страниц отказа. Текст самой причины приходит из `HTTPException`.
+ERROR_HEADINGS = {
+    400: "запрос не понят",
+    404: "такого здесь нет",
+    409: "так сделать нельзя",
+    500: "внутренняя ошибка",
+}
 
 NUMERIC_COLUMNS = tuple(column for column in economics.REQUIRED_COLUMNS if column not in ("DATA", "well"))
 QUALITY_TARGETS = ("WLPT_Diff", "WOMT_Diff")
@@ -277,6 +286,32 @@ def create_app(root: Path | None = None) -> FastAPI:
     project_root = root or Path(__file__).resolve().parent.parent.parent
     application = FastAPI(title="AIOS · трек 2 · Модель Z")
 
+    # Обработчик вешается на исключение **Starlette**, а не FastAPI: 404 на
+    # несуществующем маршруте (`/favicon.ico`, который браузер просит сам)
+    # порождает именно его, и обработчик, повешенный на `fastapi.HTTPException`,
+    # такой отказ не ловит — проверено запросом
+    @application.exception_handler(StarletteHTTPException)
+    def _refusal(request: Request, error: StarletteHTTPException) -> HTMLResponse:
+        """Отказ показывается страницей, а не голым JSON.
+
+        До 03.09 любой 4xx отдавал `{"detail": …}` — в том числе `/favicon.ico`,
+        который браузер запрашивает сам. На демо это выглядит как сломанный
+        сервис, хотя отказ законный и текст в нём осмысленный (ревизия 2.4 #4).
+        """
+        detail = error.detail if isinstance(error.detail, str) else str(error.detail)
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="error.html",
+            status_code=error.status_code,
+            context={
+                "status": error.status_code,
+                "heading": ERROR_HEADINGS.get(error.status_code, "отказ"),
+                "detail": detail,
+                "hint": ("Список доступных прогонов — на главной странице."
+                         if error.status_code == 404 else ""),
+            },
+        )
+
     def runs() -> list[Run]:
         directory = project_root / "runs"
         if not directory.is_dir():
@@ -426,6 +461,94 @@ def create_app(root: Path | None = None) -> FastAPI:
                     [well for well, _, _ in deltas],
                     [after - before for _, before, after in deltas],
                 ),
+            },
+        )
+
+    @application.get("/forecast", response_class=HTMLResponse)
+    def forecast_page(request: Request, base: str = "base") -> HTMLResponse:
+        """Что суррогат обещал против того, что дала ГГДМ.
+
+        Главный вопрос трека 2 — «насколько можно верить быстрой модели» — до
+        03.09 отвечался только строкой в логе сквозного прогона. Здесь он
+        отвечается таблицей: прогноз цикла (`cycle.json`, написан **до** полного
+        расчёта) против ЧДД, посчитанного эталонным расчётчиком по выгрузке того
+        же каталога.
+
+        Прогон без `rows.csv` показывается со словами «полного расчёта не было»:
+        отсутствие подтверждения — это факт о прогоне, а не повод его скрыть.
+        """
+        configuration = settings()
+        start = configuration.economics.start_date.isoformat()
+        norms_file = configuration.economics.norms_file
+
+        def chdd(run: Run) -> float | None:
+            rows = load_rows(run, configuration.fluids, deck_fluids().by_well)
+            if not rows:
+                return None
+            return economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                                         start_date=start, norms_file=norms_file).chdd_m
+
+        available = runs()
+        # База сравнения у каждого прогона своя: прирост считается от того
+        # прогона, с которого цикл стартовал (`source_run` в маркере), а не от
+        # произвольно выбранного. Аргумент `base` остаётся подсказкой для
+        # страницы, когда маркер источника не назвал.
+        base_run = next((one for one in available if one.name == base), None)
+
+        pairs: list[dict[str, Any]] = []
+        for run in available:
+            marker = run.path / "cycle.json"
+            if not marker.is_file():
+                continue
+            try:
+                forecast = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            # Сопоставимость проверяется, а не предполагается. Прогноз, записанный
+            # при базе дисконтирования 2007, и факт, посчитанный при 1991, — числа
+            # из разных систем отсчёта, и по их величине этого не видно. Маркеры
+            # до 03.09 базы не записывали вовсе: для них сравнение не проводится,
+            # и страница говорит об этом прямо (Р-182).
+            written_start = forecast.get("start_date")
+            comparable = written_start == start
+            source_name = forecast.get("source_run")
+            source_run = next((one for one in available if one.name == source_name),
+                              base_run if source_name is None else None)
+            source_fact = chdd(source_run) if source_run is not None else None
+
+            fact = chdd(run) if comparable else None
+            promised = forecast.get("forecast_gain_m") if comparable else None
+            delivered = (None if fact is None or source_fact is None else fact - source_fact)
+            pairs.append({
+                "name": run.name,
+                "comparable": comparable,
+                "written_start": written_start,
+                "source": source_name,
+                "forecast_chdd": forecast.get("forecast_chdd_m") if comparable else None,
+                "fact_chdd": fact,
+                "promised": promised,
+                "delivered": delivered,
+                # во сколько раз прогноз переоценил прирост; знаменатель может
+                # быть нулевым или отрицательным — тогда отношения нет, и врать
+                # про него нельзя
+                "ratio": (promised / delivered
+                          if promised is not None and delivered is not None
+                          and delivered > 0 else None),
+                "surrogate": (forecast.get("surrogate_identity") or {}).get("surrogate", ""),
+            })
+
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="forecast.html",
+            context={
+                "pairs": pairs,
+                "base_name": base,
+                "settings": configuration,
+                "chart": bar_chart(
+                    [one["name"] for one in pairs if one["delivered"] is not None],
+                    [one["promised"] - one["delivered"]
+                     for one in pairs if one["delivered"] is not None],
+                ) if any(one["delivered"] is not None for one in pairs) else None,
             },
         )
 
