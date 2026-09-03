@@ -161,6 +161,38 @@ def test_physical_prediction_failure_reaches_cycle_warnings():
     assert any("отрицательное WLPT_Diff" in warning for warning in warnings)
 
 
+def test_negative_increments_never_reach_the_economics():
+    """Отрицательное приращение обнуляется в строках и остаётся в диагностике.
+
+    Эталонный расчётчик выбрасывает строку с отрицательным `*_Diff` целиком, и
+    прогнозный ЧДД считался на обрезанном наборе: на кандидатах 24.08 исключалось
+    60–86 строк, то есть поиск сравнивал числа разного состава (ревизия 03.09,
+    2.2 #5). Обнулять надо в строках, а не в прогнозе: иначе исчезнет и
+    предупреждение о самом нарушении.
+    """
+    invalid = bundle()
+    invalid.models["1"] = InvalidModel()
+    months = [ScheduleStep(pd.Timestamp(f"2014-{month:02d}-01").date(),
+                           (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),), ())
+              for month in range(1, 4)]
+    surrogate = NeuralSurrogate.create(invalid, months)
+
+    rows = surrogate.predict(months)
+    assert rows, "прогноз не пуст"
+    for row in rows:
+        for key in ("WLPT_Diff", "WOMT_Diff", "WWIT_Diff"):
+            assert row[key] >= 0.0, f"{key} ушёл в экономику отрицательным"
+        assert row["WOMT_Diff"] <= row["WLPT_Diff"] + 1e-9, "нефти больше, чем жидкости"
+
+    # накопленные величины остаются монотонными — это следствие того же обнуления
+    totals = [row["WLPT"] for row in rows]
+    assert totals == sorted(totals)
+
+    # и при этом само нарушение по-прежнему названо
+    assert any("отрицательное WLPT_Diff" in warning
+               for warning in surrogate.in_training_range(months))
+
+
 def test_physical_failures_are_folded_to_one_line_per_well():
     """Одна скважина — одна строка с числом нарушений, а не строка на месяц.
 

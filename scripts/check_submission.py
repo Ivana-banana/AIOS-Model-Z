@@ -46,6 +46,7 @@ from aios.deckfiles import layout  # noqa: E402
 
 def check(text: str, deck_text: str, control_start: date,
           max_liquid_rate: float = schedule_module.MAX_LIQUID_RATE_M3_PER_DAY,
+          max_injection_bhp: float = schedule_module.MAX_INJECTION_BHP_ATM,
           ) -> tuple[list[str], list[str]]:
     """Разобрать сдаваемый файл и сверить его с деком.
 
@@ -71,11 +72,12 @@ def check(text: str, deck_text: str, control_start: date,
     # проверяется управляемая часть: история задана организаторами, и отвергать
     # их собственный дек по нашим правилам значило бы забраковать исправный файл
     for problem in schedule_module.validate(controlled, known,
-                                            max_liquid_rate=max_liquid_rate):
+                                            max_liquid_rate=max_liquid_rate,
+                                            max_injection_bhp=max_injection_bhp):
         failures.append(str(problem))
 
     for problem in _preamble_problems(text, submitted, known, control_start,
-                                      max_liquid_rate):
+                                      max_liquid_rate, max_injection_bhp):
         failures.append(f"до первого DATES: {problem}")
 
     if submitted.unsupported_controls:
@@ -103,6 +105,7 @@ def check(text: str, deck_text: str, control_start: date,
 def _preamble_problems(text: str, submitted: deck_module.Schedule,
                        known: frozenset[str], control_start: date,
                        max_liquid_rate: float = schedule_module.MAX_LIQUID_RATE_M3_PER_DAY,
+                       max_injection_bhp: float = schedule_module.MAX_INJECTION_BHP_ATM,
                        ) -> list[str]:
     """Нарушения в режимах, записанных до первого DATES.
 
@@ -135,7 +138,8 @@ def _preamble_problems(text: str, submitted: deck_module.Schedule,
     if not head.producers and not head.injectors:
         return []
     return [str(problem) for problem in schedule_module.validate(
-        [head], known, max_liquid_rate=max_liquid_rate)]
+        [head], known, max_liquid_rate=max_liquid_rate,
+        max_injection_bhp=max_injection_bhp)]
 
 
 def _horizon_notes(first: date, last: date, reference: deck_module.Schedule) -> list[str]:
@@ -263,6 +267,11 @@ def main(argv: list[str] | None = None) -> int:
     failures, notes = check(
         text, deck_text, config.case.control_start,
         schedule_module.liquid_limit(economics.load_norms(config.economics.norms_file)[1]),
+        # то же и про давление нагнетания: 300 атм — умолчание Модели Z, а кейс
+        # называет своё число в `[limits].max_injector_bhp_atm` (ревизия 2.3 #5)
+        (schedule_module.MAX_INJECTION_BHP_ATM
+         if config.limits.max_injector_bhp_atm is None
+         else config.limits.max_injector_bhp_atm),
     )
     submitted = deck_module.parse_schedule_text(text)
 

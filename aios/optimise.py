@@ -352,6 +352,14 @@ def choose_joint_rates(
     current_steps = _scale_individually(base_steps, selected)
     current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids,
                              region, margin, penalty, weight, norms_file)
+    if current_chdd == float("-inf"):
+        # Стартовая точка сама вне доверенной области — ранжировать нечем и не от
+        # чего. Продолжать нельзя не из осторожности, а арифметически: разность
+        # «стало минус было» дала бы `+inf` и уехала бы в отчёт, в интерфейс и в
+        # JSON (`Infinity` — невалидный JSON). Пустой список выборов означает
+        # «поиск ничего не менял»; причину называют предупреждения цикла
+        # (`trust.routed_to_full_run`), найдено критиком 03.09.
+        return []
     choices: list[JointRateChoice] = []
 
     for kind, well, start in controls:
@@ -409,8 +417,25 @@ def _value_of(
     else:
         fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids)
         value, judged = _chdd(surrogate.predict(fitted), start_date, norms_file), fitted
-    return trust.safe_value(value, _distance_of(surrogate, judged, region), margin,
-                            penalty=penalty, weight=weight)
+    distance = _distance_of(surrogate, judged, region)
+    if distance is not None and distance.outside:
+        # Вне доверенной области кандидат из поиска выбывает, а не дешевеет.
+        #
+        # До 03.09 удаление стоило `ρ·(d−τ)²` при `ρ = 1` млн руб., то есть цену
+        # подбирали не измерением, а «вес не подбирали». На прогоне 24.08 это
+        # означало штраф ≈79 млн против обещанных +2 042,7 при d = 33,0 и
+        # τ = 24,13: кандидат выбран, ГГДМ дал +460,8, то есть суррогат
+        # переоценил отклик в 4,4 раза — ровно там, где область говорила «не
+        # знаю». Мягкий штраф с непроверенным весом не защищает ни от чего:
+        # оптимизатор целенаправленно ищет максимум и поэтому идёт именно туда,
+        # где суррогат ошибается оптимистично (`CLAUDE.md`, «два разрыва»).
+        #
+        # Форма ответа выбрана не новая: пошаговое покрытие
+        # (`_covered_multipliers`) уже жёсткий фильтр, и второй контур доверия
+        # работает так же. Дублирование намеренное: контуры независимы, и падение
+        # одного не должно открывать проход (Р-174).
+        return float("-inf")
+    return trust.safe_value(value, distance, margin, penalty=penalty, weight=weight)
 
 
 def _distance_of(surrogate: Surrogate, steps: list[ScheduleStep],
@@ -697,6 +722,14 @@ def convert_to_injection(
     единственная величина, которую можно вывести из расписания, ничего не
     выдумывая; скважина, ни разу не работавшая на добычу, не переводится вовсе.
 
+    **«На момент перевода» — это последний дебит перед ним, а не первый за
+    горизонт.** До 03.09 здесь стоял `setdefault`, то есть запоминался дебит из
+    самого раннего шага расписания: скважина, падавшая с 100 до 30 м³/сут к 2014
+    году, при переводе в 2015 получала приёмистость 100. Дебит зрелого фонда
+    падает монотонно, поэтому ошибка всегда в одну сторону — приёмистость
+    завышена, лишняя вода тратит OPEX и съедает коридор компенсации, а проверить
+    это суррогату нечем: он про перевод не знает (ревизия 03.09, 2.1 #3).
+
     Добыча закрывается на **каждом** последующем шаге: дек переоткрывает её
     своей записью на каждом шаге, и одной остановки не хватит. Запись закачки,
     наоборот, ставится один раз — Eclipse держит режим до следующей записи.
@@ -719,7 +752,10 @@ def convert_to_injection(
     for step in steps:
         for control in step.producers:
             if control.well in wells and control.status == "OPEN" and control.liquid_rate:
-                last_rate.setdefault(control.well, control.liquid_rate)
+                # присваивание, а не setdefault: нужен последний известный дебит
+                # к моменту перевода. После перевода значение уже не читается —
+                # запись закачки ставится один раз (`opened`)
+                last_rate[control.well] = control.liquid_rate
 
         active = since is None or step.date >= since
         producers: list[ProducerControl] = []

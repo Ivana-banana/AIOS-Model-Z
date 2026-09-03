@@ -65,6 +65,22 @@ def _write_case(tmp_path, monthly_oil_m3, monthly_water_m3, monthly_injection_m3
     return tmp_path / "CASE"
 
 
+def test_a_well_with_no_vectors_at_all_is_refused(tmp_path):
+    """Скважина, названная снаружи и отсутствующая в выгрузке, — отказ.
+
+    До 03.09 отказ был только при **частично** пропавших векторах: скважина без
+    единого вектора получала нули по всем величинам и выглядела «неработающей».
+    Отсутствие данных становилось неотличимо от простоя (ревизия 03.09, 2.3 #7).
+    """
+    case = _write_case(tmp_path, monthly_oil_m3=[100.0], monthly_water_m3=[900.0])
+
+    # скважина из выгрузки читается как обычно
+    assert summary.monthly_rows(case)
+
+    with pytest.raises(ValueError, match="ни одного вектора"):
+        summary.monthly_rows(case, wells=("НЕТ-ТАКОЙ",))
+
+
 def test_volumes_are_converted_to_mass_by_deck_densities(tmp_path):
     case = _write_case(tmp_path, monthly_oil_m3=[100.0], monthly_water_m3=[900.0])
     fluids = summary.Fluids(oil_density=913.0765883224138, water_density=1172.0)

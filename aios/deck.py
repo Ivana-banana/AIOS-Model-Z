@@ -124,22 +124,67 @@ class Schedule:
         return _sorted_wells(set(self.producer_wells) | set(self.injector_wells))
 
 
+#: Ключевые слова, которые действительно начинают блок. Всё остальное, что
+#: похоже на ключевое слово, — данные записи.
+#:
+#: Зачем нужен список, хотя раньше хватало шаблона `[A-Z][A-Z0-9]{1,11}`. Этот
+#: шаблон совпадает и с именем скважины: дек, где имена не закавычены (`P1`
+#: вместо `'P1'`), разбирался в **пустой** блок, потому что первый же токен
+#: записи закрывал только что открытое ключевое слово. Молча: `WCONPROD` с
+#: незакавыченным именем давал ноль добывающих скважин и ни одной ошибки, то
+#: есть на деке валидационного кейса скважина исчезла бы из фонда вместе со своей
+#: экономикой (ревизия 03.09, 2.3 #1, воспроизведено на `parse_schedule_text`).
+#:
+#: Полного списка Eclipse тут нет и не нужно: нам важны те, что встречаются в
+#: SCHEDULE и в шапке дека. Неизвестное ключевое слово в **незакрытом** блоке
+#: по-прежнему сольётся с ним — это малформед-дек, и о нём говорит входной
+#: контроль (`aios.deckcheck`), а не парсер.
+BLOCK_KEYWORDS = frozenset({
+    # режим скважин и время
+    "WCONPROD", "WCONINJE", "WCONHIST", "WCONINJH", "WELOPEN", "WELTARG", "WEFAC",
+    "WELSPECS", "WELSPECL", "COMPDAT", "COMPDATL", "COMPDATMD", "WELLTRACK",
+    "WPIMULT", "WELSEGS", "COMPSEGS", "WSEGVALV", "WLIST", "WTEST", "WECON",
+    "WPOLYMER", "WSALT", "WTRACER", "WGRUPCON", "WDFAC", "WFRICTN",
+    "DATES", "TSTEP", "TIME", "SKIPREST", "RESTART",
+    # группы и объект
+    "GCONPROD", "GCONINJE", "GRUPTREE", "GRUPNET", "GEFAC", "GECON", "GCONSUMP",
+    "NODEPROP", "BRANPROP",
+    # управление расчётом и вывод
+    "RPTSCHED", "RPTRST", "RPTPRINT", "TUNING", "TUNINGDP", "NEXTSTEP", "NUPCOL",
+    "DRSDT", "DRVDT", "VAPPARS", "AQUCT", "AQUFETP", "AQUANCON", "MULTFLT",
+    "SUMMARY", "SCHEDULE", "END", "ENDBOX", "BOX", "INCLUDE", "SAVE", "TERMINATE",
+    "WSEGITER", "ACTIONX", "ENDACTIO", "UDQ", "UDADIMS", "PYACTION",
+    "ACTION", "ACTIONG", "ACTIONR", "ACTIONS", "ACTIONW", "WELCNTL",
+    # секции и шапка: их читает входной контроль дека и сборка кейса
+    "RUNSPEC", "GRID", "EDIT", "PROPS", "REGIONS", "SOLUTION", "START",
+    "TABDIMS", "DIMENS", "WELLDIMS", "EQLDIMS", "REGDIMS", "AQUDIMS", "GRIDOPTS",
+    "METRIC", "FIELD", "LAB", "OIL", "WATER", "GAS", "DISGAS", "VAPOIL",
+    "UNIFOUT", "UNIFIN", "NOSIM", "ENDSCALE", "RUNSUM", "MESSAGES", "TITLE",
+    "PVTO", "PVTW", "PVTG", "DENSITY", "ROCK", "PVTNUM", "SATNUM", "EQLNUM",
+    "FIPNUM", "MULTNUM", "FLUXNUM", "OPERNUM", "ACTNUM", "COORD", "ZCORN",
+    "PERMX", "PERMY", "PERMZ", "PORO", "NTG", "MULTX", "MULTY", "MULTZ",
+    "MULTPV", "EQUALS", "COPY", "ADD", "MULTIPLY", "OPERATE", "EDITNNC",
+    "MULTREGT", "FAULTS", "PINCH", "PINCHREG", "LGR", "CARFIN", "RADFIN",
+    "RADFIN4", "ENDFIN", "EQUIL", "PRESSURE", "SWAT", "SGAS", "RS", "RV",
+})
+
+
 def parse_keywords(text: str) -> list[Keyword]:
     """Разобрать текст в последовательность ключевых слов с записями."""
     tokens = _tokenize(text)
     keywords: list[Keyword] = []
     index = 0
     while index < len(tokens):
-        token = tokens[index]
+        token, at_line_start = tokens[index]
         index += 1
-        if not _is_keyword(token):
+        if not _starts_block(token, at_line_start):
             continue  # мусор вне блока: пропускаем, а не угадываем
         name = token
         records: list[tuple[str | None, ...]] = []
         current: list[str] = []
         while index < len(tokens):
-            token = tokens[index]
-            if not current and _is_keyword(token):
+            token, at_line_start = tokens[index]
+            if not current and _starts_block(token, at_line_start):
                 break  # блок без закрывающего '/' закрывается следующим ключевым словом
             index += 1
             if token == "/":
@@ -272,12 +317,20 @@ def format_date_record(value: date) -> str:
     return f"{value.day:02d} {_MONTH_NAMES[value.month]} {value.year}"
 
 
-def _tokenize(text: str) -> list[str]:
-    tokens: list[str] = []
+def _tokenize(text: str) -> list[tuple[str, bool]]:
+    """Токены с пометкой «первый в своей строке».
+
+    Пометка нужна разбору: ключевое слово в Eclipse стоит отдельной строкой, а
+    данные записи — после него. Без пометки токен `P1` в середине записи ничем не
+    отличается от ключевого слова, и один шаблон обслуживает оба смысла.
+    """
+    tokens: list[tuple[str, bool]] = []
     for line in text.splitlines():
         line = _strip_comment(line)
-        if line.strip():
-            tokens.extend(_TOKEN_RE.findall(line))
+        if not line.strip():
+            continue
+        for position, token in enumerate(_TOKEN_RE.findall(line)):
+            tokens.append((token, position == 0))
     return tokens
 
 
@@ -305,6 +358,17 @@ def _strip_comment(line: str) -> str:
 
 def _is_keyword(token: str) -> bool:
     return bool(_KEYWORD_RE.fullmatch(token))
+
+
+def _starts_block(token: str, at_line_start: bool) -> bool:
+    """Открывает ли токен новый блок.
+
+    Три условия сразу: токен стоит первым в своей строке, выглядит как ключевое
+    слово и **назван** в `BLOCK_KEYWORDS`. Последнее и отличает ключевое слово от
+    имени скважины: `P1` проходит первые два условия и раньше закрывал только что
+    открытый блок (ревизия 03.09, 2.3 #1).
+    """
+    return at_line_start and _is_keyword(token) and token.upper() in BLOCK_KEYWORDS
 
 
 def _expand_defaults(items: list[str]) -> tuple[str | None, ...]:

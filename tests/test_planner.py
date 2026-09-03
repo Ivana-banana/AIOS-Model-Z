@@ -145,6 +145,135 @@ def test_without_a_floor_the_corridor_stays_one_sided(norms):
     assert result == steps
 
 
+def test_a_well_cut_to_zero_by_capacity_stays_shut(norms):
+    """Срезка по мощности не должна дёргать скважину каждый месяц.
+
+    Мощность объекта колеблется, и без гистерезиса скважина у края квоты
+    открывается и закрывается помесячно: остановка и пуск — два платных события
+    по 1,0 млн руб. каждое. На этом примере (предел 100, сосед колеблется
+    90/100) выходило пять мероприятий за шесть месяцев (ревизия 03.09, 2.1 #4).
+    """
+    months = [1, 2, 3, 4, 5, 6]
+    # мощность объекта 90 м³/сут: в нечётные месяцы фонд её превышает, в чётные —
+    # нет, и место под скважину «2» освобождается
+    rates = {1: 90.0, 2: 60.0, 3: 90.0, 4: 60.0, 5: 90.0, 6: 60.0}
+    steps = [ScheduleStep(date(2007, month, 1),
+                          (prod("1", rates[month]), prod("2", 20.0)), ())
+             for month in months]
+    # скважина «2» — заведомо худшая по деньгам: почти вся вода
+    forecast = [produced(f"2007-{month:02d}-01", "1", 400.0, 500.0) for month in months]
+    forecast += [produced(f"2007-{month:02d}-01", "2", 5.0, 900.0) for month in months]
+
+    fitted, _decisions = planner.enforce(
+        steps, forecast, norms, planner.Limits(max_field_liquid_m3_per_day=90.0), FLUIDS)
+
+    statuses = [next(c.status for c in step.producers if c.well == "2")
+                for step in fitted]
+    assert statuses[0] == "SHUT", "первой уходит скважина с худшей маржой"
+    assert set(statuses) == {"SHUT"}, f"скважина не должна пускаться обратно: {statuses}"
+
+    # мероприятий по этой скважине ровно одно — сама остановка
+    events = sum(1 for before, after in zip(statuses, statuses[1:], strict=False)
+                 if before != after)
+    assert events == 0
+
+
+def test_injection_before_any_production_is_zeroed_not_divided_by_zero(norms):
+    """Закачка раньше добычи: возмещать нечего, и это ноль, а не исключение.
+
+    Найдено критиком 03.09: при нулевой накопленной базе ветка потолка делила на
+    неё в тексте обоснования и роняла весь цикл `ZeroDivisionError`. Случай не
+    экзотический — новый элемент заводнения запускают с нагнетательной.
+    """
+    forecast = [injected("2020-01-01", "9", 1000.0),
+                produced("2021-01-01", "1", 100.0, 900.0)]
+    steps = [ScheduleStep(date(2020, 1, 1), (), (inj("9", 50.0),)),
+             ScheduleStep(date(2021, 1, 1), (prod("1", 30.0),), ())]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
+    )
+
+    assert result[0].injectors[0].rate == pytest.approx(0.0)
+    assert decisions and "возмещать нечего" in decisions[0].reason
+
+
+def test_an_empty_forecast_leaves_the_corridor_alone(norms):
+    """Пустой прогноз — «сверять нечего», а не «данные испорчены».
+
+    До правки критика проверка «нужна колонка DATA» срабатывала и на полностью
+    пустом прогнозе, то есть роняла `enforce` там, где раньше был тихий выход.
+    Пустой прогноз возвращает `NeuralSurrogate.predict` на расписании без
+    управляемых шагов.
+    """
+    steps = [ScheduleStep(date(2014, 1, 1), (prod("1", 30.0),), (inj("9", 50.0),))]
+
+    result, decisions = planner.enforce(steps, [], norms, planner.Limits(), FLUIDS)
+
+    assert result == steps
+    assert decisions == []
+
+
+def test_the_corridor_is_held_year_by_year_not_over_the_horizon(norms):
+    """Коридор проверяется накопленным итогом на конец каждого года.
+
+    Дефект ревизии 03.09 (2.1 #2): планировщик считал один множитель на весь
+    горизонт, а `balance.compensation_problems` ведёт бегущие суммы и сверяет
+    отношение на конец каждого года. Закачка 1 500 м³ при отборе 1 000 в первый
+    год и 300 при 1 000 во втором даёт в сумме 0,90 — планировщик молчал, — а на
+    конец первого года 150 % против потолка 130 %. Расписание проходило
+    планировщик и оставалось недопустимым.
+    """
+    from aios import balance
+
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0),
+                injected("2007-01-01", "9", 1500.0),
+                produced("2008-01-01", "1", 100.0, 900.0),
+                injected("2008-01-01", "9", 300.0)]
+    steps = [ScheduleStep(date(2007, 1, 1), (prod("1", 30.0),), (inj("9", 50.0),)),
+             ScheduleStep(date(2008, 1, 1), (prod("1", 30.0),), (inj("9", 10.0),))]
+
+    assert balance.compensation_problems(forecast, FLUIDS, 1.3), (
+        "исходный прогноз коридор нарушает — иначе тест ничего не проверяет"
+    )
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
+    )
+
+    # первый год срезан до потолка, второй остался как был
+    assert result[0].injectors[0].rate == pytest.approx(50.0 * 1300.0 / 1500.0)
+    assert result[1].injectors[0].rate == pytest.approx(10.0)
+    assert decisions and "2007" in decisions[0].reason
+
+
+def test_an_over_injected_year_is_paid_back_by_the_next_one(norms):
+    """Перебор прошлого года вычитается из того, что можно закачать в следующем.
+
+    Накопленный счёт тем и отличается от годового: если в первый год закачано
+    больше потолка и срезать это уже нельзя (год прошёл в прогнозе), то во второй
+    год допустимо меньше нормы самого второго года.
+    """
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0),
+                injected("2007-01-01", "9", 1300.0),
+                produced("2008-01-01", "1", 100.0, 900.0),
+                injected("2008-01-01", "9", 1300.0)]
+    steps = [ScheduleStep(date(2007, 1, 1), (prod("1", 30.0),), (inj("9", 50.0),)),
+             ScheduleStep(date(2008, 1, 1), (prod("1", 30.0),), (inj("9", 50.0),))]
+
+    result, _ = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
+    )
+
+    # база каждого года 1 000 м³, потолок 1,3 — на конец второго года допустимо
+    # 2 600 м³ накопленной закачки, из которых 1 300 уже израсходовано первым
+    assert result[0].injectors[0].rate == pytest.approx(50.0)
+    assert result[1].injectors[0].rate == pytest.approx(50.0)
+
+
 def test_compensation_below_the_floor_is_raised_to_the_floor(norms):
     """Отобрано 1 000 м³, закачано 100 — при коридоре снизу 0.85 нужно 850."""
     forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 100.0)]

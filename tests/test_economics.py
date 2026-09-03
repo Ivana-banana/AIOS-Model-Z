@@ -22,6 +22,42 @@ GOLDEN_CHDD_DEFAULT_START = 52.05489669421487
 GOLDEN_CHDD_START_2014 = 54.10613636363636
 
 
+#: Каталог сдаваемого прогона. В git его нет (`.gitignore`), поэтому паритет на
+#: нём пропускается на чистом клоне — но там, где выгрузка есть, он обязателен:
+#: маленький пример организаторов не проверяет ни 38 110 строк, ни 103 скважины,
+#: ни отрицательные приращения на реальном горизонте (ревизия 03.09, раздел 3).
+SUBMITTED_RUN = economics.VENDOR_DIR.parent.parent / "runs" / "matched-0995"
+
+
+def test_the_declared_run_matches_the_organisers_entry_point():
+    """Паритет на **той** выгрузке, которую сдаём, а не только на примере.
+
+    Проверяются обе стороны сразу: наша обвязка и прямой запуск
+    `РАСЧЕТ_ЧДД.py` — той самой командой, которой считают нас, — обязаны дать
+    одно число до последнего знака, и это число обязано совпасть с машинным
+    следом `npv.json`, который оставил `scripts/verify_declared.py`.
+    """
+    rows_file = SUBMITTED_RUN / "rows.csv"
+    trace_file = SUBMITTED_RUN / "npv.json"
+    if not rows_file.is_file() or not trace_file.is_file():
+        pytest.skip(f"нет выгрузки или следа расчёта в {SUBMITTED_RUN}")
+
+    trace = json.loads(trace_file.read_text(encoding="utf-8"))
+    start_year = trace["startYear"]
+
+    ours = economics.compute_npv_from_file(
+        rows_file, start_date=f"{start_year}-01-01", norms_file=economics.NORMS_FILE
+    ).chdd_m
+
+    assert abs(ours - trace["chddM"]) <= 1e-9, (
+        "наша обвязка расходится со следом, оставленным точкой входа организаторов"
+    )
+    assert trace["agreed"], (
+        f"след говорит о расхождении с заявкой: {trace['chddM']} против {trace['claimedM']}"
+    )
+    assert trace["vendorVersion"] == economics.VENDOR_VERSION
+
+
 def test_vendor_version_is_pinned():
     """Обновился архив организаторов — контрольные числа надо перепроверить, а не подогнать."""
     assert economics.VENDOR_VERSION == "7.0.2-negative-row-filter"

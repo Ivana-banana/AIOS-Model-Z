@@ -7,9 +7,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from conftest import make_row, months
 
+from aios import economics
 from aios.economics import REQUIRED_COLUMNS, compute_npv
 
 START = "2014-01-01"
@@ -142,6 +145,86 @@ def test_liquid_rate_above_500_is_rejected_by_the_reference_calculator():
         npv(rows)
 
 
+def test_a_pump_is_kept_when_the_intervals_overlap():
+    """При перекрытии диапазонов насос сохраняется — обязательный случай CLAUDE.md.
+
+    Интервалы таблицы ЭЦН перекрываются: 15–30 и 20–50. Дебит 25 и 28 м³/сут
+    попадает в оба, и это не повод менять насос: смена вверх идёт при выходе за
+    **верхнюю** границу установленного, вниз — только при падении более чем на
+    100 м³/сут ниже нижней. Случай назван в `CLAUDE.md` как закрепляемый
+    навсегда, а теста на него не было ни у нас, ни в вендоре (ревизия 03.09,
+    раздел 3).
+    """
+    _assumptions, pumps = economics.load_norms()
+    covering = [(one["min"], one["max"]) for one in pumps
+                if one["min"] <= 25.0 <= one["max"]]
+    assert len(covering) >= 2, f"перекрытия в таблице нет, тест бессмыслен: {covering}"
+
+    rows = [
+        working(months(2014, 3)[0]),  # 30 м³/сут → насос с интервалом 15–30
+        make_row(months(2014, 3)[1], "A", wlpr=25, womr=4, liquid=750, oil=120),
+        make_row(months(2014, 3)[2], "A", wlpr=28, womr=5, liquid=840, oil=150),
+    ]
+
+    result = npv(rows)
+
+    assert result.pump_changes == 0, "25 и 28 лежат в двух интервалах сразу"
+    assert result.capex_m == pytest.approx(0.0)
+    assert result.raw["annual"][0]["pumpOperationM"] == pytest.approx(0.0)
+    assert not [event for event in result.raw["events"] if "pump" in event["type"]]
+
+
+def test_property_tax_lives_inside_opex_at_two_point_two_percent():
+    """Налог на имущество 2,2 % входит в OPEX, а не считается отдельной строкой.
+
+    В поставленных нормативах остаточная стоимость нулевая, поэтому и налог равен
+    нулю — на этом обязательный случай `CLAUDE.md` проверить нельзя. Задаём
+    остаточную стоимость явно и смотрим, куда попадает налог: он обязан быть в
+    сумме OPEX того же месяца, а не рядом с ней.
+    """
+    assumptions, pumps = economics.load_norms()
+    assumptions = dict(assumptions, residualStartM=1200.0, residualEndM=1200.0)
+
+    result = compute_npv([working(data) for data in months(2014, 3)],
+                         headers=REQUIRED_COLUMNS, start_date=START,
+                         assumptions=assumptions, pumps=pumps)
+
+    monthly = result.raw["fieldMonthly"][0]
+    expected = 1200.0 * 2.2 / 100 / 12
+    assert monthly["propertyTaxM"] == pytest.approx(expected)
+    assert monthly["propertyTaxM"] > 0, "иначе тест ничего не проверяет"
+
+    # налог внутри OPEX, а не рядом: сумма расходов месяца раскладывается на
+    # промысловые статьи **плюс** налог на имущество, и ничего больше
+    assert monthly["opexM"] == pytest.approx(monthly["mainOpexM"])
+    assert monthly["mainOpexM"] == pytest.approx(
+        monthly["propertyTaxM"] + monthly["oilOpexM"] + monthly["liquidOpexM"]
+        + monthly["injectionOpexM"] + monthly["fundOpexM"]
+    )
+
+
+def test_profit_tax_is_taken_from_a_positive_profit_only():
+    """Налог на прибыль 25 % берётся с `max(0; прибыль)` — на нашей обвязке.
+
+    У вендора это закрыто своим тестом, у нас — нет: проверялось только через
+    его точку входа. Убыточный год обязан дать ноль налога, а не отрицательный
+    возврат (`CLAUDE.md`, обязательные случаи).
+    """
+    # месяц с добычей и месяц простоя: платные события съедают прибыль в минус
+    rows = [
+        make_row(months(2014, 3)[0], "A", wlpr=1, womr=0.03, liquid=30, oil=1),
+        make_row(months(2014, 3)[1], "A"),
+        make_row(months(2014, 3)[2], "A", wlpr=1, womr=0.03, liquid=30, oil=1),
+    ]
+
+    result = npv(rows)
+    annual = result.raw["annual"][0]
+
+    assert annual["taxableProfitM"] < 0, "год обязан быть убыточным, иначе тест пустой"
+    assert annual["profitTaxM"] == pytest.approx(0.0)
+    assert annual["netProfitM"] == pytest.approx(annual["taxableProfitM"])
+
+
 def test_the_liquid_limit_is_declared_once_and_comes_from_the_norms():
     """500 м³/сут — не литерал методики, а верхняя граница старшего ЭЦН.
 
@@ -166,6 +249,32 @@ def test_the_liquid_limit_is_declared_once_and_comes_from_the_norms():
 
     # третьего быть не должно: в модуле экономики константа не используется вовсе
     assert not hasattr(economics, "MAX_LIQUID_RATE_M3_PER_DAY")
+
+
+def test_the_vendor_ceiling_is_checked_against_the_vendor_itself():
+    """Второе число 500 в модуле — потолок эталона, и он сверяется с эталоном.
+
+    `VENDOR_LIQUID_CEILING_M3_PER_DAY` объявлено рядом с
+    `MAX_LIQUID_RATE_M3_PER_DAY` и численно ему равно, то есть выглядит как то
+    самое «третье место с тем же литералом», от которого защищает тест выше
+    (найдено критиком 03.09). Разница в источнике: у первого источник —
+    таблица ЭЦН поставки, у второго — строка в коде расчётчика организаторов.
+    Одинаковыми они быть не обязаны: обновят архив, и потолок уедет. Поэтому
+    константа проверяется не глазами, а самим вендором.
+    """
+    import re
+
+    from aios.schedule import VENDOR_LIQUID_CEILING_M3_PER_DAY
+
+    source = (Path(__file__).resolve().parent.parent
+              / "vendor" / "CHDD_PYTHON" / "chdd_model.py").read_text(encoding="utf-8")
+    # ноль отсеивается намеренно: `WLPR > 0` в расчётчике — признак действующего
+    # фонда, а не предел режима. Нас интересует единственное сравнение с потолком
+    found = {float(one) for one
+             in re.findall(r'row\["WLPR"\]\s*>\s*(\d+(?:\.\d+)?)', source)} - {0.0}
+
+    assert found, "в расчётчике больше нет проверки WLPR — константу нужно пересмотреть"
+    assert found == {VENDOR_LIQUID_CEILING_M3_PER_DAY}
 
 
 def test_injection_only_well_counts_as_active_fund():

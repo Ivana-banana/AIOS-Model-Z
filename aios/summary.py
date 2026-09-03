@@ -152,6 +152,17 @@ def monthly_rows(case: str | Path,
     for well in names:
         present = [v for v in REQUIRED_WELL_VECTORS if f"{v}:{well}" in known]
         missing = [v for v in REQUIRED_WELL_VECTORS if f"{v}:{well}" not in known]
+        if not present:
+            # Скважина названа снаружи, но в выгрузке её нет вовсе. Прежде это
+            # проходило молча: все её векторы читались нулями, и скважина
+            # выглядела «неработающей» — то есть отсутствие данных было
+            # неотличимо от простоя. Отказ здесь того же рода, что и ниже: разница
+            # только в том, что там пропала часть величин, а тут — все (Р-179).
+            raise ValueError(
+                f"В выгрузке {case} по скважине {well} нет ни одного вектора: "
+                "она либо не попала в SUMMARY-секцию, либо названа иначе. Нули "
+                "вместо её величин выдали бы отсутствие данных за простой."
+            )
         if present and missing:
             raise ValueError(
                 f"В выгрузке {case} по скважине {well} есть часть векторов "
