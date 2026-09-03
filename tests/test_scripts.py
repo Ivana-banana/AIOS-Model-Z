@@ -975,9 +975,12 @@ def test_scaled_case_scales_our_steps_and_leaves_history_alone(tmp_path, monkeyp
     captured = {}
 
     def fake_build_case(run_dir, model_dir, steps=None, control_start=None,
-                        wells=None, case_name="RUN"):
+                        wells=None, case_name="RUN", limits=None):
         captured["steps"] = list(steps or [])
         captured["control_start"] = control_start
+        # пределы кейса обязаны доходить до сборки, а не подставляться умолчанием
+        # Модели Z: сюда их передаёт `schedule.case_limits` (С12)
+        captured["limits"] = dict(limits or {})
 
         class Case:
             data_file = Path(run_dir) / f"{case_name}.DATA"

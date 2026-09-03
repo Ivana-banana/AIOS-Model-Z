@@ -418,3 +418,94 @@ def test_the_real_submitted_schedule_parses_the_same_after_the_change():
     assert len(schedule.wells) == 103
     assert len(schedule.producer_wells) == 92
     assert len(schedule.injector_wells) == 41
+
+
+# --- С10: имя скважины, совпавшее со словом из BLOCK_KEYWORDS ----------------
+# Выжимка `STOP-BEFORE-SUBMIT.md`, С10. В список попали `OIL`, `GAS`, `RS`, `RV`,
+# `ADD`, `COPY`, `END`, `TIME`; незакавыченное имя, равное такому слову, рвало
+# `WCONPROD` посреди записей. На Модели Z имена цифровые — дефект спал до чужого
+# дека.
+
+
+def test_a_well_named_like_a_keyword_does_not_break_the_block():
+    """Скважина «OIL» читается как запись, а не закрывает `WCONPROD`.
+
+    До правки терялась не только она: пропадало **всё, что стояло ниже** в блоке,
+    и при этом отказа не было — у блока оставалась первая запись, а проверка
+    «блок без записей» не срабатывала.
+    """
+    schedule = deck.parse_schedule_text("""
+DATES
+ 1 JAN 2014 /
+/
+WCONPROD
+ 'P1' OPEN LRAT 4* 100 50 /
+ OIL OPEN LRAT 4* 90 50 /
+/
+""")
+
+    assert [one.well for step in schedule.steps for one in step.producers] == ["P1", "OIL"]
+
+
+def test_the_same_name_in_the_first_record_is_refused_not_lost():
+    """Если такое имя стоит первой записью, различить его нечем — тогда отказ.
+
+    Разница с предыдущим тестом не в имени, а в том, что у блока не остаётся ни
+    одной прочитанной записи: закрыть его следующим словом — единственное
+    поведение, совместимое со словами без записей (`SKIPREST`, `END`). Поэтому
+    здесь честный отказ, а не догадка.
+    """
+    with pytest.raises(ValueError) as refusal:
+        deck.parse_schedule_text("""
+DATES
+ 1 JAN 2014 /
+/
+WCONPROD
+ OIL OPEN LRAT 4* 90 50 /
+ 'P1' OPEN LRAT 4* 100 50 /
+/
+""")
+
+    assert "WCONPROD" in str(refusal.value)
+
+
+def test_a_block_without_its_terminator_is_refused_by_the_shape_of_the_record():
+    """Незакрытый блок втягивает соседнее слово — и это видно по статусу записи.
+
+    Цена правки С10: блок с прочитанной записью больше не закрывается следующим
+    ключевым словом, поэтому `WCONPROD` без одиночного `/` съедает идущий следом
+    `DATES`. Молча этого допустить нельзя — потерянный шаг выглядит как «скважина
+    так и работала». Признак надёжный: на месте статуса режима у псевдозаписи
+    стоит что попало.
+    """
+    with pytest.raises(ValueError) as refusal:
+        deck.parse_schedule_text("""
+DATES
+ 1 JAN 2014 /
+/
+WCONPROD
+ 'P1' OPEN LRAT 4* 100 50 /
+DATES
+ 1 FEB 2014 /
+/
+""")
+
+    assert "статуса" in str(refusal.value)
+
+
+def test_array_keywords_are_untouched_by_the_record_rule():
+    """У массивов GRID одиночный `/` закрывает само слово — их склеивать нельзя.
+
+    Первая редакция правила С10 держала любой блок с записью до одиночного `/` и
+    склеивала `PORO` со следующим ключевым словом: десять тестов входного
+    контроля дека покраснели разом.
+    """
+    found = deck.parse_keywords("""
+PORO
+ 0.2 0.2 0.2 /
+PERMX
+ 100 100 100 /
+""")
+
+    assert [one.name for one in found] == ["PORO", "PERMX"]
+    assert found[0].records == (("0.2", "0.2", "0.2"),)

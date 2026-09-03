@@ -28,7 +28,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aios import config as config_module  # noqa: E402
-from aios import optimise  # noqa: E402
+from aios import economics, optimise  # noqa: E402
+from aios import schedule as schedule_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import find_data_file, layout  # noqa: E402
 from aios.run import build_case  # noqa: E402
@@ -68,12 +69,19 @@ def main(argv: list[str] | None = None) -> int:
     scaled = optimise.scale_injection(scaled, arguments.injection)
     # валидатор до записи: невалидное расписание не должно доходить до файла,
     # который считает симулятор (`Р-04`)
-    assert_valid(scaled)
+    # пределы кейса, а не умолчания Модели Z: таблица ЭЦН даёт предел жидкости,
+    # `[limits].max_injector_bhp_atm` — предел давления нагнетания (С12)
+    limits = schedule_module.case_limits(
+        economics.load_norms(config.economics.norms_file)[1],
+        config.limits.max_injector_bhp_atm,
+    )
+    assert_valid(scaled, **limits)
 
     try:
         case = build_case(arguments.run_dir, model_dir, steps=scaled,
                           control_start=config.case.control_start,
-                          wells=tuple(schedule.wells), case_name=config.case.case_name)
+                          wells=tuple(schedule.wells), case_name=config.case.case_name,
+                          limits=limits)
     except ValueError as error:
         # Дек, ведущий режимы через WCONHIST/WCONINJH, мы не считаем — и это
         # законный исход. Но узнавать о нём надо строкой с ценой, а не

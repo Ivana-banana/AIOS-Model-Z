@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import shutil
 from datetime import date
 
 import pytest
 
-from aios import doe
+from aios import doe, economics
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
 from aios.schedule import MAX_LIQUID_RATE_M3_PER_DAY, validate
 
@@ -557,6 +558,13 @@ def tiny_project(tmp_path):
     (deck / "r.inc").write_text("-- пусто", encoding="utf-8")
     (deck / "h.inc").write_text(DECK_SCHEDULE, encoding="utf-8")
 
+    # Нормативы кладутся рядом настоящие: с 03.09 сборка пакета берёт из них
+    # предел дебита жидкости, а из `[limits]` — предел давления нагнетания, и
+    # проверяет сценарии этими числами, а не умолчаниями Модели Z (С12).
+    # Подставлять сюда пустышку нельзя: тогда тест проверял бы, что пределы не
+    # доходят, — ровно то состояние, которое чинится.
+    shutil.copy(economics.NORMS_FILE, tmp_path / "norms.xlsx")
+
     config = tmp_path / "config.toml"
     config.write_text(TINY_CONFIG, encoding="utf-8")
     return config
@@ -843,3 +851,19 @@ def test_coverage_survives_scenarios_with_different_period_layouts():
     assert report["scenarios"] == 5
     assert "periods" not in report, "поштучное сравнение здесь бессмысленно"
     assert report["period_layouts"] == len(layouts)
+
+
+def test_design_validates_scenarios_by_the_limits_of_the_case():
+    """Сценарий DoE тоже пишется в файл, который считает симулятор.
+
+    С12: до правки `design` проверял умолчаниями Модели Z, поэтому на кейсе с
+    ЭЦН до 200 м³/сут пакет собрался бы целиком, а отвергся бы шлюзом — после
+    того, как расчёты уже запущены.
+    """
+    base = plan(("1", "2"), rate=150.0)
+
+    # умолчание 500 — сценарии проходят
+    assert doe.design(base, samples=2, seed=SEED)
+
+    with pytest.raises(ValueError):
+        doe.design(base, samples=2, seed=SEED, limits={"max_liquid_rate": 1.0})

@@ -21,7 +21,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aios import config as config_module  # noqa: E402
-from aios import doe  # noqa: E402
+from aios import doe, economics  # noqa: E402
+from aios import schedule as schedule_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 
@@ -78,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.shut_low is not None:
         shut_share = (arguments.shut_low, arguments.shut_high)
 
+    # пределы кейса, а не умолчания Модели Z: сценарий DoE тоже пишется в файл,
+    # который считает симулятор, и проверять его надо теми же числами (С12)
+    limits = schedule_module.case_limits(
+        economics.load_norms(config.economics.norms_file)[1],
+        config.limits.max_injector_bhp_atm,
+    )
+
     scenarios = doe.design(
         control_steps,
         samples=arguments.samples,
@@ -87,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         control_kind=arguments.control_kind,
         periods=arguments.periods,
         shut_share=shut_share,
+        limits=limits,
     )
     report = doe.coverage(scenarios)
 
@@ -157,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         arguments.run_root,
         config.case.model_dir,
         control_start=config.case.control_start,
+        limits=limits,
     )
 
     # Манифест: без него отклик не связать с управлением. Восстанавливать

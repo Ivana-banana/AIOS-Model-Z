@@ -38,6 +38,7 @@ if str(ROOT) not in sys.path:
 from aios import config as config_module  # noqa: E402
 from aios import economics, optimise, shapley  # noqa: E402
 from aios import groups as groups_module  # noqa: E402
+from aios import schedule as schedule_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 from aios.run import build_case  # noqa: E402
@@ -95,6 +96,12 @@ def build(arguments) -> int:
           f"закачка ×{arguments.injection}")
 
     written = []
+    # пределы кейса, а не умолчания Модели Z (С12)
+    limits = schedule_module.case_limits(
+        economics.load_norms(config.economics.norms_file)[1],
+        config.limits.max_injector_bhp_atm,
+    )
+
     for active in plan:
         scaled = list(steps)
         for group in found:
@@ -105,11 +112,12 @@ def build(arguments) -> int:
                 scaled = optimise.scale(scaled, arguments.production, wells)
             else:
                 scaled = optimise.scale_injection(scaled, arguments.injection, wells)
-        assert_valid(scaled)
+        assert_valid(scaled, **limits)
         name = case_name(active, names)
         case = build_case(str(root / name), model_dir, steps=scaled,
                           control_start=config.case.control_start,
-                          wells=tuple(schedule.wells), case_name=config.case.case_name)
+                          wells=tuple(schedule.wells), case_name=config.case.case_name,
+                          limits=limits)
         written.append({"case": name, "active": sorted(active)})
         print(f"  {name}: {sorted(active) or ['все на базовом режиме']} → {case.data_file}")
 

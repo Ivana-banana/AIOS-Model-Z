@@ -73,12 +73,18 @@ def build_case(run_dir: str | Path,
                steps: list[ScheduleStep] | tuple[ScheduleStep, ...] | None = None,
                control_start: date | None = None,
                wells: tuple[str, ...] | list[str] | None = None,
-               case_name: str = "RUN") -> Case:
+               case_name: str = "RUN",
+               limits: dict[str, float] | None = None) -> Case:
     """Собрать расчётный кейс в `run_dir`.
 
     `steps` — наши управляющие шаги. Если заданы, история дека обрезается по
     `control_start` и дальше идут наши шаги; без `steps` собирается базовый
     сценарий — история как есть.
+
+    `limits` — пределы проверки расписания перед записью, готовые к
+    `assert_valid(**limits)`; собираются `aios.schedule.case_limits` из нормативов
+    и `[limits]` кейса. Без них проверка идёт умолчаниями Модели Z, и на кейсе с
+    другой таблицей ЭЦН файл был бы записан, а отвергнут только шлюзом (С12).
 
     История обрезается по тексту, а не пересобирается из разобранных структур:
     внутри шагов лежат `COMPDATMD` и `WELLTRACK`, задающие вскрытие пласта во
@@ -133,7 +139,10 @@ def build_case(run_dir: str | Path,
         # потому что здесь файл и пишется. Проверяются наши шаги, а не склейка с
         # историей: история задана организаторами, и отвергать их собственный дек
         # из-за наших правил значило бы не собрать кейс на исправном материале
-        assert_valid(steps)
+        # пределы кейса, а не умолчания Модели Z: `aios.schedule.case_limits`
+        # собирает их из нормативов и `[limits]` (С12). Пусто — умолчания, и это
+        # законно для вызова, у которого конфигурации нет вовсе (тесты, разбор).
+        assert_valid(steps, **(limits or {}))
         schedule_text = (
             history_prefix(schedule_text, control_start)
             + "\n"

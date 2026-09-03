@@ -195,3 +195,26 @@ def test_shut_injector_gets_an_explicit_zero_rate():
     rate_field = record.split("'RATE'", 1)[1].split()[0]
     assert rate_field != "1*", f"закачка остановленной скважины не задана: {record}"
     assert float(rate_field) == 0.0, record
+
+
+def test_case_limits_reads_both_limits_from_the_case():
+    """Помощник собирает то, что `validate` ждёт, и ничего не выдумывает."""
+    from aios.schedule import case_limits
+
+    assert case_limits() == {}, "без нормативов и без ключа выдумывать нечего"
+    assert case_limits([{"max": 320.0}], None) == {"max_liquid_rate": 320.0}
+    assert case_limits(None, 250.0) == {"max_injection_bhp": 250.0}
+
+    both = case_limits([{"max": 320.0}], 250.0)
+    assert both == {"max_liquid_rate": 320.0, "max_injection_bhp": 250.0}
+
+
+def test_case_limits_still_caps_the_liquid_rate_at_the_vendor_ceiling():
+    """Таблица кейса с насосом на 700 не поднимает предел выше 500.
+
+    У эталонного расчётчика 500 зашито литералом и роняет расчёт целиком, а не
+    считает иначе, — поэтому потолок действует при любой таблице.
+    """
+    from aios.schedule import case_limits
+
+    assert case_limits([{"max": 700.0}])["max_liquid_rate"] == 500.0

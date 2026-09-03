@@ -186,7 +186,8 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
            levels: tuple[float, float] | None = None,
            control_kind: str = "producers",
            periods: int = 1,
-           shut_share: tuple[float, float] | None = None) -> list[Scenario]:
+           shut_share: tuple[float, float] | None = None,
+           limits: dict[str, float] | None = None) -> list[Scenario]:
     """Собрать `samples` сценариев управления вокруг базового.
 
     `snap_to_zero` — множители ниже этого порога округляются до нуля: дебит в
@@ -230,7 +231,8 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     if control_kind not in {"producers", "injectors", "all", "conversions", "cyclic"}:
         raise ValueError(f"неизвестный тип управления: {control_kind}")
     if control_kind == "cyclic":
-        return _design_cyclic(base_steps, injector_wells, samples=samples, seed=seed)
+        return _design_cyclic(base_steps, injector_wells, samples=samples, seed=seed,
+                              limits=limits)
 
     if control_kind == "conversions":
         if shut_share is not None:
@@ -244,7 +246,7 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                 f"больше одного нечем (запрошено {periods})"
             )
         return _design_conversions(base_steps, producer_wells,
-                                   samples=samples, seed=seed, bounds=bounds)
+                                   samples=samples, seed=seed, bounds=bounds, limits=limits)
 
     starts = _period_starts(base_steps, periods)
 
@@ -313,7 +315,7 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             control.append(ControlPeriod(start, multipliers, injector_multipliers))
 
         steps = _apply_periods(base_steps, control)
-        assert_valid(steps)
+        assert_valid(steps, **(limits or {}))
         scenarios.append(
             Scenario(
                 name=f"doe-{index:03d}",
@@ -329,7 +331,8 @@ def _design_cyclic(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                    injector_wells: list[str],
                    *,
                    samples: int,
-                   seed: int) -> list[Scenario]:
+                   seed: int,
+                   limits: dict[str, float] | None = None) -> list[Scenario]:
     """Сценарии циклического заводнения — противофазная пульсация закачки.
 
     Записывается периодами, а не одним множителем на скважину: режим здесь
@@ -380,7 +383,7 @@ def _design_cyclic(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             ))
 
         steps = _apply_periods(base_steps, periods)
-        assert_valid(steps)
+        assert_valid(steps, **(limits or {}))
         scenarios.append(
             Scenario(
                 name=f"doe-{index:03d}",
@@ -398,7 +401,8 @@ def _design_conversions(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...
                         *,
                         samples: int,
                         seed: int,
-                        bounds: tuple[float, float]) -> list[Scenario]:
+                        bounds: tuple[float, float],
+                        limits: dict[str, float] | None = None) -> list[Scenario]:
     """Сценарии перевода добывающих скважин под закачку.
 
     Три оси, и они разделены намеренно: какие скважины переводить, сколько их и с
@@ -443,7 +447,7 @@ def _design_conversions(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...
         chosen = {well for well, _ in order[:count]}
 
         steps = convert_to_injection(base_steps, chosen, multiplier=multiplier)
-        assert_valid(steps)
+        assert_valid(steps, **(limits or {}))
 
         # Названа переведённой только та, у которой расписание действительно
         # стало другим. Сборщик датасета верит этому списку на слово и пишет по
@@ -469,7 +473,8 @@ def write_cases(scenarios: list[Scenario],
                 run_root: str | Path,
                 model_dir: str | Path,
                 *,
-                control_start: date) -> list[Path]:
+                control_start: date,
+                limits: dict[str, float] | None = None) -> list[Path]:
     """Собрать расчётный кейс под каждый сценарий. Возвращает пути к `.DATA`."""
     from aios.run import build_case
 
@@ -481,6 +486,7 @@ def write_cases(scenarios: list[Scenario],
             model_dir,
             steps=list(scenario.steps),
             control_start=control_start,
+            limits=limits,
         )
         written.append(case.data_file)
     return written

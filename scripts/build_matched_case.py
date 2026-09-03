@@ -48,7 +48,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aios import config as config_module  # noqa: E402
-from aios import deliverable, optimise  # noqa: E402
+from aios import (  # noqa: E402
+    deliverable,
+    economics,  # noqa: E402
+    optimise,
+)
+from aios import schedule as schedule_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import find_data_file, layout  # noqa: E402
 from aios.run import build_case  # noqa: E402
@@ -162,11 +167,18 @@ def main(argv: list[str] | None = None) -> int:
 
     for well, multiplier in chosen.items():
         scaled = optimise.scale_injection(scaled, multiplier, {well})
-    assert_valid(scaled)
+    # пределы кейса, а не умолчания Модели Z: таблица ЭЦН даёт предел жидкости,
+    # `[limits].max_injector_bhp_atm` — предел давления нагнетания (С12)
+    limits = schedule_module.case_limits(
+        economics.load_norms(config.economics.norms_file)[1],
+        config.limits.max_injector_bhp_atm,
+    )
+    assert_valid(scaled, **limits)
 
     case = build_case(arguments.run_dir, model_dir, steps=scaled,
                       control_start=config.case.control_start,
-                      wells=tuple(schedule.wells), case_name=config.case.case_name)
+                      wells=tuple(schedule.wells), case_name=config.case.case_name,
+                      limits=limits)
 
     asked_uniform = _asked(reference)
     asked_here = _asked(scaled)

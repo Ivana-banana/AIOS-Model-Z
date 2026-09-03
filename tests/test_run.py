@@ -656,3 +656,46 @@ def test_carrying_the_real_deck_is_unchanged_by_the_stricter_boundaries():
 
     assert len(carried) == 26
     assert sum(len(blob) for blob in carried.values()) == 7191
+
+
+# --- С12: пределы кейса доходят до точки, где файл пишется --------------------
+# Выжимка `STOP-BEFORE-SUBMIT.md`, С12: оба предела читались из кейса только в
+# цикле и в предполётной проверке, а все точки записи проверяли умолчаниями
+# Модели Z — 500 м³/сут и 300 атм. Отказ приходил после записи файла, а не до неё.
+
+
+def _step_with(rate: float, bhp: float = 250.0):
+    return [
+        ScheduleStep(
+            date(2007, 1, 1),
+            (ProducerControl("1", "OPEN", "LRAT", rate, 50.0),),
+            (InjectorControl("2", "WATER", "OPEN", "RATE", 20.0, bhp),),
+        )
+    ]
+
+
+def test_case_limits_reach_the_place_where_the_file_is_written(model_dir, tmp_path):
+    """Дебит 300 законен на Модели Z и запрещён кейсом с ЭЦН до 200."""
+    steps = _step_with(rate=300.0)
+
+    # без пределов кейса — умолчание 500, расписание проходит
+    run.build_case(tmp_path / "default", model_dir, steps=steps,
+                   control_start=date(2007, 1, 1), wells=("1", "2"))
+
+    with pytest.raises(ValueError, match="300"):
+        run.build_case(tmp_path / "case", model_dir, steps=steps,
+                       control_start=date(2007, 1, 1), wells=("1", "2"),
+                       limits={"max_liquid_rate": 200.0})
+
+
+def test_the_injection_pressure_limit_reaches_it_too(model_dir, tmp_path):
+    """Потолок 250 атм: 280 законны на Модели Z и запрещены таким кейсом."""
+    steps = _step_with(rate=99.0, bhp=280.0)
+
+    run.build_case(tmp_path / "default", model_dir, steps=steps,
+                   control_start=date(2007, 1, 1), wells=("1", "2"))
+
+    with pytest.raises(ValueError, match="280"):
+        run.build_case(tmp_path / "case", model_dir, steps=steps,
+                       control_start=date(2007, 1, 1), wells=("1", "2"),
+                       limits={"max_injection_bhp": 250.0})

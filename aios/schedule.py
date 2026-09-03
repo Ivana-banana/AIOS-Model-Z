@@ -91,6 +91,29 @@ def liquid_limit(pumps: list[dict[str, Any]]) -> float:
                VENDOR_LIQUID_CEILING_M3_PER_DAY)
 
 
+def case_limits(pumps: list[dict[str, Any]] | None = None,
+                max_injector_bhp_atm: float | None = None) -> dict[str, float]:
+    """Пределы проверки, взятые из кейса, — готовые к `validate(**...)`.
+
+    Заведено по находке С12 выжимки `STOP-BEFORE-SUBMIT.md`: оба предела читались
+    из кейса только в двух местах — в цикле и в предполётной проверке. Все точки,
+    где расписание **пишется в файл** (`run.build_case`, `doe`, сборка сценариев,
+    шлюз пакета), проверяли умолчаниями Модели Z: 500 м³/сут и 300 атм. На кейсе
+    с ЭЦН до 400 или потолком давления 250 генератор выпустил бы файл, а шлюз его
+    отверг — то есть отказ приходил бы после записи, а не до неё.
+
+    Помощник намеренно возвращает словарь, а не объект: у `validate` уже есть два
+    именованных аргумента ровно с этими именами, и третий способ передать то же
+    самое означал бы два источника правды вместо одного.
+    """
+    found: dict[str, float] = {}
+    if pumps:
+        found["max_liquid_rate"] = liquid_limit(pumps)
+    if max_injector_bhp_atm is not None:
+        found["max_injection_bhp"] = float(max_injector_bhp_atm)
+    return found
+
+
 def validate(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
              known_wells: frozenset[str] | None = None,
              *,

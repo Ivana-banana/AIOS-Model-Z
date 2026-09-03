@@ -50,6 +50,15 @@ class Keyword:
     name: str
     records: tuple[tuple[str | None, ...], ...]
 
+    terminated: bool = True
+    """Закрыт ли блок одиночным `/`, как требует формат.
+
+    False означает, что блок кончился иначе — концом файла или началом следующего
+    ключевого слова. Для слова без записей (`SKIPREST`, `END`) это норма; для
+    слова, которое записи обязано иметь, — признак того, что разбор ушёл не туда,
+    и `parse_schedule_text` на этом отказывает.
+    """
+
 
 @dataclass(frozen=True)
 class ProducerControl:
@@ -182,13 +191,26 @@ def parse_keywords(text: str) -> list[Keyword]:
         name = token
         records: list[tuple[str | None, ...]] = []
         current: list[str] = []
+        terminated = False
         while index < len(tokens):
             token, at_line_start = tokens[index]
-            if not current and _starts_block(token, at_line_start):
-                break  # блок без закрывающего '/' закрывается следующим ключевым словом
+            # У записевого блока, где запись уже прочитана, закрыть его может
+            # **только** одиночный `/`. Иначе имя скважины, совпавшее со словом из
+            # `BLOCK_KEYWORDS` (`OIL`, `GAS`, `END`, `TIME` — они там есть), рвёт
+            # `WCONPROD` посреди записей, и остаток скважин пропадает молча: у
+            # блока остаётся первая запись, отказ по «блок без записей» не
+            # срабатывает, и теряется ровно то, что стоит ниже (С10).
+            #
+            # Только для записевых: у массивов GRID (`PORO`, `COORD`, `PERMX`)
+            # одиночный `/` закрывает само слово, лона-терминатора у них нет
+            # вовсе, и то же правило склеило бы их с соседями.
+            hold = bool(records) and name in _KEYWORDS_THAT_MUST_HAVE_RECORDS
+            if not current and not hold and _starts_block(token, at_line_start):
+                break  # блок без записей закрывается следующим ключевым словом
             index += 1
             if token == "/":
                 if not current:
+                    terminated = True
                     break  # одиночный '/' закрывает блок
                 records.append(_expand_defaults(current))
                 current = []
@@ -196,7 +218,8 @@ def parse_keywords(text: str) -> list[Keyword]:
                 current.append(token)
         if current:
             records.append(_expand_defaults(current))
-        keywords.append(Keyword(name=name, records=tuple(records)))
+        keywords.append(Keyword(name=name, records=tuple(records),
+                                terminated=terminated))
     return keywords
 
 
@@ -274,6 +297,16 @@ def parse_schedule_text(text: str) -> Schedule:
             f"блок {empty[0]} разобрался без записей — запись прочитана не до "
             f"конца. Проверить, все ли ключевые слова дека названы в BLOCK_KEYWORDS: "
             f"не названное разбирается как данные и уходит в записи соседнего блока"
+        )
+
+    unclosed = [one.name for one in keywords
+                if one.name in _KEYWORDS_THAT_MUST_HAVE_RECORDS and not one.terminated]
+    if unclosed:
+        raise ValueError(
+            f"блок {unclosed[0]} не закрыт одиночным «/» — формат этого не "
+            f"допускает, а разбор в таком случае втягивает в блок соседние строки. "
+            f"Дальше это выглядит как потерянный шаг или потерянная скважина, "
+            f"поэтому здесь отказ, а не догадка"
         )
 
     preamble: list[Keyword] = []
@@ -427,7 +460,29 @@ def _field(record: tuple[str | None, ...], index: int) -> str | None:
     return record[index] if index < len(record) else None
 
 
+#: Статусы, которые формат допускает у записи режима. Нужны здесь, а не только в
+#: `aios.schedule.validate`: статус — это признак того, что запись **прочитана
+#: как запись**. Блок без закрывающего `/` втягивает следующее ключевое слово в
+#: свои записи, и такая псевдозапись отличается от настоящей ровно тем, что на
+#: месте статуса у неё стоит что попало («DATES 1 FEB 2014» → статус «1»).
+_RECORD_STATUSES = frozenset({"OPEN", "SHUT", "STOP", "AUTO"})
+
+
+def _check_status(keyword: str, record: tuple[str | None, ...], position: int) -> None:
+    status = _field(record, position)
+    if status is None:
+        return  # умолчание записи — законно, статус подставит сам симулятор
+    if str(status).upper() not in _RECORD_STATUSES:
+        raise ValueError(
+            f"в записи {keyword} на месте статуса стоит {status!r}, а формат "
+            f"допускает {', '.join(sorted(_RECORD_STATUSES))}. Обычно это значит, "
+            f"что предыдущий блок не закрыт одиночным «/» и втянул в себя "
+            f"соседнее ключевое слово: запись {record!r} — не режим скважины"
+        )
+
+
 def _producer(record: tuple[str | None, ...]) -> ProducerControl:
+    _check_status("WCONPROD", record, _WCONPROD_STATUS)
     return ProducerControl(
         well=str(_field(record, _WCONPROD_WELL)),
         status=str(_field(record, _WCONPROD_STATUS) or "OPEN"),
@@ -438,6 +493,7 @@ def _producer(record: tuple[str | None, ...]) -> ProducerControl:
 
 
 def _injector(record: tuple[str | None, ...]) -> InjectorControl:
+    _check_status("WCONINJE", record, _WCONINJE_STATUS)
     return InjectorControl(
         well=str(_field(record, _WCONINJE_WELL)),
         fluid=str(_field(record, _WCONINJE_FLUID) or "WATER"),
