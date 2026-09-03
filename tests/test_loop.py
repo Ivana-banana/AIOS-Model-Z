@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 from conftest import make_row
@@ -511,3 +512,101 @@ def test_headroom_follows_the_rule_the_case_declared():
     # 1 600 / 1 754,9 = 0,91 — запас есть; 1 600 / 1 535,8 = 1,04 — запаса нет
     assert _water_headroom(rows, by_liquid, FLUIDS) is True
     assert _water_headroom(rows, by_water, FLUIDS) is False
+
+
+# --- С1: один потолок в трёх окнах -------------------------------------------
+# Выбор окна — вопрос к организаторам и решение владельца. Здесь он не
+# принимается; здесь он перестаёт быть незаметным.
+
+
+def test_a_baseline_that_breaks_the_ceiling_is_named_before_candidates_are_judged():
+    """Если бездействие уже вне коридора, об этом обязано быть сказано.
+
+    Иначе fail-closed отвергает **любого** кандидата, а оператор читает «условия
+    кейса нарушены», не зная, что ничего не делать — тоже нарушение. Замер 04.09
+    на `runs/base/rows.csv`: с 1994 накопленная компенсация 1,239, с 2007 — 1,401
+    в 2011, при потолке 1,3. Один потолок, разные окна, разные вердикты (С1).
+    """
+    from aios.loop import _baseline_outside_the_corridor
+    from aios.planner import Limits
+
+    limits = Limits(enforce_water_balance=True, water_balance_rule="compensation",
+                    water_tolerance=1.3)
+
+    # закачка вдвое выше отбора — опорное расписание заведомо за потолком
+    rows = _rows_two_years(first_injection=2000.0, second_injection=2000.0)
+    said = _baseline_outside_the_corridor(rows, limits, FLUIDS)
+
+    assert said, "нарушение потолка самим опорным расписанием осталось незамеченным"
+    assert "опорное расписание" in said[0]
+    assert "1.30" in said[0] or "1,30" in said[0]
+
+
+def test_a_baseline_inside_the_corridor_says_nothing():
+    """Проверка не должна шуметь там, где всё в порядке."""
+    from aios.loop import _baseline_outside_the_corridor
+    from aios.planner import Limits
+
+    limits = Limits(enforce_water_balance=True, water_balance_rule="compensation",
+                    water_tolerance=1.3)
+
+    rows = _rows_two_years(first_injection=800.0, second_injection=800.0)
+
+    assert _baseline_outside_the_corridor(rows, limits, FLUIDS) == []
+
+
+def test_the_measured_windows_of_the_real_export_still_disagree():
+    """Числа замера С1 закреплены: они и есть содержание находки.
+
+    Пропуск, если выгрузки нет: на машине без прогонов сравнивать нечего.
+    """
+    import pytest
+
+    from aios import balance
+    from aios.web.app import read_rows_csv
+
+    export = Path(__file__).resolve().parent.parent / "runs" / "base" / "rows.csv"
+    if not export.is_file():
+        pytest.skip("нет выгрузки runs/base на этой машине")
+
+    rows = read_rows_csv(export)
+    whole = balance.worst_cumulative_compensation(rows, FLUIDS)
+    window = balance.worst_cumulative_compensation(
+        [row for row in rows if str(row["DATA"])[:4] >= "2007"], FLUIDS)
+
+    assert whole is not None and window is not None
+    assert round(whole[1], 3) == 1.239, "изменилась выгрузка или счёт — обновить С1"
+    assert round(window[1], 3) == 1.401
+    assert whole[1] < 1.3 < window[1], (
+        "окна перестали расходиться — находка С1 закрыта, снять её из документов"
+    )
+
+
+def test_the_cycle_itself_says_the_baseline_is_outside_the_corridor(norms):
+    """Предупреждение обязано дойти до результата цикла, а не жить в помощнике.
+
+    Оператор читает `result.warnings`; проверка, которая зовёт помощника
+    напрямую, не стережёт того, что цикл его вызывает.
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.planner import Limits
+
+    # закачка вдвое выше отбора: опорное расписание заведомо за потолком 1,3
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("P1", "OPEN", "LRAT", 100.0, 50.0),),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 200.0, 300.0),))
+             for month in range(1, 13)]
+
+    result = loop.run_cycle(
+        _Responsive(), steps, norms,
+        control_start=CONTROL_START, start_date=CONTROL_START, tune_rates=False,
+        limits=Limits(enforce_water_balance=True, water_balance_rule="compensation",
+                      water_tolerance=1.3),
+        fluids=FLUIDS,
+    )
+
+    said = [one for one in result.warnings if "опорное расписание" in one]
+    assert said, (
+        "цикл не сказал, что бездействие само вне коридора: "
+        + "; ".join(one[:60] for one in result.warnings[:5])
+    )

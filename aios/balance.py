@@ -325,6 +325,32 @@ def external_water_problems(rows: list[dict[str, Any]],
     return found
 
 
+def worst_cumulative_compensation(rows: list[dict[str, Any]],
+                                  fluids: Fluids | None = None,
+                                  rule: str = "compensation") -> tuple[int, float] | None:
+    """Худший год по накопленной компенсации: `(год, отношение)`.
+
+    Тем же счётом, каким её судит `compensation_problems`: отношение накопленной
+    закачки к накопленному отбору **на конец каждого года**. Нужен, чтобы
+    сравнивать одно и то же в разных окнах — и видеть, что окно решает.
+
+    `rule` выбирает знаменатель: `produced_water` — добытая вода, иначе вся
+    отобранная жидкость. Пустая выгрузка даёт None: сравнивать нечего.
+    """
+    withdrawn = 0.0
+    injected = 0.0
+    worst: tuple[int, float] | None = None
+    for year in by_year(rows, fluids):
+        withdrawn += year.water_m3 if rule == "produced_water" else year.liquid_m3
+        injected += year.injected_m3
+        if withdrawn <= 0:
+            continue
+        ratio = injected / withdrawn
+        if worst is None or ratio > worst[1]:
+            worst = (year.year, ratio)
+    return worst
+
+
 def external_water_by_month(rows: list[dict[str, Any]],
                             fluids: Fluids | None = None) -> list[tuple[str, float]]:
     """Потребность в сторонней воде по месяцам: `[("2019-07", 812.4), …]`, м³/сут.

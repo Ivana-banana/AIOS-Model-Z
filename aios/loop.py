@@ -260,6 +260,7 @@ def run_cycle(surrogate: Surrogate,
     safe_chdd = trust.safe_value(result.chdd_m, distance, margin)
 
     warnings = list(surrogate.in_training_range(steps))
+    warnings.extend(_baseline_outside_the_corridor(base_rows, limits, fluids))
     # Причины, по которым кандидат обязан пойти на полный расчёт, до 03.09
     # печатал только `scripts/trust_gate.py`, то есть отдельная команда, которую
     # надо было вспомнить запустить. В самом цикле шлюз молчал (ревизия 2.2 #1).
@@ -502,6 +503,38 @@ def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         left += balance.external_water_capacity_problems(
             rows, fluids, limits.max_external_water_m3_per_day)
     return left
+
+
+def _baseline_outside_the_corridor(base_rows: list[dict[str, Any]],
+                                   limits: planner.Limits | None,
+                                   fluids: Fluids | None) -> list[str]:
+    """Сказать вслух, если **бездействие** уже нарушает наш же потолок.
+
+    Один и тот же потолок 1,3 живёт в трёх разных окнах (С1): в конфигурации он
+    обоснован историей **с 1994** (там накопленная компенсация 1,239), цикл
+    считает по прогнозу **с 2007** (там сама история даёт 1,401 в 2011 и 1,291 на
+    конец), а подтверждение судит по выгрузке снова с 1994. Замер 04.09 на
+    `runs/base/rows.csv` — числа именно эти.
+
+    Следствие тяжелее, чем расхождение в третьем знаке: в окне цикла нарушает
+    потолок **само бездействие**, поэтому fail-closed отвергает любого кандидата,
+    и оператор читает «условия кейса нарушены», не зная, что ничего не делать —
+    тоже нарушение. Выбор окна — вопрос к организаторам и решение владельца
+    (`BLOCKED.md`), и здесь он не принимается. Здесь он перестаёт быть незаметным.
+    """
+    if limits is None or not limits.enforce_water_balance:
+        return []
+    worst = balance.worst_cumulative_compensation(
+        base_rows, fluids, limits.water_balance_rule)
+    if worst is None or worst[1] <= limits.water_tolerance:
+        return []
+    year, ratio = worst
+    return [
+        f"опорное расписание само выходит за потолок компенсации: {ratio:.3f} "
+        f"в {year} при потолке {limits.water_tolerance:.2f} — в окне, которым "
+        f"считает цикл. Значит, непригодным будет объявлен любой кандидат, включая "
+        f"бездействие; окно и потолок надо согласовать до того, как верить отказу"
+    ]
 
 
 def _water_headroom(rows: list[dict[str, Any]],
