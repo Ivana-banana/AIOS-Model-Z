@@ -37,6 +37,46 @@ WCONPROD
 """
 
 
+def test_an_unquoted_well_name_is_not_taken_for_a_keyword():
+    """Имя скважины без кавычек закрывало только что открытый блок — молча.
+
+    Шаблон ключевого слова `[A-Z][A-Z0-9]{1,11}` совпадает и с именем скважины,
+    поэтому `WCONPROD` с незакавыченным `P1` разбирался в **пустой** блок: ноль
+    добывающих, ни одной ошибки, `unsupported_controls` пуст. На деке
+    валидационного кейса, где имена не закавычены, скважина исчезла бы из фонда
+    вместе со своей экономикой (ревизия 03.09, 2.3 #1).
+    """
+    text = (
+        "DATES\n 1 JAN 2009 /\n/\n"
+        "WELSPECS\n P1 G1 10 10 1* OIL /\n/\n"
+        "WCONPROD\n P1 OPEN LRAT 1* 1* 1* 20 1* 50 /\n/\n"
+    )
+
+    parsed = deck.parse_schedule_text(text)
+
+    assert [control.well for control in parsed.steps[0].producers] == ["P1"]
+    assert parsed.steps[0].producers[0].liquid_rate == pytest.approx(20.0)
+    # и то же самое с кавычками разбирается так же
+    quoted = deck.parse_schedule_text(
+        text.replace(" P1 ", " 'P1' ").replace(" G1 ", " 'G1' "))
+    assert [control.well for control in quoted.steps[0].producers] == ["P1"]
+
+
+def test_a_well_name_in_the_middle_of_a_record_is_not_a_keyword():
+    """Запись из нескольких строк не разрывается именем в её середине."""
+    text = (
+        "DATES\n 1 JAN 2009 /\n/\n"
+        "WCONPROD\n"
+        " P1 OPEN LRAT 1* 1* 1* 20 1* 50 /\n"
+        " P2 OPEN LRAT 1* 1* 1* 30 1* 50 /\n"
+        "/\n"
+    )
+
+    parsed = deck.parse_schedule_text(text)
+
+    assert [control.well for control in parsed.steps[0].producers] == ["P1", "P2"]
+
+
 def test_defaults_and_repeats_are_expanded():
     record = deck._expand_defaults(["'A'", "1*", "3*", "2*50", "7"])
     assert record == ("A", None, None, None, None, "50", "50", "7")
