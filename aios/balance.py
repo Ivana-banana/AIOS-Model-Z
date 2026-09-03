@@ -174,13 +174,15 @@ def problems(rows: list[dict[str, Any]], fluids: Fluids | None = None,
                     f"источника закачки нет"
                 )
             continue
-        if injected > produced * tolerance:
+        # тот же допуск и по той же причине, что в `compensation_problems`:
+        # срезка ровно до предела не должна объявляться его нарушением (Р-183)
+        if injected > produced * tolerance * (1 + 1e-9):
             over.append(
                 f"{year.year}: накопленная закачка {injected:,.0f} м³ превышает добытую воду "
                 f"{produced:,.0f} м³ на {(injected / produced - 1) * 100:.0f}% — "
                 f"дополнительной воды на объекте нет"
             )
-        elif floor is not None and injected < produced * floor:
+        elif floor is not None and injected < produced * floor * (1 - 1e-9):
             over.append(
                 f"{year.year}: накопленная закачка {injected:,.0f} м³ составляет "
                 f"{injected / produced * 100:.0f}% добытой воды {produced:,.0f} м³ — "
@@ -245,13 +247,19 @@ def compensation_problems(rows: list[dict[str, Any]],
                     f"возмещать нечего"
                 )
             continue
-        if injected > withdrawn * ceiling:
+        # Допуск на счёт с плавающей точкой — тот же, что у `casecheck.LimitCheck`
+        # и по той же причине: планировщик режет закачку **ровно** до потолка, и
+        # без допуска его собственная срезка тут же объявляется нарушением в
+        # последнем знаке. Замер 03.09 на прогоне цикла: «на 130% — выше предела
+        # 130%». С включённой проверкой fail-closed (Р-165) это означало бы, что
+        # ни один приведённый к коридору кандидат не считается пригодным (Р-183).
+        if injected > withdrawn * ceiling * (1 + 1e-9):
             over.append(
                 f"{year.year}: накопленная закачка {injected:,.0f} м³ возмещает отобранный "
                 f"объём {withdrawn:,.0f} м³ на {injected / withdrawn * 100:.0f}% — "
                 f"выше предела {ceiling * 100:.0f}%"
             )
-        elif floor is not None and injected < withdrawn * floor:
+        elif floor is not None and injected < withdrawn * floor * (1 - 1e-9):
             over.append(
                 f"{year.year}: накопленная закачка {injected:,.0f} м³ возмещает отобранный "
                 f"объём {withdrawn:,.0f} м³ на {injected / withdrawn * 100:.0f}% — "
