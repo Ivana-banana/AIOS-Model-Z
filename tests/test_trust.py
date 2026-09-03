@@ -82,6 +82,38 @@ def test_joint_mode_outside_the_doe_is_rejected_although_each_axis_is_inside():
     assert off_diagonal.value > on_diagonal.value
 
 
+def test_a_frozen_control_is_named_frozen_not_given_a_huge_distance():
+    """Признак, которого DoE не двигал, обязан давать `inf` с причиной.
+
+    Размах такого признака выходит не нулём, а 8e-17 — арифметика с плавающей
+    точкой. Со строгим `spread > 0` он считался подвижным, стандартизация делила
+    на почти ноль, и кандидат получал расстояние порядка 1e15 вместо честного
+    `inf`. Кандидат отбрасывался в обоих случаях, но число 4,7e15 нельзя ни
+    объяснить, ни записать в отчёт (ревизия 03.09, 2.2 #4).
+    """
+    import math
+
+    # третье управление стоит на 1.0 во всех сценариях, но не идеально ровно:
+    # так его отдаёт сводная таблица датасета после сложения и деления
+    scenarios = {
+        name: dict(one, **{"prod:3|уровень": 1.0 + index * 5e-17})
+        for index, (name, one) in enumerate(diagonal_scenarios().items())
+    }
+    region = trust.TrustRegion.fit(scenarios, k=3)
+
+    assert any(key.startswith("prod:3") for key, _value in region.frozen), (
+        "управление без разброса обязано попасть в frozen"
+    )
+
+    moved = trust.profile(flat({"prod:1": 1.0, "prod:2": 1.0}))
+    moved["prod:3|уровень"] = 1.25
+    distance = region.distance(moved)
+
+    assert math.isinf(distance.value)
+    assert distance.outside
+    assert "не двигал" in str(distance) or "frozen" in str(distance) or distance.reason
+
+
 def test_the_threshold_comes_from_the_sample_not_from_a_chosen_number():
     """Порог — насколько одинока самая одинокая точка самой выборки."""
     region = trust.TrustRegion.fit(diagonal_scenarios(), k=3)

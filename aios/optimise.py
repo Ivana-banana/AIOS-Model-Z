@@ -409,8 +409,25 @@ def _value_of(
     else:
         fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids)
         value, judged = _chdd(surrogate.predict(fitted), start_date, norms_file), fitted
-    return trust.safe_value(value, _distance_of(surrogate, judged, region), margin,
-                            penalty=penalty, weight=weight)
+    distance = _distance_of(surrogate, judged, region)
+    if distance is not None and distance.outside:
+        # Вне доверенной области кандидат из поиска выбывает, а не дешевеет.
+        #
+        # До 03.09 удаление стоило `ρ·(d−τ)²` при `ρ = 1` млн руб., то есть цену
+        # подбирали не измерением, а «вес не подбирали». На прогоне 24.08 это
+        # означало штраф ≈79 млн против обещанных +2 042,7 при d = 33,0 и
+        # τ = 24,13: кандидат выбран, ГГДМ дал +460,8, то есть суррогат
+        # переоценил отклик в 4,4 раза — ровно там, где область говорила «не
+        # знаю». Мягкий штраф с непроверенным весом не защищает ни от чего:
+        # оптимизатор целенаправленно ищет максимум и поэтому идёт именно туда,
+        # где суррогат ошибается оптимистично (`CLAUDE.md`, «два разрыва»).
+        #
+        # Форма ответа выбрана не новая: пошаговое покрытие
+        # (`_covered_multipliers`) уже жёсткий фильтр, и второй контур доверия
+        # работает так же. Дублирование намеренное: контуры независимы, и падение
+        # одного не должно открывать проход (Р-174).
+        return float("-inf")
+    return trust.safe_value(value, distance, margin, penalty=penalty, weight=weight)
 
 
 def _distance_of(surrogate: Surrogate, steps: list[ScheduleStep],

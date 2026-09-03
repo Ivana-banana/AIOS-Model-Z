@@ -256,6 +256,15 @@ def run_cycle(surrogate: Surrogate,
     safe_chdd = trust.safe_value(result.chdd_m, distance, margin)
 
     warnings = list(surrogate.in_training_range(steps))
+    # Причины, по которым кандидат обязан пойти на полный расчёт, до 03.09
+    # печатал только `scripts/trust_gate.py`, то есть отдельная команда, которую
+    # надо было вспомнить запустить. В самом цикле шлюз молчал (ревизия 2.2 #1).
+    #
+    # Спрашивается только у обученной модели: у тривиального бейзлайна доверенной
+    # области нет и быть не может, и «область не собрана» про него — не
+    # предупреждение, а описание другой вещи. Заявку он не обосновывает.
+    if getattr(surrogate, "bundle", None) is not None:
+        warnings += trust.routed_to_full_run(distance, margin)
     # предел дебита жидкости — из таблицы ЭЦН тех нормативов, по которым считается
     # ЧДД этого прогона, а не из литерала 500 от Модели Z (Б28)
     problems = validate(

@@ -430,6 +430,65 @@ def test_conversion_multiplier_scales_the_injection_rate():
     assert result[0].injectors[0].rate == pytest.approx(60.0)
 
 
+def test_a_candidate_outside_the_trust_region_is_not_selected():
+    """Вне доверенной области кандидат выбывает из поиска, а не дешевеет.
+
+    До 03.09 удаление стоило `ρ·(d−τ)²` при `ρ = 1` млн руб. На прогоне 24.08 это
+    дало штраф ≈79 млн против обещанных +2 042,7 при d = 33,0 и τ = 24,13:
+    кандидат выбран, ГГДМ дал +460,8, то есть суррогат переоценил отклик в 4,4
+    раза — ровно там, где область говорила «не знаю» (ревизия 03.09, 2.2 #1).
+    """
+    from aios import trust
+    from aios.margin import Norms
+
+    # DoE двигал обе скважины только вместе: (0.8, 1.2) внутри диапазона каждой,
+    # но такого сочетания выборка не содержит
+    scenarios = {
+        f"s{index:02d}": trust.profile({
+            date(2007, month, 1): {"prod:1": value, "prod:2": value}
+            for month in range(1, 4)
+        })
+        for index, value in enumerate(0.8 + 0.4 * step / 11 for step in range(12))
+    }
+    region = trust.TrustRegion.fit(scenarios, k=3)
+
+    steps = [ScheduleStep(date(2007, month, 1),
+                          (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),
+                           ProducerControl("2", "OPEN", "LRAT", 30.0, 50.0)), ())
+             for month in range(1, 4)]
+
+    class Rich:
+        """Суррогат, который обещает тем больше, чем дальше режим от выборки."""
+
+        def predict(self, plan):
+            rows = []
+            for step in plan:
+                for control in step.producers:
+                    rate = control.liquid_rate or 0.0
+                    rows.append(make_row(step.date.isoformat(), control.well,
+                                         wlpr=rate, womr=rate * 0.5,
+                                         liquid=rate * 30.0, oil=rate * 15.0))
+            return rows
+
+        def control_profile(self, plan):
+            # множитель к опорному расписанию: у него уставка 30 м³/сут
+            return trust.profile({
+                step.date: {f"prod:{c.well}": (c.liquid_rate or 0.0) / 30.0
+                            for c in step.producers}
+                for step in plan
+            })
+
+    surrogate = Rich()
+    inside = optimise._value_of(surrogate, steps, date(2007, 1, 1), None,
+                                Norms.from_file(), None, region)
+    assert inside > 0, "режим «как есть» лежит внутри области"
+
+    # один множитель вверх, второй на месте — то самое сочетание вне выборки
+    skewed = optimise._scale_individually(steps, {("production", "1", None): 1.5})
+    assert optimise._value_of(surrogate, skewed, date(2007, 1, 1), None,
+                              Norms.from_file(), None, region) == float("-inf")
+
+
 def test_conversion_takes_the_last_rate_before_the_transfer():
     """Приёмистость — по дебиту на момент перевода, а не по первому за горизонт.
 
