@@ -181,7 +181,7 @@ def test_the_forecast_page_refuses_to_compare_across_frames(project):
 
     Маркер, записанный при базе дисконтирования 2007, и факт при 1991 — числа
     из разных систем, и по их величине этого не видно: разница доходит до разов
-    (Р-182). Маркеры до 03.09 базу не записывали вовсе.
+    (Р-187). Маркеры до 03.09 базу не записывали вовсе.
     """
     (project / "runs" / "base" / "cycle.json").write_text(
         json.dumps({"forecast_chdd_m": 100.0, "forecast_gain_m": 50.0,
