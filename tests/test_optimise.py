@@ -96,15 +96,43 @@ def test_scale_leaves_injectors_and_shut_wells_alone():
     assert scaled[0].injectors[0].rate == 40.0
 
 
-def test_a_watered_out_well_is_stopped_and_a_good_one_is_kept(norms):
+def test_a_watered_out_well_is_throttled_but_not_shut_by_the_single_search(norms):
+    """Одиночный перебор глушит обводнённую скважину, но не закрывает её.
+
+    Остановка — решение об объекте, а здесь сравнивается маржа **одной** скважины
+    на прогнозе без отклика соседей: у тривиального бейзлайна его нет по
+    построению. Цена нуля в этом наборе измерена (Б3): на историческом расписании
+    Модели Z он закрывает 33 из 72 добывающих, уставки по жидкости падают на 84 %,
+    полный расчёт отвечает −63…−68 % ЧДД. Останавливает теперь причинный
+    `policy.plan_shutdowns` — см. тест в `test_loop.py`.
+    """
     model = DeclineSurrogate.fit(history("good", 0.50, 0.005) + history("bad", 0.99, 0.0002),
                                  FLUIDS)
     choices = {c.well: c for c in optimise.choose_rates(
         model, plan(["good", "bad"]), norms, start_date=START)}
 
-    assert choices["bad"].multiplier == 0.0
-    assert choices["good"].multiplier > 0.0
+    assert choices["bad"].multiplier > 0.0, "остановка вернулась в одиночный перебор"
+    assert choices["bad"].multiplier < choices["good"].multiplier, (
+        "обводнённая скважина не заглушена вовсе — перебор перестал различать"
+    )
     assert choices["bad"].gain_m > 0
+
+
+def test_the_single_search_can_still_shut_when_asked_explicitly(norms):
+    """Ноль не запрещён — он убран из умолчания.
+
+    Совместный перебор оценивает кандидата целиком, с откликом соседей, и ноль
+    там законен: именно этим путём получен подтверждённый ГГДМ прирост +460,8.
+    """
+    model = DeclineSurrogate.fit(history("good", 0.50, 0.005) + history("bad", 0.99, 0.0002),
+                                 FLUIDS)
+    choices = {c.well: c for c in optimise.choose_rates(
+        model, plan(["good", "bad"]), norms, start_date=START,
+        multipliers=optimise.DEFAULT_MULTIPLIERS)}
+
+    assert choices["bad"].multiplier == 0.0
+    assert 0.0 in optimise.JOINT_MULTIPLIERS
+    assert 0.0 not in optimise.SINGLE_MULTIPLIERS
 
 
 def test_multipliers_must_include_the_baseline(norms):

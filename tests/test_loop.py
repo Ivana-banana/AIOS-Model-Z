@@ -167,12 +167,27 @@ def test_the_corridor_holds_after_the_cuts_that_follow_it(norms):
 
 
 def test_cycle_stops_the_watered_out_well_and_keeps_the_good_one(surrogate, norms):
+    """Скважину останавливает причинное решение, а не множитель перебора.
+
+    До 04.09 остановку давал одиночный перебор режимов: множитель 0,0 выигрывал
+    по марже **одной** скважины на прогнозе без отклика соседей. Замер (Б3)
+    показал цену: 33 из 72 добывающих на историческом расписании, −63…−68 % ЧДД
+    по полному расчёту. Ноль убран из умолчания перебора, и остановка пришла
+    оттуда, где ей место, — из `policy.plan_shutdowns`, который смотрит на
+    накопленный убыток и **объясняет** решение.
+    """
     result = loop.run_cycle(surrogate, plan(), norms,
                             control_start=CONTROL_START, start_date=CONTROL_START)
 
     chosen = {choice.well: choice.multiplier for choice in result.rate_choices}
-    assert chosen["bad"] == 0.0
-    assert chosen["good"] > 0.0
+    assert chosen["bad"] > 0.0, "остановка вернулась в перебор режимов"
+    assert chosen["bad"] < chosen["good"], "обводнённая скважина даже не заглушена"
+
+    shut = [action for action in result.actions
+            if action.well == "bad" and action.kind == "shut"]
+    assert shut, f"скважину никто не остановил: {[(a.well, a.kind) for a in result.actions]}"
+    assert "убыток" in shut[0].reason, "остановка без причины в тексте решения"
+
     assert result.gain_m > 0
     assert result.is_improvement
 
