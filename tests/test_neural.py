@@ -1342,3 +1342,157 @@ def test_per_scenario_skills_are_kept_so_the_interval_can_be_recomputed():
     values = bundle.report.metrics["WLPT_Diff"].neural_skill_scenarios
     assert values, "по сценариям должно быть хоть что-то"
     assert list(values) == sorted(values)
+
+
+# --- донорский перенос: скважина без своей модели -----------------------------
+# П. 10 плана ревизии 03.09. Замечание трекера на КТ-2: «если обучаете MLP, то
+# переносим на другое месторождение — у вас всё сломается». Веса не переносятся,
+# и спорить не с чем; между «своя модель» и «ничего» есть измеренная середина —
+# медиана отклика доноров той же роли, 85 % качества по нефти (Р-157).
+
+
+def _schedule_with_three(rate: float, months: int = 12) -> list[ScheduleStep]:
+    """Расписание, где скважина донорского переноса тоже присутствует.
+
+    Без неё проверка вырождается: `predict` обнуляет строки скважины, которой в
+    расписании не назначен режим (`liquid_rate <= 0` → жидкость и нефть в ноль),
+    и «отклик не перенесён» получилось бы у любой реализации.
+    """
+    return [
+        ScheduleStep(
+            pd.Timestamp(f"2014-{month:02d}-01").date(),
+            tuple(ProducerControl(well, "OPEN", "LRAT", rate, 50.0)
+                  for well in ("1", "2", "3")),
+            (),
+        )
+        for month in range(1, months + 1)
+    ]
+
+
+def _frame_with_a_well_only_in_training(seed: int = 7):
+    """Датасет, где скважина «3» встречается только в обучающих сценариях.
+
+    Разбиение детерминировано, поэтому обучающая часть спрашивается у того же
+    `split_scenarios`, а не угадывается: иначе тест зависел бы от того, куда
+    ляжет сценарий, и «пропуска не случилось» приходилось бы ловить наугад.
+    """
+    frame = _dataset_frame()
+    train_scenarios, _ = split_scenarios(sorted(frame["scenario"].unique()),
+                                         seed=seed, test_fraction=0.25)
+
+    # скважина «3» — добывающая, встречается только в обучающих сценариях
+    donor_rows = frame[(frame["well"] == "1")
+                       & (frame["scenario"].isin(train_scenarios))].copy()
+    donor_rows["well"] = "3"
+
+    # скважина «4» — нагнетательная и с моделью. Без неё проверка отбора доноров
+    # по роли пуста: когда весь фонд добывающий, «доноры вперемешку» и «доноры
+    # своей роли» дают один и тот же список, и мутация правила не роняет тест.
+    injector = frame[frame["well"] == "1"].copy()
+    injector["well"] = "4"
+    injector["production_multiplier"] = float("nan")
+    injector["injection_multiplier"] = injector["multiplier"]
+    injector["WLPR"] = 0.0
+    injector["WWIR"] = 40.0 * injector["multiplier"]
+    injector["WWIT_Diff"] = injector["WLPT_Diff"]
+    injector["WLPT_Diff"] = 0.0
+    injector["WOMT_Diff"] = 0.0
+
+    return (pd.concat([frame, donor_rows, injector], ignore_index=True),
+            train_scenarios)
+
+
+def test_a_well_without_its_own_model_is_carried_by_donors_of_the_same_role():
+    """Прогноз по такой скважине есть — и он не пустой ряд и не голый уровень.
+
+    До правки `predict` шёл по `bundle.models`, поэтому строк по ней не было ни
+    одной: ЧДД считался по остатку фонда и подавался как ЧДД сценария. Теперь
+    отклик берётся медианой доноров её роли на её же признаках, а уровень
+    остаётся собственный — переносится реакция на управление, а не добыча.
+    """
+    frame, _ = _frame_with_a_well_only_in_training()
+
+    bundle = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+
+    assert "3" not in bundle.models, "проверка вырождена: скважине досталась модель"
+    assert bundle.report.wells_without_model == ("3",)
+    assert "3" in bundle.levels, "уровень скважины без модели не сохранён — переносить не на чем"
+
+    surrogate = NeuralSurrogate.create(bundle, _schedule_with_three(rate=95.0), require_quality=False)
+    assert surrogate.donor_wells() == {"3": ("1", "2")}, (
+        "в доноры добывающей скважины попала нагнетательная «4»"
+    )
+
+    rows = surrogate.predict(_schedule_with_three(rate=140.0))
+    carried = [row for row in rows if row["well"] == "3"]
+
+    assert len(carried) == len([row for row in rows if row["well"] == "1"]), (
+        "у скважины донорского переноса строк меньше, чем у скважины с моделью"
+    )
+    assert all(row["WLPT_Diff"] >= 0 for row in carried)
+    assert any(row["WLPT_Diff"] > 0 for row in carried), (
+        "строки есть, но все нулевые — это не прогноз, а тишина под другим именем"
+    )
+
+
+def test_the_donor_response_is_not_the_level_alone():
+    """Перенос обязан нести отклик, а не повторять уровень.
+
+    Без этой проверки «донорский прогноз» неотличим от «прогноза без модели
+    вообще»: уровень есть у скважины и так, и молчаливая подстановка одного
+    уровня выглядела бы работающим механизмом, ничего не перенося.
+    """
+    frame, _ = _frame_with_a_well_only_in_training()
+    bundle = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+    surrogate = NeuralSurrogate.create(bundle, _schedule_with_three(rate=95.0), require_quality=False)
+
+    quiet = {row["DATA"]: row["WLPT_Diff"]
+             for row in surrogate.predict(_schedule_with_three(rate=95.0)) if row["well"] == "3"}
+    forced = {row["DATA"]: row["WLPT_Diff"]
+              for row in surrogate.predict(_schedule_with_three(rate=160.0)) if row["well"] == "3"}
+
+    assert quiet and forced
+    assert any(abs(forced[stamp] - quiet[stamp]) > 1e-9 for stamp in quiet), (
+        "прогноз скважины не реагирует на смену режима — отклик не перенесён"
+    )
+
+
+def test_a_donor_must_share_the_role_of_the_well_it_carries():
+    """Доноры отбираются по роли: нагнетательную не переносят с добывающих.
+
+    Первый прогон замера 02.09 брал доноров вперемешку и давал по закачке ровно
+    нулевой Skill — механизм выглядел работающим и не работал (Р-157).
+    """
+    frame, _ = _frame_with_a_well_only_in_training()
+    bundle = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+    surrogate = NeuralSurrogate.create(bundle, _schedule_with_three(rate=95.0), require_quality=False)
+
+    donors = surrogate.donor_wells()["3"]
+
+    assert donors, "доноров не нашлось — переноса не будет"
+    assert all(donor in bundle.models for donor in donors)
+    assert "3" not in donors, "скважина не может быть донором самой себе"
+    assert "4" in bundle.models, "фикстура вырождена: нагнетательной модели не досталось"
+    assert "4" not in donors, (
+        "нагнетательная попала в доноры добывающей — ровно та ошибка, которая "
+        "02.09 давала по закачке нулевой Skill"
+    )
+
+
+def test_the_warning_names_the_transfer_and_its_measured_price():
+    """Перенос — не бесплатный: предупреждение обязано нести его цену числом.
+
+    Скорость без точности — подача; то же и здесь. 85 % по нефти и 25 % по
+    закачке названы прямо в пометке, чтобы читающий видел, чем именно заполнен
+    прогноз этой скважины.
+    """
+    frame, _ = _frame_with_a_well_only_in_training()
+    bundle = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+    surrogate = NeuralSurrogate.create(bundle, _schedule_with_three(rate=95.0), require_quality=False)
+
+    warnings = surrogate.in_training_range(_schedule_with_three(rate=95.0))
+    about = [one for one in warnings if "донорск" in one]
+
+    assert about, f"перенос не назван ни одной пометкой: {warnings}"
+    assert "85 %" in about[0] and "25 %" in about[0]
+    assert "нет ни одной строки" not in about[0]

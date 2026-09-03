@@ -313,12 +313,16 @@ class NeuralSurrogate:
             for month_start in months
         ])
         predictions = self._level_and_response(months, feature_matrix)
+        # порядок фиксирован: скважины донорского переноса встают в общий ряд, а
+        # не приписываются в конец — выгрузка обязана читаться так же, как у
+        # скважин с моделью
+        predicted_wells = sorted(predictions, key=_well_key)
         cumulative: dict[str, list[float]] = {}
         rows: list[dict[str, Any]] = []
 
         for month_index, (month_start, controls) in enumerate(timeline.items()):
             days = month_days(month_start)
-            for well in sorted(self.bundle.models, key=_well_key):
+            for well in predicted_wells:
                 predicted = predictions[well][month_index]
                 control = controls.get(well)
                 liquid_rate, injection_rate = _rates(control)
@@ -378,7 +382,7 @@ class NeuralSurrogate:
                                 self.bundle.month_span)[0]
             for month, position in zip(months, index, strict=True)
         ])
-        return {
+        predicted = {
             well: _raw_space(
                 levels[well][index]
                 + _response(model,
@@ -388,6 +392,19 @@ class NeuralSurrogate:
             )
             for well, model in self.bundle.models.items()
         }
+
+        # Донорский перенос: скважине без собственной модели отклик берётся
+        # медианой откликов доноров её роли на **её** признаках. Уровень при этом
+        # её собственный — переносится реакция на управление, а не добыча.
+        for well, donors in self.donor_wells().items():
+            own = _select_controls(feature_matrix, wells, well, kind)
+            own_base = _select_controls(base_matrix, wells, well, kind)
+            responses = np.stack([
+                _response(self.bundle.models[donor], own, own_base) for donor in donors
+            ])
+            predicted[well] = _raw_space(
+                levels[well][index] + np.median(responses, axis=0), targets)
+        return predicted
 
     def _month_number(self, month_start: date) -> int:
         return ((month_start.year - self.bundle.start_month.year) * 12
@@ -486,6 +503,53 @@ class NeuralSurrogate:
             return (1.0, 1.0)
         return (min(scales), max(scales))
 
+    def donor_wells(self) -> dict[str, tuple[str, ...]]:
+        """Скважины без собственной модели → доноры их роли, по которым идёт перенос.
+
+        Замечание трекера на КТ-2 (запись 04:20) звучало так: «если обучаете MLP,
+        то переносим на другое месторождение — у вас всё сломается». Веса
+        действительно не переносятся, и спорить не с чем. Но между «своя модель» и
+        «ничего» есть измеренная середина: замер 02.09 на всех 103 скважинах
+        (`scripts/holdout_wells.py`, Р-157) показал, что медиана откликов доноров
+        **той же роли** удерживает **85 %** качества персональной модели по нефти
+        (Skill 0,1035 против 0,1211) и все пять целей дают положительный Skill.
+        По закачке удерживается 25 % — то есть механизм неравноценный, и подавать
+        его надо с этим числом, а не вообще.
+
+        Донор обязан делить со скважиной роль: добывающая переносится с
+        добывающих, нагнетательная — с нагнетательных. Первый прогон замера
+        брал доноров вперемешку и давал по закачке ровно нулевой Skill.
+
+        Условие переноса — наличие **уровня** скважины: переносится отклик на
+        управление, а не сама добыча. Уровень есть у той, чьи обучающие строки в
+        датасете были, но модель не построилась (нет тестовой стороны разбиения
+        либо все её строки раньше `control_start`). Скважине, которой в датасете
+        нет вовсе, перенести нечего — и это остаётся предупреждением, а не
+        молчаливым нулём.
+        """
+        levels = getattr(self.bundle, "levels", None) or {}
+        missing = getattr(self.bundle.report, "wells_without_model", ())
+        if not missing:
+            return {}
+
+        roles = _role_columns(self.bundle.control_wells)
+        of_well = {
+            well: frozenset(name for name, members in roles.items() if well in members)
+            for well in set(missing) | set(self.bundle.models)
+        }
+
+        donors: dict[str, tuple[str, ...]] = {}
+        for well in missing:
+            if well not in levels:
+                continue
+            same = tuple(sorted(
+                (name for name in self.bundle.models if of_well[name] & of_well[well]),
+                key=_well_key,
+            ))
+            if same:
+                donors[well] = same
+        return donors
+
     def in_training_range(self,
                           steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> list[str]:
         timeline = expand(steps)
@@ -500,12 +564,27 @@ class NeuralSurrogate:
         # этого поля: у них список неизвестен, и это не повод падать.
         missing = getattr(self.bundle.report, "wells_without_model", ())
         if missing:
-            listed = ", ".join(missing[:5]) + (f" и ещё {len(missing) - 5}"
-                                               if len(missing) > 5 else "")
-            warnings.append(
-                f"скважин без модели: {len(missing)} ({listed}) — прогноза по ним "
-                "нет ни одной строки, ЧДД посчитан по остатку фонда"
-            )
+            donors = self.donor_wells()
+            carried = tuple(well for well in missing if well in donors)
+            lost = tuple(well for well in missing if well not in donors)
+            if carried:
+                listed = ", ".join(carried[:5]) + (f" и ещё {len(carried) - 5}"
+                                                   if len(carried) > 5 else "")
+                warnings.append(
+                    f"скважин без своей модели: {len(carried)} ({listed}) — прогноз "
+                    f"собран донорским переносом (медиана отклика доноров той же "
+                    f"роли, {len(donors[carried[0]])} у первой). Замер 02.09: по "
+                    f"нефти так удерживается 85 % качества персональной модели, по "
+                    f"закачке — 25 % (Р-157)"
+                )
+            if lost:
+                listed = ", ".join(lost[:5]) + (f" и ещё {len(lost) - 5}"
+                                                if len(lost) > 5 else "")
+                warnings.append(
+                    f"скважин без модели и без уровня: {len(lost)} ({listed}) — "
+                    "переносить нечего, прогноза по ним нет ни одной строки, "
+                    "ЧДД посчитан по остатку фонда"
+                )
 
         reference_dates = set(expand(self.reference_steps))
         warnings.extend(
@@ -698,13 +777,27 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     for well, rows in data.groupby("well", sort=True):
         train_rows = rows[rows["scenario"].isin(train_scenarios)]
         test_rows = rows[rows["scenario"].isin(test_scenarios)]
-        if train_rows.empty or test_rows.empty:
+        if train_rows.empty:
+            # уровня не из чего считать, донорский перенос такой скважине не
+            # поможет: переносится отклик на управление, а не сама добыча
             continue
 
         if control_start is not None:
             test_rows = test_rows[test_rows["DATA"] >= pd.Timestamp(control_start)]
-            if test_rows.empty:
-                continue
+
+        # уровень — среднее обучающих сценариев по паре «скважина × месяц»; учится
+        # модель на остатке, то есть ровно на отклике (`Р-55`). Считается до
+        # проверки тестовой стороны, потому что нужен и той скважине, которой
+        # модели не достанется: на нём стоит донорский перенос (Р-193).
+        level = _level_table(
+            _month_number(train_rows["DATA"], start_month).to_numpy(),
+            _model_space(train_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy(), targets),
+            month_span,
+        )
+        levels[str(well)] = level
+
+        if test_rows.empty:
+            continue
 
         wide_train = _features(train_rows, controls, start_month, month_span)
         wide_test = _features(test_rows, controls, start_month, month_span)
@@ -715,13 +808,6 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         base_test = _select_controls(wide_base, control_wells, str(well), features)
         y_test = test_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy()
 
-        # уровень — среднее обучающих сценариев по паре «скважина × месяц»; учится
-        # модель на остатке, то есть ровно на отклике (`Р-55`)
-        level = _level_table(
-            _month_number(train_rows["DATA"], start_month).to_numpy(),
-            _model_space(train_rows.loc[:, TARGET_COLUMNS].astype(float).to_numpy(), targets),
-            month_span,
-        )
         level_train = level[_clipped_months(train_rows["DATA"], start_month, month_span)]
         level_test = level[_clipped_months(test_rows["DATA"], start_month, month_span)]
         y_train = _model_space(
@@ -757,7 +843,6 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
         test_targets.append(y_test)
         test_scenarios_of_row.append(test_rows["scenario"].to_numpy())
         models[well] = neural if kind == "mlp" else baseline
-        levels[well] = level
 
     if not models:
         raise ValueError("после разбиения не осталось скважин с train и test строками")
