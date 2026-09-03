@@ -176,6 +176,83 @@ def test_every_npv_call_names_its_norms():
     )
 
 
+def test_the_liquid_limit_never_exceeds_the_vendor_ceiling(tmp_path: Path):
+    """Таблица ЭЦН кейса не может разрешить больше, чем принимает расчётчик.
+
+    У эталона потолок зашит литералом: `if row["WLPR"] > 500` в
+    `compute_calculation`. Пока предел брался как «правая граница старшего
+    насоса», таблица с насосом на 600 заставила бы наш валидатор пропустить 550,
+    а расчётчик организаторов отверг бы этот же файл с `ValueError` — на том
+    единственном прогоне, который оценивают (ревизия 03.09, 2.3 #4).
+    """
+    import shutil
+
+    from openpyxl import load_workbook
+
+    from aios import schedule as schedule_module
+
+    path = tmp_path / "Нормативы_с_большим_ЭЦН.xlsx"
+    shutil.copy(economics.NORMS_FILE, path)
+    book = load_workbook(path)
+    sheet = book["ЭЦН"]
+    for row in sheet.iter_rows(min_row=2):
+        if row[2].value in (500.0, 500):
+            row[2].value = 600.0
+            break
+    book.save(path)
+
+    _assumptions, pumps = economics.load_norms(path)
+    assert max(float(pump["max"]) for pump in pumps) == 600.0
+    assert schedule_module.liquid_limit(pumps) == 500.0
+
+    rows = [make_row(f"2014-{month:02d}-01", "A", wlpr=550.0, womr=90.0,
+                     liquid=16500.0, oil=2700.0) for month in (1, 2, 3)]
+    with pytest.raises(ValueError, match="500"):
+        economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                              start_date="2014-01-01", norms_file=path)
+
+
+def test_the_injection_pressure_limit_comes_from_the_case(tmp_path: Path):
+    """Предел давления нагнетания — из `[limits]`, а не литерал 300 от Модели Z.
+
+    Кейс со своим пределом ловил только планировщик; валидатор расписания и
+    предполётная проверка держали литерал, то есть кейс с потолком 250 атм
+    прошёл бы обе (ревизия 03.09, 2.3 #5).
+    """
+    from aios import schedule as schedule_module
+    from aios.deck import InjectorControl, ScheduleStep
+
+    steps = [ScheduleStep(date(2014, 1, 1), (),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 200.0, 280.0),))]
+
+    assert schedule_module.validate(steps) == []
+    problems = schedule_module.validate(steps, max_injection_bhp=250.0)
+    assert len(problems) == 1 and "280" in str(problems[0]) and "250" in str(problems[0])
+
+
+def test_an_unreadable_start_date_is_refused_not_replaced():
+    """Нераспознанную дату эталон молча меняет на первую дату данных.
+
+    `requested_start = normalize_date(start_date) or min_date` — то есть `"2010"`
+    не ошибка, а тихий возврат к умолчанию: базовый год уезжает, ЧДД меняется,
+    предупреждений нет (ревизия 03.09, 2.3 #3).
+    """
+    rows = [make_row(f"2014-{month:02d}-01", "A", wlpr=30.0, womr=15.0,
+                     liquid=900.0, oil=450.0) for month in (1, 2, 3)]
+
+    with pytest.raises(ValueError, match="не распознано"):
+        economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                              start_date="2010", norms_file=economics.NORMS_FILE)
+    with pytest.raises(ValueError, match="не распознано"):
+        economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                              start_date="01 JAN 2010", norms_file=economics.NORMS_FILE)
+
+    # осознанное умолчание эталона по-прежнему законно и видно в коде вызова
+    assert economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
+                                 start_date=None,
+                                 norms_file=economics.NORMS_FILE).chdd_m != 0.0
+
+
 def test_the_liquid_limit_travels_with_the_pump_table(alien_pumps: Path):
     """Предел дебита жидкости — из таблицы ЭЦН кейса, а не литерал 500 от Модели Z.
 
@@ -680,6 +757,75 @@ def test_uncontrollable_wells_keep_the_reference_regime():
     restored = _restore_uncontrolled(origin, changed, frozenset({"P1"}))
 
     assert [c.liquid_rate for c in restored[0].producers] == [45.0, 30.0]
+def test_uncontrollable_well_returns_to_reference_on_every_step():
+    """Опора — расписание-дельты: скважина упомянута раз, действует до конца.
+
+    Дефект ревизии 03.09 (2.1 #1): восстановление искало опорную запись по дате
+    в **дельтовом** расписании, и на шагах, где скважину не упоминали, оставляло
+    режим планировщика. То есть «управлять нельзя» действовало один месяц из
+    трёх, и увидеть это на тесте с полным фондом на каждом шаге нельзя.
+    """
+    from aios.deck import ProducerControl, ScheduleStep
+    from aios.loop import _restore_uncontrolled
+
+    origin = [
+        ScheduleStep(date(2014, 1, 1),
+                     (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),
+                      ProducerControl("P2", "OPEN", "LRAT", 30.0, 50.0)), ()),
+        ScheduleStep(date(2014, 2, 1), (), ()),
+        ScheduleStep(date(2014, 3, 1), (), ()),
+    ]
+    changed = _plan(producers=((45.0, 50.0), (45.0, 50.0)), injectors=())
+
+    restored = _restore_uncontrolled(origin, changed, frozenset({"P1"}))
+
+    assert [[c.liquid_rate for c in step.producers] for step in restored] == [
+        [45.0, 30.0], [45.0, 30.0], [45.0, 30.0]
+    ]
+
+
+def test_uncontrollable_well_keeps_its_shut_status_from_the_reference():
+    """Возврат к опоре возвращает и статус, а не только уставку."""
+    from aios.deck import ProducerControl, ScheduleStep
+    from aios.loop import _restore_uncontrolled
+
+    origin = [
+        ScheduleStep(date(2014, 1, 1),
+                     (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),
+                      ProducerControl("P2", "SHUT", "LRAT", None, 50.0)), ()),
+        ScheduleStep(date(2014, 2, 1), (), ()),
+        ScheduleStep(date(2014, 3, 1), (), ()),
+    ]
+    changed = _plan(producers=((45.0, 50.0), (45.0, 50.0)), injectors=())
+
+    restored = _restore_uncontrolled(origin, changed, frozenset({"P1"}))
+
+    assert [step.producers[1].status for step in restored] == ["SHUT", "SHUT", "SHUT"]
+
+
+def test_restoring_a_well_that_breaks_an_object_limit_is_reported():
+    """Возврат к опоре идёт после планировщика и может сломать его срезку.
+
+    Это не лечится порядком: «управлять нельзя» и «объектный предел» могут
+    противоречить друг другу, и тогда кейс противоречив. Молчать нельзя —
+    условие обязано быть названо нарушенным (`case_problems`, А2 ревизии).
+    """
+    from aios import casecheck, loop
+
+    limits = _limits(max_field_liquid_m3_per_day=60.0,
+                     controllable_wells=frozenset({"P1"}))
+    steps = _plan(producers=((30.0, 50.0), (30.0, 50.0)), injectors=())
+    forecast = _forecast(wells=("P1", "P2"))
+
+    left = casecheck.violations(casecheck.check(steps, forecast, limits))
+    assert not left, "опора сама предел не нарушает"
+
+    broken = _plan(producers=((45.0, 50.0), (45.0, 50.0)), injectors=())
+    reported = loop._case_problems(broken, forecast, limits, None, [])
+
+    assert any("max_field_liquid_m3_per_day" in line for line in reported)
+
+
 def _switching(states, injecting=()):
     """Расписание одной скважины, где статус меняется от шага к шагу.
 

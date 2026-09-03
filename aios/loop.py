@@ -22,7 +22,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from aios import balance, economics, optimise, planner, trust
+from aios import balance, casecheck, economics, optimise, planner, trust
 from aios.deck import ScheduleStep
 from aios.margin import Norms
 from aios.policy import Action, apply, explain, plan_conversions, plan_shutdowns
@@ -56,6 +56,16 @@ class CycleResult:
     problems: tuple[ScheduleProblem, ...]
     """Нарушения ограничений в получившемся расписании. Непустой список — брак."""
 
+    case_problems: tuple[str, ...] = ()
+    """Условия кейса, которые расписание нарушает после всех срезок.
+
+    Отдельно от `problems`: там нарушения самого расписания (дебит выше предела
+    ЭЦН, незнакомая скважина) с привязкой к шагу и скважине, здесь — условия
+    объекта (`aios.casecheck`, баланс воды, мощность водозабора), у которых адрес
+    другой: год, месяц или группа. Непустой список так же означает брак — см.
+    `_case_problems`.
+    """
+
     excluded_rows: int = 0
     """Сколько строк прогноза расчётчик выбросил как отрицательные приращения.
 
@@ -84,7 +94,7 @@ class CycleResult:
 
     @property
     def is_improvement(self) -> bool:
-        return self.gain_m > 0 and not self.problems
+        return self.gain_m > 0 and not self.problems and not self.case_problems
 
     def summary(self) -> str:
         """Человеко-читаемый отчёт — в лог, в UI и в презентацию."""
@@ -95,7 +105,10 @@ class CycleResult:
             f"Прирост:               {self.gain_m:+,.1f} млн руб. ({status})",
             "",
         ]
-        if self.margin is None:
+        if self.confirmed:
+            lines += ["Конформный запас не применяется: число получено полным расчётом, "
+                      "поправлять на оптимизм суррогата здесь нечего.", ""]
+        elif self.margin is None:
             lines += ["Конформный запас: не считался — прогноз с запасом недоступен.", ""]
         elif not self.margin.calibrated:
             lines += [f"Конформный запас: НЕ КАЛИБРОВАН — {self.margin.reason}", ""]
@@ -124,6 +137,10 @@ class CycleResult:
         if self.problems:
             lines += ["", f"НАРУШЕНИЯ ОГРАНИЧЕНИЙ ({len(self.problems)}) — расписание непригодно:"]
             lines += [f"  ! {problem}" for problem in self.problems[:10]]
+        if self.case_problems:
+            lines += ["", f"УСЛОВИЯ КЕЙСА НАРУШЕНЫ ({len(self.case_problems)}) — "
+                          "кандидат непригоден:"]
+            lines += [f"  ! {problem}" for problem in self.case_problems[:10]]
         return "\n".join(lines)
 
 
@@ -241,8 +258,17 @@ def run_cycle(surrogate: Surrogate,
     warnings = list(surrogate.in_training_range(steps))
     # предел дебита жидкости — из таблицы ЭЦН тех нормативов, по которым считается
     # ЧДД этого прогона, а не из литерала 500 от Модели Z (Б28)
-    problems = validate(steps, known_wells,
-                        max_liquid_rate=liquid_limit(economics.load_norms(norms_file)[1]))
+    problems = validate(
+        steps, known_wells,
+        max_liquid_rate=liquid_limit(economics.load_norms(norms_file)[1]),
+        # предел давления нагнетания — свойство кейса, а не Модели Z: у неё во всей
+        # истории 300 атм, и это умолчание, а не физический закон (ревизия 2.3 #5)
+        **({} if limits is None or limits.max_injector_bhp_atm is None
+           else {"max_injection_bhp": limits.max_injector_bhp_atm}),
+    )
+    # Fail-closed: планировщик прошёл — это ещё не «условия кейса соблюдены».
+    # Считается по тому же прогнозу, по которому посчитан ЧДД кандидата.
+    case_left = _case_problems(steps, rows, limits, fluids, allocations)
 
     return CycleResult(
         base_chdd_m=base.chdd_m,
@@ -253,6 +279,7 @@ def run_cycle(surrogate: Surrogate,
         steps=tuple(steps),
         warnings=tuple(warnings),
         problems=tuple(problems),
+        case_problems=tuple(case_left),
         excluded_rows=result.excluded_negative_rows,
         rows=rows,
         raw_chdd_m=result.chdd_m,
@@ -292,8 +319,11 @@ def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
         steps=result.steps,
         warnings=result.warnings,
         problems=result.problems,
+        case_problems=result.case_problems,
+        excluded_rows=confirmed.excluded_negative_rows,
         confirmed=True,
         rows=rows,
+        margin=result.margin,
     )
 
 
@@ -306,8 +336,19 @@ def _restore_uncontrolled(origin: list[ScheduleStep] | tuple[ScheduleStep, ...],
     «меняются осторожно»: кейс может прямо запретить трогать часть фонда, и
     тогда наше расписание обязано совпасть с исходным на этих скважинах
     побайтово, а не приблизительно.
+
+    **Опора разворачивается в полные шаги, и без этого форма не работала.** В
+    деке запись действует до следующей записи по той же скважине, поэтому в
+    опорном расписании скважина упомянута не на каждом шаге: у Модели Z это
+    84…103 записи при 103 скважинах. Пока восстановление искало запись по дате в
+    дельтовом расписании, на шагах без упоминания оно не находило ничего и
+    оставляло режим планировщика — то есть запрет действовал на тех месяцах, где
+    скважина случайно оказалась переписанной, и не действовал на остальных
+    (ревизия 03.09, 2.1 #1). Разворачивать здесь дешевле, чем требовать
+    развёрнутую опору от всех вызывающих: та же причина, по которой развёрнут
+    вход планировщика (`planner.expand_deltas`).
     """
-    by_date = {step.date: step for step in origin}
+    by_date = {step.date: step for step in planner.expand_deltas(origin)}
     result: list[ScheduleStep] = []
     for step in steps:
         reference = by_date.get(step.date)
@@ -328,6 +369,62 @@ def _restore_uncontrolled(origin: list[ScheduleStep] | tuple[ScheduleStep, ...],
         )
         result.append(ScheduleStep(step.date, producers, injectors))
     return result
+
+
+def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                   rows: list[dict[str, Any]],
+                   limits: planner.Limits | None,
+                   fluids: Fluids | None,
+                   allocations: list[planner.Allocation]) -> list[str]:
+    """Условия кейса, которые получившееся расписание всё-таки нарушает.
+
+    Планировщик приводит расписание к ограничениям объекта, но пройти его и
+    остаться допустимым — разные утверждения, и между ними лежат три вещи:
+    возврат неуправляемых скважин к опоре идёт **после** планировщика и может
+    сломать его срезку; коридор баланса воды планировщик подбирает одним
+    множителем, а проверяется он по годам; мощность водозабора — предел расхода,
+    и она считается по месяцам. Поэтому итог пересчитывается тем же кодом, что
+    и в репетиции приёмки (`scripts/rehearse_case.py`), а непустой список
+    делает `is_improvement` ложным: кандидат, нарушающий условие кейса,
+    кандидатом не является (А2 ревизии 03.09).
+
+    Возвращаются строки, а не `ScheduleProblem`: у объектного условия нет одной
+    скважины и одной даты — «2024-10 по объекту» и «скв. 66, 2021-12» это разные
+    адреса, и выдумывать им общий формат значит терять место нарушения.
+
+    **Уступка по квоте мероприятий провалом не считается**, но только если
+    планировщик её объявил: мероприятие, порождённое жёстким ограничением, не
+    отменяется (Р-139, Р-150), а молчаливое превышение остаётся дефектом. То же
+    правило и в тех же словах — в репетиции приёмки.
+
+    Отклик пласта (пластовое давление, обводнённость) сюда не входит:
+    расписанием его не задать, и нарушение по нему — повод менять сценарий, а не
+    признак негодного расписания. Он идёт в предупреждения.
+    """
+    if limits is None:
+        return []
+    conceded = ("max_events_per_year", "max_events_per_month")
+    declared = any("вопреки квоте" in one.reason for one in allocations)
+    left = [str(check) for check in casecheck.violations(casecheck.check(steps, rows, limits))
+            if not (declared and check.key in conceded)]
+
+    if limits.enforce_water_balance:
+        if limits.water_balance_rule == "compensation":
+            left += balance.compensation_problems(
+                rows, fluids, limits.water_tolerance, floor=limits.water_tolerance_min)
+        elif limits.water_balance_rule == "external_water":
+            left += balance.external_water_problems(
+                rows, fluids, limits.max_external_water_m3_per_day)
+        else:
+            left += balance.problems(rows, fluids, limits.water_tolerance,
+                                     floor=limits.water_tolerance_min)
+
+    # мощность источника действует при любом правиле; при неизвестной мощности
+    # функция возвращает справочную строку про пиковый месяц — она не нарушение
+    if limits.max_external_water_m3_per_day is not None:
+        left += balance.external_water_capacity_problems(
+            rows, fluids, limits.max_external_water_m3_per_day)
+    return left
 
 
 def _water_headroom(rows: list[dict[str, Any]],
