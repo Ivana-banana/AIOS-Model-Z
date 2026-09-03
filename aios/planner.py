@@ -592,6 +592,13 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                 ceiling=limits.water_tolerance,
                 floor=limits.water_tolerance_min,
                 source_m3_per_day=limits.max_external_water_m3_per_day,
+                # Коридор идёт последним (Р-189), то есть **после** адресных
+                # потолков закачки, и его добор снизу мог поднять уставку выше
+                # предела, который кейс объявил, — переcечь его было уже некому
+                # (С5). Передаём потолки внутрь: добор ограничен ими, а не только
+                # водой.
+                well_caps={**(limits.well_caps_m3_per_day or {})},
+                default_cap=limits.max_well_injection_m3_per_day,
             )
         decisions.extend(water)
 
@@ -1989,6 +1996,8 @@ def _fit_injection_to_water_corridor(
     ceiling: float,
     floor: float | None,
     source_m3_per_day: float | None,
+    well_caps: dict[str, float] | None = None,
+    default_cap: float | None = None,
 ) -> tuple[list[ScheduleStep], list[Allocation]]:
     """Привести закачку к коридору нормы и к тому, сколько воды физически есть.
 
@@ -2158,7 +2167,8 @@ def _fit_injection_to_water_corridor(
 
     if not factors:
         return steps, []
-    return _scale_injection_by_year(steps, factors, reasons)
+    return _scale_injection_by_year(steps, factors, reasons,
+                                    well_caps=well_caps, default_cap=default_cap)
 
 def _injecting(control: InjectorControl, rate: float) -> InjectorControl:
     """Запись закачки с новой приёмистостью; ноль закрывает скважину.
@@ -2180,6 +2190,8 @@ def _injecting(control: InjectorControl, rate: float) -> InjectorControl:
 def _scale_injection_by_year(steps: list[ScheduleStep],
                              factors: dict[int, float],
                              reasons: dict[int, str],
+                             well_caps: dict[str, float] | None = None,
+                             default_cap: float | None = None,
                              ) -> tuple[list[ScheduleStep], list[Allocation]]:
     """Изменить закачку каждого года своим множителем.
 
@@ -2206,6 +2218,15 @@ def _scale_injection_by_year(steps: list[ScheduleStep],
                 injectors.append(control)
                 continue
             reduced = control.rate * factor
+            # Добор снизу не имеет права поднять уставку выше потолка, который
+            # объявил кейс. Коридор идёт последним, поэтому пересечь его после
+            # добора уже некому: закачка 100 при отборе 1 000 и границе 0,85
+            # давала ×8,5 — расписание просило у нагнетателя того, чего кейс ему
+            # прямо запретил (С5). Своей физики приёмистости у нас нет и
+            # выдумывать её нельзя; ограничиваем тем числом, которое дано.
+            cap = (well_caps or {}).get(control.well, default_cap)
+            if factor > 1.0 and cap is not None and reduced > cap:
+                reduced = max(cap, min(control.rate, cap))
             key = (step.date.year, control.well)
             if key not in seen:
                 seen.add(key)

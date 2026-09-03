@@ -1757,3 +1757,41 @@ def test_a_postponed_event_is_reported_once_not_every_month(norms):
         + "; ".join(one.reason[:60] for one in about_b)
     )
     assert "перенесён с 2027-03" in about_b[0].reason
+
+
+def test_the_floor_top_up_respects_the_well_cap_the_case_declared(norms):
+    """Добор снизу не поднимает уставку выше потолка кейса.
+
+    Коридор идёт последним (Р-189), то есть **после** адресных потолков закачки,
+    и пересечь его после добора уже некому: закачка 100 при отборе 1 000 и
+    границе 0,85 давала ×8,5 — расписание просило у нагнетателя того, что кейс
+    ему прямо запретил (С5). Своей физики приёмистости у нас нет; ограничиваем
+    тем числом, которое дано.
+    """
+    steps = [month_step(2027, month, producers=[prod("A", 1000.0)],
+                        injectors=[inj("B", 100.0)]) for month in (1, 2)]
+    forecast = [
+        make_row(f"2027-{month:02d}-01", "A", wlpr=1000.0, womr=100.0,
+                 liquid=1000.0, oil=100.0)
+        for month in (1, 2)
+    ] + [
+        # закачка заведомо ниже нижней границы: отбор двух месяцев даёт базу
+        # 1 754,9 м³, граница 0,85 требует 1 491,7, а запланировано 200
+        make_row(f"2027-{month:02d}-01", "B", wwir=100.0 / 30, injection=100.0)
+        for month in (1, 2)
+    ]
+    limits = planner.Limits(
+        enforce_water_balance=True, water_balance_rule="compensation",
+        water_tolerance=1.5, water_tolerance_min=0.85,
+        max_well_injection_m3_per_day=150.0,
+    )
+
+    result, _ = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    rates = [control.rate for step in result for control in step.injectors
+             if control.status == "OPEN"]
+    assert rates, "нагнетательная пропала из расписания"
+    assert max(rates) <= 150.0 + 1e-9, (
+        f"добор поднял уставку до {max(rates):,.1f} при потолке кейса 150"
+    )
+    assert max(rates) > 100.0, "добор не сработал вовсе — проверка вырождена"
