@@ -554,7 +554,8 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     @application.get("/run/{name}/cycle", response_class=HTMLResponse)
     def cycle_page(request: Request, name: str, model: str = "decline",
-                   mode: str = "full", lookback: int | None = None) -> HTMLResponse:
+                   mode: str = "full", lookback: int | None = None,
+                   question: str = "") -> HTMLResponse:
         """Прогнать цикл МАС и показать решения.
 
         Запрос ничего не пишет на диск, поэтому он GET, а параметры запуска
@@ -569,15 +570,20 @@ def create_app(root: Path | None = None) -> FastAPI:
         # слой интерпретируемости: модель излагает уже принятое решение по
         # посчитанным фактам. Отказ слоя не должен ронять страницу — при любой
         # проблеме возвращается шаблонное объяснение (ТЗ п. 3.1)
+        # Вопрос инженера — тот же слой и та же проверка чисел, просто у модели
+        # спрашивают заданное, а не «почему так решили» (Р-184). Длина ограничена
+        # здесь, а не в модуле: это защита формы, а не слоя.
+        asked = question.strip()[:500]
         try:
-            explanation = explain_module.explain(
-                explain_module.evidence_from_cycle(
-                    cycle.result, cycle.surrogate_name,
-                    limits=configuration.limits, fluids=configuration.fluids),
-                configuration.explain,
-            )
+            evidence = explain_module.evidence_from_cycle(
+                cycle.result, cycle.surrogate_name,
+                limits=configuration.limits, fluids=configuration.fluids)
+            explanation = explain_module.explain(evidence, configuration.explain)
+            reply = (explain_module.answer(evidence, configuration.explain, asked)
+                     if asked else None)
         except Exception:  # noqa: BLE001 — объяснение не должно уносить результат цикла
             explanation = None
+            reply = None
         return TEMPLATES.TemplateResponse(
             request=request,
             name="cycle.html",
@@ -588,6 +594,8 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "surrogate_name": cycle.surrogate_name,
                 "warning_groups": fold_warnings(cycle.result.warnings),
                 "explanation": explanation,
+                "question": asked,
+                "reply": reply,
                 "options": options,
                 "case_dir": _case_directory(run.name, options),
                 "case_ready": cycle.deck_wells is not None and not cycle.result.problems,
