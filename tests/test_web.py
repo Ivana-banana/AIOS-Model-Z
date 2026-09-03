@@ -121,6 +121,61 @@ def test_a_refusal_is_a_page_not_json(client):
         assert "к списку прогонов" in answer.text
 
 
+def test_the_forecast_page_survives_a_marker_without_a_number(project):
+    """Маркер в той же системе отсчёта, но без числа, не роняет страницу.
+
+    Найдено критиком 03.09: `"%.1f"|format(None)` бросает `TypeError`, а это не
+    `HTTPException` — новый обработчик отказов его не ловит, и страница
+    отдавала голый `Internal Server Error`, то есть ровно то, что обработчик и
+    должен был устранить.
+    """
+    (project / "runs" / "base" / "cycle.json").write_text(
+        json.dumps({"start_date": "2014-01-01", "source_run": "base"}), encoding="utf-8")
+
+    answer = TestClient(create_app(project)).get("/forecast")
+
+    assert answer.status_code == 200
+    assert "не записан" in answer.text
+
+
+def test_the_forecast_page_does_not_call_a_run_its_own_base(project):
+    """Прогон, названный источником самого себя, прироста не измеряет.
+
+    Разность выйдет нулём при любом решении, и печатать «получено 0» значило бы
+    выдать вырожденный случай за измерение (найдено критиком 03.09).
+    """
+    (project / "runs" / "base" / "cycle.json").write_text(
+        json.dumps({"forecast_chdd_m": 100.0, "forecast_gain_m": 50.0,
+                    "start_date": "2014-01-01", "source_run": "base"}),
+        encoding="utf-8")
+
+    answer = TestClient(create_app(project)).get("/forecast")
+
+    assert "источник — он сам" in answer.text
+    assert "+0.0" not in answer.text
+
+
+def test_a_broken_error_template_still_shows_the_refusal(project, monkeypatch):
+    """Сломанный шаблон отказа не превращает 404 в «сервис лежит».
+
+    Найдено критиком 03.09: обработчик рендерил страницу без запасного пути, и
+    любая его поломка молча роняла **все** отказы сайта в голый 500.
+    """
+    from aios.web import app as app_module
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("шаблон недоступен")
+
+    monkeypatch.setattr(app_module.TEMPLATES, "TemplateResponse", broken)
+    client = TestClient(create_app(project), raise_server_exceptions=False)
+
+    answer = client.get("/run/нет-такого")
+
+    assert answer.status_code == 404
+    assert "404" in answer.text
+    assert "страница отказа не отрисовалась" in answer.text
+
+
 def test_the_forecast_page_refuses_to_compare_across_frames(project):
     """Прогноз из другой системы отсчёта не сравнивается, а помечается.
 

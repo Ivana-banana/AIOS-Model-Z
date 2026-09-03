@@ -169,8 +169,14 @@ def _write_explanation(out_dir: Path, result, surrogate_name: str, config) -> Pa
         }
     except Exception as error:  # noqa: BLE001 — слой не должен уносить результат цикла
         record = {"text": "", "source": "failed", "failure": f"{type(error).__name__}: {error}"}
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8")
+    try:
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+    except OSError as error:
+        # Запись тоже под защитой, а не только вызов модели: кейс к этому моменту
+        # уже собран и годен, и ронять прогон из-за недоступного файла отчётности
+        # — ровно то, чего обещает не делать докстринг выше (найдено критиком).
+        print(f"объяснение не записано: {error}", file=sys.stderr)
     return path
 
 

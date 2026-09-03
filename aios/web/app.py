@@ -299,16 +299,29 @@ def create_app(root: Path | None = None) -> FastAPI:
         сервис, хотя отказ законный и текст в нём осмысленный (ревизия 2.4 #4).
         """
         detail = error.detail if isinstance(error.detail, str) else str(error.detail)
+        try:
+            return _refusal_page(request, error.status_code, detail)
+        except Exception as broken:  # noqa: BLE001 — отказ обязан дойти до человека
+            # Если сломан сам шаблон, отказ всё равно должен быть виден и
+            # объясним. Молчаливое падение в голый 500 хуже некрасивого текста:
+            # оно превращает законный 404 в «сервис лежит» (Р-186).
+            return HTMLResponse(
+                f"<pre>{error.status_code}: {detail}\n\n"
+                f"страница отказа не отрисовалась: {type(broken).__name__}</pre>",
+                status_code=error.status_code,
+            )
+
+    def _refusal_page(request: Request, status: int, detail: str) -> HTMLResponse:
         return TEMPLATES.TemplateResponse(
             request=request,
             name="error.html",
-            status_code=error.status_code,
+            status_code=status,
             context={
-                "status": error.status_code,
-                "heading": ERROR_HEADINGS.get(error.status_code, "отказ"),
+                "status": status,
+                "heading": ERROR_HEADINGS.get(status, "отказ"),
                 "detail": detail,
                 "hint": ("Список доступных прогонов — на главной странице."
-                         if error.status_code == 404 else ""),
+                         if status == 404 else ""),
             },
         )
 
@@ -481,12 +494,20 @@ def create_app(root: Path | None = None) -> FastAPI:
         start = configuration.economics.start_date.isoformat()
         norms_file = configuration.economics.norms_file
 
+        # Кеш на время запроса: у каждой пары «прогон и его источник» ЧДД
+        # считается эталонным расчётчиком по выгрузке в 5 МБ, и один и тот же
+        # базовый прогон был источником у всех сразу. Замер критика 03.09 до
+        # правки: 8,5 с и шесть вызовов расчёта там, где нужны два (Р-186).
+        computed: dict[str, float | None] = {}
+
         def chdd(run: Run) -> float | None:
+            if run.name in computed:
+                return computed[run.name]
             rows = load_rows(run, configuration.fluids, deck_fluids().by_well)
-            if not rows:
-                return None
-            return economics.compute_npv(rows, headers=economics.REQUIRED_COLUMNS,
-                                         start_date=start, norms_file=norms_file).chdd_m
+            computed[run.name] = None if not rows else economics.compute_npv(
+                rows, headers=economics.REQUIRED_COLUMNS,
+                start_date=start, norms_file=norms_file).chdd_m
+            return computed[run.name]
 
         available = runs()
         # База сравнения у каждого прогона своя: прирост считается от того
@@ -518,22 +539,32 @@ def create_app(root: Path | None = None) -> FastAPI:
 
             fact = chdd(run) if comparable else None
             promised = forecast.get("forecast_gain_m") if comparable else None
-            delivered = (None if fact is None or source_fact is None else fact - source_fact)
+            # Прогон, названный источником самого себя, прироста не измеряет:
+            # разность выйдет нулём при любом решении. Такое бывает у запуска
+            # `--from runs/policy --out runs/policy`, и показывать «получено 0»
+            # значило бы выдать вырожденный случай за измерение (Р-186).
+            same = source_name == run.name
+            delivered = (None if same or fact is None or source_fact is None
+                         else fact - source_fact)
             pairs.append({
                 "name": run.name,
                 "comparable": comparable,
                 "written_start": written_start,
                 "source": source_name,
+                "self_source": same,
                 "forecast_chdd": forecast.get("forecast_chdd_m") if comparable else None,
                 "fact_chdd": fact,
                 "promised": promised,
                 "delivered": delivered,
-                # во сколько раз прогноз переоценил прирост; знаменатель может
-                # быть нулевым или отрицательным — тогда отношения нет, и врать
-                # про него нельзя
+                # Во сколько раз прогноз переоценил прирост. Знаменатель должен
+                # быть не просто положительным, а осмысленным: при полученных
+                # 1e-12 млн руб. отношение выходит ×5e12 — число, которое ничего
+                # не сообщает, кроме того, что делить было нечего. Порог в
+                # 1 млн руб. — цена одного мероприятия по методике, то есть
+                # наименьшая величина, которую вообще стоит обсуждать (Р-186).
                 "ratio": (promised / delivered
                           if promised is not None and delivered is not None
-                          and delivered > 0 else None),
+                          and delivered > 1.0 else None),
                 "surrogate": (forecast.get("surrogate_identity") or {}).get("surrogate", ""),
             })
 

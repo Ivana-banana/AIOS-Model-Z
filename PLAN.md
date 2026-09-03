@@ -496,7 +496,7 @@ merge'ем и перенумеровывает свои.
 
 - [ ] Ж1. Корень по п. 8.3 ТЗ: журналы и конфиги в подкаталоги, короткие имена в
       `manus-answered` (сейчас ломают клон на Windows)
-- [ ] Ж2. Docker: `--platform linux/amd64` и однострочник `run_all` в README;
+- [x] Ж2. Docker: `--platform linux/amd64` и однострочник `run_all` в README;
       `requirements-tools.txt` вместо инструментов расшифровки в dev
 - [ ] Ж3. Донорский fallback для скважин без модели из `holdout_wells.py`
 

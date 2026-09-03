@@ -29,6 +29,57 @@ def injected(data: str, well: str, volume_m3: float):
     return make_row(data, well, wwir=volume_m3 / 30, injection=volume_m3)
 
 
+def test_a_cut_exactly_to_the_ceiling_is_not_a_violation():
+    """Срезка ровно до потолка — не нарушение, а его соблюдение (Р-183).
+
+    Планировщик масштабирует закачку так, чтобы накопленное отношение легло
+    **точно** на предел, и без допуска его собственная срезка объявлялась
+    нарушением в последнем знаке. С включённой проверкой fail-closed (Р-165) это
+    означало бы, что ни один приведённый к коридору кандидат не пригоден.
+    Найдено прогоном цикла 03.09, допуск оказался непокрытым тестом (критик).
+    """
+    from aios import balance, summary
+
+    fluids = summary.Fluids()
+    # отбор: 100 м³ нефти и 900 м³ воды за месяц
+    oil_t = 100.0 * fluids.oil_density / 1000
+    water_t = 900.0 * fluids.water_density / 1000
+    withdrawn = 100.0 + 900.0
+    rows = [make_row("2014-01-01", "1", wlpr=30.0, womr=oil_t / 30,
+                     liquid=oil_t + water_t, oil=oil_t)]
+
+    exact = rows + [make_row("2014-01-01", "9", wwir=1.0, injection=withdrawn * 1.3)]
+    assert balance.compensation_problems(exact, fluids, 1.3) == [], (
+        "ровно на потолке — соблюдено"
+    )
+
+    # превышение на 0,001 % допуск не прячет: он в последнем знаке double
+    over = rows + [make_row("2014-01-01", "9", wwir=1.0,
+                            injection=withdrawn * 1.3 * 1.00001)]
+    assert balance.compensation_problems(over, fluids, 1.3), (
+        "реальное превышение обязано остаться нарушением"
+    )
+
+
+def test_a_fill_exactly_to_the_floor_is_not_a_violation():
+    """То же с нижней границей коридора: добор ровно до неё — соблюдение."""
+    from aios import balance, summary
+
+    fluids = summary.Fluids()
+    oil_t = 100.0 * fluids.oil_density / 1000
+    water_t = 900.0 * fluids.water_density / 1000
+    withdrawn = 100.0 + 900.0
+    rows = [make_row("2014-01-01", "1", wlpr=30.0, womr=oil_t / 30,
+                     liquid=oil_t + water_t, oil=oil_t)]
+
+    exact = rows + [make_row("2014-01-01", "9", wwir=1.0, injection=withdrawn * 0.85)]
+    assert balance.compensation_problems(exact, fluids, 1.15, floor=0.85) == []
+
+    under = rows + [make_row("2014-01-01", "9", wwir=1.0,
+                             injection=withdrawn * 0.85 * 0.99999)]
+    assert balance.compensation_problems(under, fluids, 1.15, floor=0.85)
+
+
 def test_volumes_survive_the_round_trip_through_mass():
     """Выгрузка хранит массы; баланс переводит их обратно в объёмы тем же ключом."""
     rows = [produced("2014-01-01", "1", oil_m3=100.0, water_m3=900.0)]

@@ -41,7 +41,10 @@
           — не сравнивается
         </td>
         {% else %}
-        <td>{{ "%.1f"|format(one.forecast_chdd) }}</td>
+        <td>
+          {% if one.forecast_chdd is not none %}{{ "%.1f"|format(one.forecast_chdd) }}
+          {% else %}<span class="muted">не записан</span>{% endif %}
+        </td>
         <td>
           {% if one.fact_chdd is not none %}{{ "%.1f"|format(one.fact_chdd) }}
           {% else %}<span class="muted">полного расчёта не было</span>{% endif %}
@@ -49,6 +52,7 @@
         <td>{% if one.promised is not none %}{{ "%+.1f"|format(one.promised) }}{% else %}—{% endif %}</td>
         <td>
           {% if one.delivered is not none %}{{ "%+.1f"|format(one.delivered) }}
+          {% elif one.self_source %}<span class="muted">источник — он сам, прироста не измерить</span>
           {% elif one.fact_chdd is not none %}<span class="muted">нет прогона «{{ one.source or base_name }}» для базы</span>
           {% else %}<span class="muted">полного расчёта не было</span>{% endif %}
         </td>
