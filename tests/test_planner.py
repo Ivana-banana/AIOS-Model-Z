@@ -1173,7 +1173,12 @@ def test_quota_still_cancels_what_the_cycle_asked_for(norms):
     assert sorted(state.values()) == [(False, False), (True, False)], (
         "одна остановка проходит по квоте, вторая отменяется"
     )
-    assert any("отменён: квота мероприятий" in decision.reason for decision in decisions)
+    # «отменён» было неправдой: запись снимается с шага, а на развёрнутом
+    # расписании то же назначение стоит на следующем — событие переносится
+    # (С13). Проверяем смысл решения, а не прежнее слово.
+    assert any("перенесён с" in decision.reason and "квота мероприятий" in decision.reason
+               for decision in decisions)
+    assert not any("отменён" in decision.reason for decision in decisions)
 def test_a_group_cut_to_zero_shuts_the_well_instead_of_leaving_it_open(norms):
     """Открытая запись с нулевым дебитом делает расписание непригодным целиком.
 
@@ -1322,7 +1327,7 @@ def test_quota_works_on_a_schedule_where_steps_carry_only_changes(norms):
 
     assert state["A"] == (False, False), "первая остановка проходит по квоте"
     assert state["B"] == (True, False), "вторая отменена: квота исчерпана"
-    assert any("отменён: квота" in one.reason for one in decisions)
+    assert any("перенесён с" in one.reason and "квота" in one.reason for one in decisions)
 def test_field_limit_sees_the_whole_running_fund_not_just_this_step(norms):
     """Три нагнетателя по 400, открытые в три месяца, против предела 800 м³/сут.
 
@@ -1719,3 +1724,36 @@ def test_a_conceded_event_spends_every_quota_bucket(norms):
     assert len(conceded) == 2, "две уступки из трёх мероприятий: первое прошло по квоте"
     assert any("месяц 2027-02" in one.reason or "год 2027" in one.reason
                for one in conceded)
+
+
+def test_a_postponed_event_is_reported_once_not_every_month(norms):
+    """Одна скважина — одно решение о переносе, а не по одному на каждый месяц.
+
+    Запись снимается с шага, но на развёрнутом расписании то же назначение стоит
+    и на следующем: квота там снова полна, и прежний код печатал новое решение
+    каждый месяц. Одна мысль об одной скважине не должна повторяться числом
+    месяцев (С13).
+    """
+    steps = [
+        month_step(2027, 1, producers=[prod("A", 50.0), prod("B", 50.0)]),
+        ScheduleStep(date(2027, 2, 1),
+                     (ProducerControl("A", "SHUT", "LRAT", None, 50.0),), ()),
+        ScheduleStep(date(2027, 3, 1),
+                     (ProducerControl("B", "SHUT", "LRAT", None, 50.0),), ()),
+        ScheduleStep(date(2027, 4, 1),
+                     (ProducerControl("B", "SHUT", "LRAT", None, 50.0),), ()),
+        ScheduleStep(date(2027, 5, 1),
+                     (ProducerControl("B", "SHUT", "LRAT", None, 50.0),), ()),
+    ]
+    limits = planner.Limits(enforce_water_balance=False, max_events_per_year=1)
+
+    _, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
+
+    about_b = [one for one in decisions
+               if one.well == "B" and "квота" in one.resource]
+
+    assert len(about_b) == 1, (
+        "о переносе одной скважины сказано " + str(len(about_b)) + " раз: "
+        + "; ".join(one.reason[:60] for one in about_b)
+    )
+    assert "перенесён с 2027-03" in about_b[0].reason

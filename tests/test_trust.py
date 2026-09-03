@@ -715,3 +715,57 @@ def test_the_nightly_seeds_take_the_corpus_past_the_worst_observed_error():
     assert index < total, (
         f"{collected.samples} пар плюс {len(settings.trust.search_seeds)} seed'ов дают {total}: "
         "запас останется максимумом ошибок")
+
+
+# --- С3: штраф за удаление не должен уносить число за пределы разумного -------
+
+
+def test_a_degenerate_distance_does_not_produce_an_unprintable_number():
+    """`d ≈ 1,25·10¹⁵` давало «запас: −2,03·10³¹ млн руб.» в отчёте прогона.
+
+    Вырожденная доверенная область считает подвижными признаки с размахом 10⁻¹⁶,
+    расстояние взлетает, квадрат его добивает — и число уходит в отчёт и в
+    `cycle.json`. Деньгами оно быть перестаёт задолго до этого.
+    """
+    import math
+
+    from aios.trust import PENALTY_CAP_M, Distance, safe_value
+
+    value = safe_value(5579.5, Distance(value=1.25e15, threshold=24.13, neighbours=()), None)
+
+    assert math.isfinite(value)
+    assert value >= 5579.5 - PENALTY_CAP_M
+
+
+def test_an_infinite_distance_does_not_break_the_json_marker():
+    """`-Infinity` — невалидный JSON: файл не прочтёт ни интерфейс, ни проверяющий.
+
+    После пересборки области расстояние у управления, которого DoE не двигал,
+    становится бесконечным — и это законный ответ «сравнивать не с чем». Ронять
+    на нём машинный след прогона нельзя.
+    """
+    import json
+    import math
+
+    from aios.trust import Distance, safe_value
+
+    value = safe_value(5579.5, Distance(value=math.inf, threshold=24.13, neighbours=()), None)
+
+    assert math.isfinite(value)
+    assert json.loads(json.dumps({"safe": value}))["safe"] == value
+
+
+def test_the_penalty_is_still_monotone_below_the_cap():
+    """Потолок не должен превращать штраф в ступеньку на рабочем диапазоне.
+
+    Ниже потолка всё как было: дальше от обучающих сценариев — меньше значение,
+    и ранжирование кандидатов сохраняется.
+    """
+    from aios.trust import Distance, safe_value
+
+    near = safe_value(5579.5, Distance(value=30.0, threshold=24.13, neighbours=()), None)
+    far = safe_value(5579.5, Distance(value=60.0, threshold=24.13, neighbours=()), None)
+    inside = safe_value(5579.5, Distance(value=10.0, threshold=24.13, neighbours=()), None)
+
+    assert inside == 5579.5, "внутри области штрафа быть не должно"
+    assert inside > near > far, "штраф перестал расти с расстоянием"

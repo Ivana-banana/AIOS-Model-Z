@@ -513,13 +513,36 @@ def _water_headroom(rows: list[dict[str, Any]],
     правилом (Р-61): без запаса предлагать перевод — значит обещать то, что
     планировщик срежет на следующем шаге. Без ограничений запас считается
     неограниченным: правило выключено, и мешать переводу нечему.
+
+    **Считается тем же счётом, что и аудит, и по тому же правилу (С4).** До 04.09
+    здесь стоял годовой максимум `year.compensation` — отношение закачки к
+    отобранному **внутри одного года**, — тогда как срезает планировщик и судит
+    `balance.compensation_problems` по **накопленному** отношению на конец года.
+    Две разные величины на одном пороге расходятся в обе стороны: запас
+    объявлялся там, где его нет, и наоборот. Отсюда 56 переводов под закачку на
+    репетиции (280 млн руб. OPEX), которые коридор затем срезал: новая закачка
+    вытесняла существующую.
+
+    И правило бралось всегда как `compensation`, даже когда кейс объявил
+    `produced_water`: там знаменатель — добытая вода, а не отобранная жидкость,
+    и число меньше в разы.
     """
     if limits is None or not limits.enforce_water_balance:
         return True
     years = balance.by_year(rows, fluids)
     if not years:
         return True
-    return max(year.compensation for year in years) < limits.water_tolerance
+
+    withdrawn = 0.0
+    injected = 0.0
+    worst = 0.0
+    for year in years:
+        withdrawn += (year.water_m3 if limits.water_balance_rule == "produced_water"
+                      else year.liquid_m3)
+        injected += year.injected_m3
+        if withdrawn > 0:
+            worst = max(worst, injected / withdrawn)
+    return worst < limits.water_tolerance
 
 
 def _npv(rows: list[dict[str, Any]], start_date: date,

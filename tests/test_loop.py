@@ -447,3 +447,67 @@ def test_confirmed_gain_is_a_difference_of_two_full_calculations(surrogate, norm
         "базовое число осталось прогнозным"
     )
     assert confirmed.gain_m == pytest.approx(confirmed.chdd_m - expected_base)
+
+
+# --- С4: запас под потолком компенсации считался не тем счётом ---------------
+
+
+def _rows_two_years(first_injection: float, second_injection: float):
+    """Два года: в первом закачки почти нет, во втором много.
+
+    Годовой максимум и накопленное отношение на таких данных расходятся: второй
+    год сам по себе далеко за потолком, а накопленный итог — нет.
+    """
+    from conftest import make_row
+
+    rows = []
+    for year, injection in ((2014, first_injection), (2015, second_injection)):
+        rows.append(make_row(f"{year}-01-01", "1", wlpr=100.0, womr=10.0,
+                             liquid=1000.0, oil=100.0))
+        rows.append(make_row(f"{year}-01-01", "2", wwir=injection / 30,
+                             injection=injection))
+    return rows
+
+
+def test_headroom_is_measured_by_the_same_count_the_planner_cuts_by():
+    """Накопленное отношение, а не годовой максимум.
+
+    Планировщик режет и аудит судит по накопленному на конец года; запас же
+    считался внутри одного года. Две разные величины на одном пороге расходятся
+    в обе стороны — отсюда переводы под закачку, которые коридор потом срезает.
+    """
+    from aios.loop import _water_headroom
+    from aios.planner import Limits
+
+    limits = Limits(enforce_water_balance=True, water_balance_rule="compensation",
+                    water_tolerance=1.3)
+
+    # первый год почти без закачки, второй — втрое выше потолка по себе
+    rows = _rows_two_years(first_injection=100.0, second_injection=3000.0)
+
+    # накопленное отношение: (100 + 3000) / (1100 + 1100) = 1,41 — запаса нет
+    assert _water_headroom(rows, limits, FLUIDS) is False
+
+
+def test_headroom_follows_the_rule_the_case_declared():
+    """При правиле `produced_water` знаменатель — добытая вода, а не жидкость.
+
+    Правило бралось всегда как `compensation`, даже когда кейс объявил другое:
+    число получалось меньше в разы, и запас объявлялся там, где его нет.
+    """
+    from aios.loop import _water_headroom
+    from aios.planner import Limits
+
+    # 1 000 т жидкости и 100 т нефти в год дают 877,4 м³ жидкости и 767,9 м³
+    # воды (плотности дека). За два года: 1 754,9 против 1 535,8 — закачка 1 600
+    # ложится между ними, и правило решает всё
+    rows = _rows_two_years(first_injection=800.0, second_injection=800.0)
+
+    by_liquid = Limits(enforce_water_balance=True, water_balance_rule="compensation",
+                       water_tolerance=1.0)
+    by_water = Limits(enforce_water_balance=True, water_balance_rule="produced_water",
+                      water_tolerance=1.0)
+
+    # 1 600 / 1 754,9 = 0,91 — запас есть; 1 600 / 1 535,8 = 1,04 — запаса нет
+    assert _water_headroom(rows, by_liquid, FLUIDS) is True
+    assert _water_headroom(rows, by_water, FLUIDS) is False

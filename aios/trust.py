@@ -345,6 +345,15 @@ def margin_from_pairs(path: Path, *, family: str, alpha: float = DEFAULT_ALPHA) 
     return OptimismMargin.fit(pairs, alpha=alpha)
 
 
+#: Потолок штрафа за удаление от обучающих сценариев, млн руб.
+#:
+#: Миллион миллионов рублей — величина, заведомо превосходящая любой ЧДД этого
+#: объекта (заявка — 5 579,5). Это не оценка риска, а маркер «безнадёжно вне
+#: области»: он держит число конечным и печатаемым, а решение о таком кандидате
+#: принимает `routed_to_full_run`.
+PENALTY_CAP_M = 1e6
+
+
 def safe_value(predicted: float, distance: Distance | None, margin: OptimismMargin | None,
                *, penalty: float = 1.0, weight: float = 1.0) -> float:
     """Цель поиска вместо голого прогноза: `Ĵ − λ·B_J − ρ·max(0, d_k − τ)²`.
@@ -372,7 +381,20 @@ def safe_value(predicted: float, distance: Distance | None, margin: OptimismMarg
     if margin is not None and margin.value is not None:
         value -= weight * margin.value
     if distance is not None and distance.outside:
-        value -= penalty * (distance.value - distance.threshold) ** 2
+        gap = distance.value - distance.threshold
+        term = penalty * gap * gap
+        # Штраф ограничен сверху, и это не косметика. Вырожденная доверенная
+        # область даёт `d ≈ 1,25·10¹⁵` (признаки с размахом 10⁻¹⁶ считаются
+        # подвижными), квадрат превращает её в 10³⁰, и прогон печатает «запас:
+        # −2,03·10³¹ млн руб.», а `cycle.json` несёт это число. При `d = inf`
+        # выходит `-Infinity` — **невалидный JSON**, то есть файл, который не
+        # прочтёт ни наш интерфейс, ни проверяющий (С3).
+        #
+        # Выше потолка число перестаёт быть деньгами и означает одно:
+        # «безнадёжно вне области». Ранжировать такие кандидаты между собой не
+        # по чему — вердикт по ним выносит `routed_to_full_run`, а не величина.
+        # Ниже потолка всё как было: штраф монотонен и сравним с ЧДД.
+        value -= min(term, PENALTY_CAP_M) if term == term else PENALTY_CAP_M
     return value
 
 
