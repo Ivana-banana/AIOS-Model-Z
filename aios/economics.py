@@ -116,6 +116,20 @@ def compute_npv(
         assumptions = file_assumptions if assumptions is None else assumptions
         pumps = file_pumps if pumps is None else pumps
 
+    # Нераспознанная дата у эталона равна её отсутствию: `requested_start =
+    # normalize_date(start_date) or min_date` (`chdd_model.compute_calculation`).
+    # То есть `"2010"` или `"01 JAN 2010"` не ошибка, а тихий возврат к умолчанию
+    # — базовый год уезжает к первой дате данных, ЧДД меняется, предупреждений
+    # нет. Ровно та ловушка, от которой защищает обязательность аргумента, только
+    # с другой стороны: аргумент передан, а не понят. `None` по-прежнему законен —
+    # это осознанный выбор умолчания эталона, он виден в коде вызова.
+    if start_date is not None and chdd_model.normalize_date(start_date) is None:
+        raise ValueError(
+            f"начало расчёта не распознано эталоном: {start_date!r}. Эталон понимает "
+            "ISO (2007-01-01), точки, слэши и объекты date/datetime; нераспознанное "
+            "он молча заменяет первой датой данных, и заявляемое число уедет"
+        )
+
     raw = chdd_model.compute_calculation(
         list(records),
         headers=headers,

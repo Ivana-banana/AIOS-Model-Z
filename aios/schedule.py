@@ -23,6 +23,14 @@ from aios.deck import InjectorControl, ProducerControl, ScheduleStep, format_dat
 #: с другими нормативами предел берётся из их таблицы — `liquid_limit()`.
 MAX_LIQUID_RATE_M3_PER_DAY = 500.0
 
+#: Потолок дебита жидкости, зашитый в **самом эталонном расчётчике**:
+#: `if row["WLPR"] > 500` (`vendor/CHDD_PYTHON/chdd_model.py`, функция
+#: `compute_calculation`). Он не выводится из таблицы ЭЧН и не меняется вместе с
+#: ней: даже если у кейса старший насос закроет 600, расчётчик организаторов
+#: отвергнет 550 с `ValueError`. Поэтому предел кейса — минимум из двух
+#: (`liquid_limit`), а не «что в таблице» (ревизия 03.09, 2.3 #4).
+VENDOR_LIQUID_CEILING_M3_PER_DAY = 500.0
+
 #: Предельное давление нагнетания, атм. Ровно это значение стоит во всей истории
 #: дека, и организаторы на разборе объяснили почему: выше него в жизни раскрываются
 #: трещины (в некоторых коллекторах уже со 180–190 атм), то есть закачка идёт мимо
@@ -69,13 +77,15 @@ def liquid_limit(pumps: list[dict[str, Any]]) -> float:
     """
     if not pumps:
         raise ValueError("таблица ЭЦН пуста: предел дебита жидкости брать не из чего")
-    return max(float(pump["max"]) for pump in pumps)
+    return min(max(float(pump["max"]) for pump in pumps),
+               VENDOR_LIQUID_CEILING_M3_PER_DAY)
 
 
 def validate(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
              known_wells: frozenset[str] | None = None,
              *,
-             max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> list[ScheduleProblem]:
+             max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY,
+             max_injection_bhp: float = MAX_INJECTION_BHP_ATM) -> list[ScheduleProblem]:
     """Собрать все нарушения. Пустой список — расписание пригодно к расчёту."""
     problems: list[ScheduleProblem] = []
     previous_date: date | None = None
@@ -96,7 +106,8 @@ def validate(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             _note_role(problems, records, working, step.date, control.well, "добыча",
                        control.status == "OPEN")
         for control in step.injectors:
-            problems.extend(_check_injector(step.date, control, known_wells))
+            problems.extend(_check_injector(step.date, control, known_wells,
+                                            max_injection_bhp))
             _note_role(problems, records, working, step.date, control.well, "закачка",
                        control.status == "OPEN")
 
@@ -112,9 +123,11 @@ def validate(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
 def assert_valid(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                  known_wells: frozenset[str] | None = None,
                  *,
-                 max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> None:
+                 max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY,
+                 max_injection_bhp: float = MAX_INJECTION_BHP_ATM) -> None:
     """Упасть, если расписание нарушает ограничения."""
-    problems = validate(steps, known_wells, max_liquid_rate=max_liquid_rate)
+    problems = validate(steps, known_wells, max_liquid_rate=max_liquid_rate,
+                        max_injection_bhp=max_injection_bhp)
     if problems:
         listed = "\n".join(f"  - {problem}" for problem in problems[:50])
         more = "" if len(problems) <= 50 else f"\n  ... ещё {len(problems) - 50}"
@@ -228,7 +241,9 @@ def _check_producer(step_date: date, control: ProducerControl,
 
 
 def _check_injector(step_date: date, control: InjectorControl,
-                    known_wells: frozenset[str] | None) -> list[ScheduleProblem]:
+                    known_wells: frozenset[str] | None,
+                    max_injection_bhp: float = MAX_INJECTION_BHP_ATM,
+                    ) -> list[ScheduleProblem]:
     problems: list[ScheduleProblem] = []
 
     def add(message: str) -> None:
@@ -255,9 +270,9 @@ def _check_injector(step_date: date, control: InjectorControl,
     if control.bhp is not None:
         if control.bhp <= 0:
             add(f"давление нагнетания {control.bhp:g} должно быть положительным")
-        elif control.bhp > MAX_INJECTION_BHP_ATM:
+        elif control.bhp > max_injection_bhp:
             add(
-                f"давление нагнетания {control.bhp:g} > {MAX_INJECTION_BHP_ATM:g} атм — "
+                f"давление нагнетания {control.bhp:g} > {max_injection_bhp:g} атм — "
                 f"физически нереализуемо, раскрытие трещин"
             )
     return problems
