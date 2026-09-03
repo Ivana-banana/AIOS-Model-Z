@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pathlib
 from datetime import date
 
 import pytest
@@ -15,6 +16,8 @@ from aios.deck import (
     parse_schedule,
     parse_schedule_text,
 )
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 SCHEDULE = """\
 RPTSCHED
@@ -566,3 +569,90 @@ def test_a_deck_whose_preamble_carries_no_regime_is_built_as_before(model_dir, t
     case = run.build_case(tmp_path / "case", model_dir)
 
     assert case.schedule_file.is_file()
+
+
+# --- второй парсер SCHEDULE: границы блоков ----------------------------------
+# Ревизия 03.09, п. 2.3 #2: `_read_block` читал до строки, состоящей из `/`, и
+# блок без отдельного терминатора заглатывал соседний.
+
+
+def test_a_keyword_without_its_own_terminator_does_not_swallow_the_next_date():
+    """`RPTSCHED` с записью и `/` на одной строке съедал следующий `DATES`.
+
+    Последствие тяжелее, чем потерянный `RPTSCHED`: дата не обновлялась, и все
+    последующие вскрытия переносились под **чужой шаг**. На Модели Z такого
+    написания нет, на чужом деке оно рядовое.
+    """
+    from datetime import date
+
+    from aios.run import carried_keywords
+
+    carried = carried_keywords("""
+DATES
+ 1 JAN 2010 /
+/
+COMPDAT
+ 'P1' 1 1 1 1 'OPEN' /
+/
+RPTSCHED
+ 'WELLS=1' /
+DATES
+ 1 FEB 2010 /
+/
+COMPDAT
+ 'P2' 2 2 1 1 'OPEN' /
+/
+""", date(2010, 1, 1))
+
+    assert sorted(carried) == [date(2010, 1, 1), date(2010, 2, 1)]
+    assert "'P1'" in carried[date(2010, 1, 1)]
+    assert "'P2'" in carried[date(2010, 2, 1)], (
+        "вскрытие второго шага уехало под дату первого — блок съел DATES"
+    )
+
+
+def test_a_nine_letter_keyword_is_recognised_as_a_block():
+    """`COMPDATMD` — девять букв, и прежняя граница в восемь его не видела.
+
+    Строка не опознавалась ключевым словом вовсе, то есть блок вскрытий уезжал в
+    записи соседа. Список слов теперь общий с разбором дека (`BLOCK_KEYWORDS`).
+    """
+    from datetime import date
+
+    from aios.run import carried_keywords
+
+    carried = carried_keywords("""
+DATES
+ 1 JAN 2010 /
+/
+COMPDATMD
+ 'P1' 1* 1* 0 100 'OPEN' /
+/
+""", date(2010, 1, 1))
+
+    assert list(carried) == [date(2010, 1, 1)]
+    assert carried[date(2010, 1, 1)].startswith("COMPDATMD")
+
+
+def test_carrying_the_real_deck_is_unchanged_by_the_stricter_boundaries():
+    """Настоящий дек переносится как переносился: 26 дат, те же блоки.
+
+    Правка трогает границы блоков — то есть ровно то, чем собирается расчётный
+    кейс. Без этой проверки «стало строже» неотличимо от «стало ронять наш дек».
+    """
+    import zipfile
+    from datetime import date
+
+    from aios.run import carried_keywords
+
+    archive = ROOT / "materials" / "Model_Z_final_OPM.zip"
+    if not archive.is_file():
+        pytest.skip("нет архива поставки")
+
+    with zipfile.ZipFile(archive) as pack:
+        text = pack.read("Model_Z/Model_Z_sch.inc").decode("utf-8", errors="replace")
+
+    carried = carried_keywords(text, date(2007, 1, 1))
+
+    assert len(carried) == 26
+    assert sum(len(blob) for blob in carried.values()) == 7191

@@ -350,7 +350,7 @@ def _tokenize(text: str) -> list[tuple[str, bool]]:
     """
     tokens: list[tuple[str, bool]] = []
     for line in text.splitlines():
-        line = _strip_comment(line)
+        line = strip_comment(line)
         if not line.strip():
             continue
         for position, token in enumerate(_TOKEN_RE.findall(line)):
@@ -358,7 +358,7 @@ def _tokenize(text: str) -> list[tuple[str, bool]]:
     return tokens
 
 
-def _strip_comment(line: str) -> str:
+def strip_comment(line: str) -> str:
     """Убрать комментарий, не тронув `--` внутри кавычек.
 
     Простое `split("--")` режет запись посреди строки в кавычках: путь

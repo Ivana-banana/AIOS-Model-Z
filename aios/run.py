@@ -18,11 +18,13 @@ from pathlib import Path
 
 from aios import summary as summary_module
 from aios.deck import (
+    BLOCK_KEYWORDS,
     REPLACING_CONTROL_KEYWORDS,
     ScheduleStep,
     parse_date_record,
     parse_schedule,
     parse_schedule_text,
+    strip_comment,
 )
 from aios.deckfiles import DeckLayout, layout
 from aios.schedule import assert_valid
@@ -233,7 +235,7 @@ def wells_without_completions(schedule_text: str,
     completed: set[str] = set()
     for match in re.finditer(r"^[ 	]*COMPDAT(?:MD)?[ 	]*$", schedule_text, re.MULTILINE):
         for line in schedule_text[match.end():].splitlines():
-            stripped = line.split("--", 1)[0].strip()
+            stripped = strip_comment(line).strip()
             if not stripped:
                 continue
             if stripped == "/" or not stripped.endswith("/"):
@@ -247,7 +249,20 @@ def wells_without_completions(schedule_text: str,
 #: пересборку расписания.
 CONTROL_KEYWORDS = frozenset({"DATES", "WCONPROD", "WCONINJE"})
 
-_KEYWORD_LINE_RE = re.compile(r"^([A-Z][A-Z0-9]{1,7})\s*$")
+#: Строка, состоящая из одного ключевого слова. Восьмисимвольная граница снята:
+#: `COMPDATMD` и `WELLTRACK` — по девять, и такая строка не опознавалась вовсе, то
+#: есть блок вскрытий уезжал в записи соседа. Имя сверяется с `BLOCK_KEYWORDS`
+#: (Р-177) — тем же списком, по которому ключевые слова опознаёт разбор дека:
+#: два разных правила на один вопрос рано или поздно ответят по-разному.
+_KEYWORD_LINE_RE = re.compile(r"^([A-Z][A-Z0-9]{1,11})\s*$")
+
+
+def _keyword_at(line: str) -> str | None:
+    """Имя ключевого слова, если строка состоит только из него."""
+    match = _KEYWORD_LINE_RE.match(strip_comment(line).strip())
+    if match is None or match.group(1) not in BLOCK_KEYWORDS:
+        return None
+    return match.group(1)
 
 
 def carried_keywords(schedule_text: str, control_start: date) -> dict[date, str]:
@@ -269,17 +284,16 @@ def carried_keywords(schedule_text: str, control_start: date) -> dict[date, str]
     index = 0
 
     while index < len(lines):
-        match = _KEYWORD_LINE_RE.match(lines[index].split("--", 1)[0].strip())
-        if match is None:
+        name = _keyword_at(lines[index])
+        if name is None:
             index += 1
             continue
 
-        name = match.group(1)
         block, index = _read_block(lines, index)
 
         if name == "DATES":
             for line in block[1:]:
-                record = _RECORD_RE.match(line.split("--", 1)[0])
+                record = _RECORD_RE.match(strip_comment(line))
                 if record:
                     current = parse_date_record(record.groups())
             continue
@@ -293,11 +307,22 @@ def carried_keywords(schedule_text: str, control_start: date) -> dict[date, str]
 
 
 def _read_block(lines: list[str], start: int) -> tuple[list[str], int]:
-    """Ключевое слово со всеми его записями до терминатора `/`."""
+    """Ключевое слово со всеми его записями — до терминатора `/` или до следующего.
+
+    Второе условие и есть правка ревизии 03.09 (2.3 #2). Блок, записанный без
+    отдельной строки-терминатора (`RPTSCHED` и следом ` 'WELLS=1' /` — запись и
+    терминатор на одной строке), заглатывал всё до первой строки, состоящей из
+    `/`, — то есть соседний `COMPDAT` целиком. Если следом шёл `DATES`, дата не
+    обновлялась вовсе, и все последующие вскрытия переносились под чужой шаг.
+    Ключевое слово в начале строки закрывает предыдущий блок — по тому же правилу,
+    по которому это делает разбор дека (Р-192).
+    """
     block = [lines[start]]
     index = start + 1
     while index < len(lines):
-        stripped = lines[index].split("--", 1)[0].strip()
+        if _keyword_at(lines[index]) is not None:
+            break
+        stripped = strip_comment(lines[index]).strip()
         block.append(lines[index])
         index += 1
         if stripped == "/":
@@ -322,10 +347,10 @@ def history_prefix(schedule_text: str, cut_date: date) -> str:
 
 def _first_date_after(lines: list[str], index: int) -> date | None:
     for line in lines[index + 1: index + 6]:
-        stripped = line.split("--", 1)[0].strip()
+        stripped = strip_comment(line).strip()
         if not stripped or stripped == "/":
             continue
-        match = _RECORD_RE.match(line.split("--", 1)[0])
+        match = _RECORD_RE.match(strip_comment(line))
         if match:
             return parse_date_record(match.groups())
         return None
