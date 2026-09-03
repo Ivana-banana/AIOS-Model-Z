@@ -430,6 +430,41 @@ def test_conversion_multiplier_scales_the_injection_rate():
     assert result[0].injectors[0].rate == pytest.approx(60.0)
 
 
+def test_conversion_takes_the_last_rate_before_the_transfer():
+    """Приёмистость — по дебиту на момент перевода, а не по первому за горизонт.
+
+    Дефект ревизии 03.09 (2.1 #3): `setdefault` фиксировал самое раннее
+    значение. Дебит зрелого фонда падает, поэтому ошибка всегда завышала
+    приёмистость: скважина со 100 → 30 м³/сут при переводе получала 100, и
+    лишняя вода тратила OPEX и коридор компенсации.
+    """
+    rates = {2012: 100.0, 2013: 60.0, 2014: 30.0}
+    steps = [_producing(date(year, 1, 1), {"1": rate}) for year, rate in rates.items()]
+    steps.append(_producing(date(2015, 1, 1), {"1": 30.0}))
+
+    result = optimise.convert_to_injection(steps, {"1"}, multiplier=1.0,
+                                           since=date(2015, 1, 1))
+
+    written = [c for step in result for c in step.injectors]
+    assert len(written) == 1
+    assert written[0].rate == pytest.approx(30.0), "последний дебит, не первый"
+
+
+def test_conversion_uses_the_last_working_rate_when_shut_before_transfer():
+    """Скважина, остановленная перед переводом, переводится по последней работе."""
+    steps = [_producing(date(2013, 1, 1), {"1": 50.0}),
+             ScheduleStep(date(2014, 1, 1),
+                          (ProducerControl("1", "SHUT", "LRAT", 0.0, 50.0),), ()),
+             ScheduleStep(date(2015, 1, 1),
+                          (ProducerControl("1", "SHUT", "LRAT", 0.0, 50.0),), ())]
+
+    result = optimise.convert_to_injection(steps, {"1"}, multiplier=1.0,
+                                           since=date(2015, 1, 1))
+
+    written = [c for step in result for c in step.injectors]
+    assert len(written) == 1 and written[0].rate == pytest.approx(50.0)
+
+
 def test_a_well_that_never_produced_is_not_converted():
     """Приёмистость выводится из её же дебита — без него выдумывать нечего."""
     steps = [ScheduleStep(date(2007, 1, 1),
