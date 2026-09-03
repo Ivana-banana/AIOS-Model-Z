@@ -19,6 +19,7 @@
 | `python -m pytest -q` | `0 failed, 0 errors`; допустимы только `passed` и `skipped`. **Но пропуск не бесплатен:** тесты, сверяющие заявляемое число, пропускаются, когда в `runs/` нет выгрузок, — на машине сборки это значит, что заявка не пересчитана, и увидеть это надо по пункту 6 `check_package.py`, а не по зелёному прогону |
 | `python -m ruff check .` | `All checks passed!` |
 | `python scripts/check_release_tag.py` | `[ГОТОВО]`, тег и его инструкция воспроизведения совпадают с `docs/submission.md` |
+| `python scripts/verify_declared.py --run runs/matched-0995` | последняя строка `заявленное число воспроизведено эталонным расчётчиком из этой выгрузки`; расхождение не больше 0,05 млн руб. Запускать **до** `check_package.py`: он читает оставленный след `runs/matched-0995/npv.json` и без него отказывает |
 | `python scripts/check_package.py` | все 10 строк `[ГОТОВО]`, последняя строка `пакет готов` |
 | `python scripts/check_submission.py runs/matched-0995/wells_schedule.inc` | последняя строка `файл пригоден к отправке` |
 

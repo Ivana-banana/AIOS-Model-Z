@@ -78,6 +78,7 @@ def audit(
             or scaling_error
             or _wrong_run(submission, schedule_path)
             or checksum_error
+            or _trace_problem(schedule_path, declared)
         )
         scaling = f"{scaling}; {checksum}"
     model_error = None
@@ -234,6 +235,67 @@ def _model_problem(path: Path) -> str | None:
     except Exception as error:  # битый pickle тоже должен стать отказом допуска
         return f"модель не прошла допуск: {error}"
     return None
+
+
+def _trace_problem(schedule: Path, declared: str | None) -> str | None:
+    """Есть ли машинный след того, что заявленное число посчитано из этой выгрузки?
+
+    До 03.09 этот пункт проверял `md5` файла и наличие числа в
+    `docs/submission.md`, но не связь между ними: число вписано в документ
+    руками, а в каталоге прогона не было ничего, что подтверждало бы расчёт.
+    След пишет `scripts/verify_declared.py`, запуская **точку входа
+    организаторов** на `rows.csv` прогона; здесь он только читается — иначе
+    проверка допуска считала бы ЧДД полминуты (Р-172).
+
+    Отсутствие следа — отказ, а не заметка: «число не проверено машиной» и
+    «число проверено» на дне отправки различаются ровно на дисквалификацию.
+    """
+    trace = schedule.parent / "npv.json"
+    if not trace.is_file():
+        return (f"нет машинного следа {trace}: запустите "
+                f"python scripts/verify_declared.py --run {schedule.parent.name}")
+    try:
+        record = json.loads(trace.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return f"след {trace} не читается: {error}"
+
+    if not record.get("agreed"):
+        return (f"след говорит о расхождении: пересчёт {record.get('chddM')} против "
+                f"заявленного {record.get('claimedM')}")
+    if record.get("scheduleMd5") != _md5(schedule):
+        return (f"след посчитан по другому файлу расписания: в нём md5 "
+                f"{record.get('scheduleMd5')}, у проверяемого {_md5(schedule)}")
+    # версия вендора читается лениво: проверка допуска должна работать и там,
+    # где зависимости расчётчика не установлены (та же причина, что у `_model_problem`)
+    expected_version = None
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from aios import economics
+
+        expected_version = economics.VENDOR_VERSION
+    except Exception:  # noqa: BLE001 — отсутствие зависимостей не делает след негодным
+        expected_version = None
+    if expected_version and record.get("vendorVersion") != expected_version:
+        return (f"след посчитан другой версией расчётчика: {record.get('vendorVersion')} "
+                f"против {expected_version}")
+    if declared is not None:
+        digits = declared.split("млн")[0].replace("\u00a0", "").replace(" ", "").replace(",", ".")
+        try:
+            if abs(float(digits) - float(record["claimedM"])) > 0.05:
+                return (f"в заявке {declared}, а след сверялся с "
+                        f"{record['claimedM']} млн руб.")
+        except (ValueError, KeyError, TypeError):
+            return f"в следе нет сверяемого числа: {record.get('claimedM')!r}"
+    return None
+
+
+def _md5(path: Path) -> str:
+    accumulator = hashlib.md5()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            accumulator.update(block)
+    return accumulator.hexdigest()
 
 
 def _wrong_run(submission: Path, schedule: Path) -> str | None:
