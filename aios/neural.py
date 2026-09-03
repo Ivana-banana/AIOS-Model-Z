@@ -283,7 +283,23 @@ class NeuralSurrogate:
         return cls(bundle, tuple(reference_steps), fluids or Fluids())
 
     def predict(self,
-                steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> list[dict[str, Any]]:
+                steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                *, clamp: bool = True) -> list[dict[str, Any]]:
+        """Прогноз в контракте расчётчика.
+
+        `clamp` — обнулять ли отрицательные приращения. По умолчанию да, и это
+        не косметика: эталонный расчётчик выбрасывает строку с отрицательным
+        `*_Diff` **целиком** (Р-13), поэтому прогнозный ЧДД считался на
+        обрезанном наборе — на кандидатах 24.08 исключалось 60–86 строк, и поиск
+        сравнивал числа, посчитанные по разному составу строк. Обнуление — правка
+        **нашего прогноза**, а не методики: методика по-прежнему решает, что
+        делать со строкой, ей просто больше не подают заведомо нефизичное
+        (ревизия 03.09, 2.2 #5).
+
+        `clamp=False` нужен диагностике (`_physical_problems`): она обязана
+        видеть прогноз как он есть, иначе обнуление спрячет само нарушение и
+        предупреждения «отрицательное WLPT_Diff» исчезнут вместе с ним.
+        """
         timeline = expand(steps)
         if not timeline:
             return []
@@ -307,6 +323,12 @@ class NeuralSurrogate:
                 control = controls.get(well)
                 liquid_rate, injection_rate = _rates(control)
                 liquid, oil, injection, thp, bhp = (float(value) for value in predicted)
+                if clamp:
+                    liquid = max(liquid, 0.0)
+                    injection = max(injection, 0.0)
+                    # нефть не больше жидкости и не меньше нуля — то же, что даёт
+                    # представление через обводнённость по построению
+                    oil = min(max(oil, 0.0), liquid)
                 if liquid_rate <= 0:
                     liquid = oil = 0.0
                 if injection_rate <= 0:
@@ -518,7 +540,7 @@ class NeuralSurrogate:
         «Предупреждения (16542)», формально верен и бесполезен.
         """
         by_well: dict[str, list[dict[str, Any]]] = {}
-        for row in self.predict(steps):
+        for row in self.predict(steps, clamp=False):
             by_well.setdefault(str(row["well"]), []).append(row)
 
         warnings: list[str] = []
@@ -943,8 +965,9 @@ def assert_quality(report: TrainingReport) -> None:
     """
     if report.kind != "linear":
         failed = [
-            target for target in ("WLPT_Diff", "WOMT_Diff")
-            if report.metrics[target].neural_mae >= report.metrics[target].linear_mae
+            target for target in GATED_TARGETS
+            if target in report.metrics
+            and report.metrics[target].neural_mae >= report.metrics[target].linear_mae
         ]
         if failed:
             raise ValueError(
@@ -984,10 +1007,21 @@ def assert_quality(report: TrainingReport) -> None:
         )
 
 
+#: Цели, по которым модель обязана пройти ворота качества. Закачка входит сюда
+#: с 03.09: до этого ворота смотрели только на жидкость и нефть, а поиск двигает
+#: нагнетатели **первыми** (`optimise.choose_joint_rates`), и планировщик режет
+#: по воде. На локальном артефакте MLP по `WWIT_Diff` был хуже линейной модели
+#: (MAE 17,1 против 12,4; R² отклика 0,20 против 0,56) — и ворота проходил
+#: (ревизия 03.09, 2.2 #6).
+GATED_TARGETS = ("WLPT_Diff", "WOMT_Diff", "WWIT_Diff")
+
+
 def _failing(report: TrainingReport, field_name: str) -> list[str]:
     """Цели, по которым измеренный `R²` не выше нуля."""
     failing = []
-    for target in ("WLPT_Diff", "WOMT_Diff"):
+    for target in GATED_TARGETS:
+        if target not in report.metrics:
+            continue
         score = getattr(report.metrics[target], field_name, None)
         if score is not None and score <= 0.0:
             failing.append(target)
