@@ -428,8 +428,9 @@ def _schedule_problem(path: Path) -> str | None:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
+        from aios import economics
         from aios.deck import parse_schedule
-        from aios.schedule import assert_valid
+        from aios.schedule import assert_valid, liquid_limit
 
         parsed = parse_schedule(path)
         if not parsed.steps:
@@ -439,7 +440,11 @@ def _schedule_problem(path: Path) -> str | None:
         if parsed.unsupported_controls or parsed.preamble_controls:
             names = sorted({*parsed.unsupported_controls, *parsed.preamble_controls})
             return "неподдержанные или недатированные режимы: " + ", ".join(names)
-        assert_valid(parsed.steps)
+        # предел берётся из таблицы ЭЦН нормативов, а не из умолчания Модели Z:
+        # иначе допуск и предполётная проверка держат разные числа, и файл,
+        # прошедший один шлюз, отвергается другим (ревизия 03.09, 2.3 #8)
+        assert_valid(parsed.steps,
+                     max_liquid_rate=liquid_limit(economics.load_norms()[1]))
     except Exception as error:
         return f"расписание не прошло проверку: {error}"
     return None

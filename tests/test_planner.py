@@ -145,6 +145,39 @@ def test_without_a_floor_the_corridor_stays_one_sided(norms):
     assert result == steps
 
 
+def test_a_well_cut_to_zero_by_capacity_stays_shut(norms):
+    """Срезка по мощности не должна дёргать скважину каждый месяц.
+
+    Мощность объекта колеблется, и без гистерезиса скважина у края квоты
+    открывается и закрывается помесячно: остановка и пуск — два платных события
+    по 1,0 млн руб. каждое. На этом примере (предел 100, сосед колеблется
+    90/100) выходило пять мероприятий за шесть месяцев (ревизия 03.09, 2.1 #4).
+    """
+    months = [1, 2, 3, 4, 5, 6]
+    # мощность объекта 90 м³/сут: в нечётные месяцы фонд её превышает, в чётные —
+    # нет, и место под скважину «2» освобождается
+    rates = {1: 90.0, 2: 60.0, 3: 90.0, 4: 60.0, 5: 90.0, 6: 60.0}
+    steps = [ScheduleStep(date(2007, month, 1),
+                          (prod("1", rates[month]), prod("2", 20.0)), ())
+             for month in months]
+    # скважина «2» — заведомо худшая по деньгам: почти вся вода
+    forecast = [produced(f"2007-{month:02d}-01", "1", 400.0, 500.0) for month in months]
+    forecast += [produced(f"2007-{month:02d}-01", "2", 5.0, 900.0) for month in months]
+
+    fitted, _decisions = planner.enforce(
+        steps, forecast, norms, planner.Limits(max_field_liquid_m3_per_day=90.0), FLUIDS)
+
+    statuses = [next(c.status for c in step.producers if c.well == "2")
+                for step in fitted]
+    assert statuses[0] == "SHUT", "первой уходит скважина с худшей маржой"
+    assert set(statuses) == {"SHUT"}, f"скважина не должна пускаться обратно: {statuses}"
+
+    # мероприятий по этой скважине ровно одно — сама остановка
+    events = sum(1 for before, after in zip(statuses, statuses[1:], strict=False)
+                 if before != after)
+    assert events == 0
+
+
 def test_injection_before_any_production_is_zeroed_not_divided_by_zero(norms):
     """Закачка раньше добычи: возмещать нечего, и это ноль, а не исключение.
 

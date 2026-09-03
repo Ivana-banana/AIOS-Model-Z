@@ -2215,20 +2215,42 @@ def _fit_liquid_to_capacity(steps: list[ScheduleStep],
     Режем по возрастанию удельной маржи: первой уходит скважина, которая приносит
     меньше всех денег на кубометр поднятой жидкости. Это единственный порядок,
     который можно объяснить и защитить — остальные сводятся к «нам так показалось».
+
+    **Срезанная в ноль скважина остаётся закрытой до конца горизонта.** Мощность
+    объекта колеблется от месяца к месяцу, и без этого правила скважина у края
+    квоты открывается и закрывается каждый месяц: остановка и пуск — **два
+    отдельных** платных события по 1,0 млн руб. каждое, плюс скважина то входит,
+    то выходит из действующего фонда. На синтетическом примере (предел 100,
+    сосед колеблется 90/100) выходило пять мероприятий за шесть месяцев — то
+    есть 5 млн руб. за право поработать в трёх месяцах на 20 м³/сут (ревизия
+    03.09, 2.1 #4). Правило то же, что у минимального рентабельного дебита
+    (`_shut_below_minimum`), и по той же причине: коэффициент гистерезиса
+    пришлось бы выдумывать, а «выведена из-под квоты» — экономически осмысленное
+    состояние.
+
+    Пропорциональные срезки (`_fit_phase_to_capacity`, коридор воды) этого
+    правила не требуют: они уменьшают уставку, а не закрывают скважину, и
+    события не порождают вовсе.
     """
     value = _margin_per_liquid(forecast, norms, fluids)
     decisions: list[Allocation] = []
     result: list[ScheduleStep] = []
     reported: set[str] = set()
+    retired: set[str] = set()
 
     for step in steps:
+        held = [
+            ProducerControl(control.well, "SHUT", control.mode, None, control.bhp)
+            if control.well in retired and control.status == "OPEN" else control
+            for control in step.producers
+        ]
         working = [
-            control for control in step.producers
+            control for control in held
             if control.status == "OPEN" and control.liquid_rate
         ]
         total = sum(control.liquid_rate or 0.0 for control in working)
         if total <= capacity:
-            result.append(step)
+            result.append(ScheduleStep(step.date, tuple(held), step.injectors))
             continue
 
         # худшие по деньгам на кубометр — первыми под нож
@@ -2248,11 +2270,13 @@ def _fit_liquid_to_capacity(steps: list[ScheduleStep],
             excess -= cut
 
         producers = []
-        for control in step.producers:
+        for control in held:
             if control.well not in cuts:
                 producers.append(control)
                 continue
             new_rate = cuts[control.well]
+            if new_rate <= 0:
+                retired.add(control.well)
             if control.well not in reported:
                 reported.add(control.well)
                 decisions.append(
