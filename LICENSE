@@ -45,7 +45,8 @@ SOFTWARE.
 * конфигурация и зависимости: `config.toml`, `config-doe-wide.toml`,
   `config-nobalance.toml`, `config-limits-check.toml`, `config-rehearsal.toml`,
   `pyproject.toml`, `requirements.txt`,
-  `requirements-dev.txt`, `requirements.lock`, `.gitignore`, `.gitattributes`,
+  `requirements-dev.txt`, `requirements-tools.txt`, `requirements.lock`,
+  `.gitignore`, `.gitattributes`,
   `.dockerignore`.
 
 НЕ ПОКРЫВАЕТ и под MIT не переходит:
