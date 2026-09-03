@@ -290,6 +290,8 @@ def run_cycle(surrogate: Surrogate,
 
 def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
             *, base_rows: list[dict[str, Any]],
+            limits: planner.Limits | None = None,
+            fluids: Fluids | None = None,
             norms_file: Path = economics.NORMS_FILE) -> CycleResult:
     """Заменить прогнозные числа результатом полного расчёта.
 
@@ -308,6 +310,13 @@ def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
 
     Аргумент обязателен по той же причине, по какой обязателен `start_date` в
     `economics.compute_npv`: забыть его можно ровно один раз.
+
+    **Условия кейса пересчитываются на подтверждённой выгрузке, а не переносятся
+    от прогноза.** Прогноз суррогата и отклик ГГДМ — разные числа, и баланс воды
+    у них разный: перенос прогнозных `case_problems` давал подтверждённый
+    результат с пустым списком нарушений при реальной компенсации 324 % против
+    предела 110 % (найдено критиком 03.09). `limits` не передан — значит условий
+    не объявлено, и список пуст, ровно как в `run_cycle`.
     """
     confirmed = _npv(rows, start_date, norms_file)
     return CycleResult(
@@ -319,7 +328,8 @@ def confirm(result: CycleResult, rows: list[dict[str, Any]], start_date: date,
         steps=result.steps,
         warnings=result.warnings,
         problems=result.problems,
-        case_problems=result.case_problems,
+        case_problems=tuple(_case_problems(result.steps, rows, limits, fluids,
+                                           list(result.allocations))),
         excluded_rows=confirmed.excluded_negative_rows,
         confirmed=True,
         rows=rows,
@@ -355,17 +365,20 @@ def _restore_uncontrolled(origin: list[ScheduleStep] | tuple[ScheduleStep, ...],
         if reference is None:
             result.append(step)
             continue
-        original_producers = {control.well: control for control in reference.producers}
-        original_injectors = {control.well: control for control in reference.injectors}
+        # Шаг собирается заново, а не правится по записям: управляемые скважины
+        # берутся из кандидата, все остальные — из опоры целиком, вместе с ролью.
+        # Проходом по записям кандидата (как было до 03.09) нельзя отменить
+        # **появление** роли: перевод запрещённой скважины под закачку добавлял
+        # запись `WCONINJE`, которой в опоре нет, и восстановление её не видело —
+        # либо получалось противоречие «открыта и на добычу, и на закачку», либо,
+        # если в опоре скважина стояла закрытой, перевод проходил молча.
         producers = tuple(
-            control if control.well in allowed
-            else original_producers.get(control.well, control)
-            for control in step.producers
+            [control for control in step.producers if control.well in allowed]
+            + [control for control in reference.producers if control.well not in allowed]
         )
         injectors = tuple(
-            control if control.well in allowed
-            else original_injectors.get(control.well, control)
-            for control in step.injectors
+            [control for control in step.injectors if control.well in allowed]
+            + [control for control in reference.injectors if control.well not in allowed]
         )
         result.append(ScheduleStep(step.date, producers, injectors))
     return result

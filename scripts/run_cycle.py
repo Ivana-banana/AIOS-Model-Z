@@ -349,6 +349,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         confirmed = loop.confirm(result, rows, config.economics.start_date,
                                  base_rows=history,
+                                 # условия кейса пересчитываются на выгрузке ГГДМ,
+                                 # а не переносятся от прогноза суррогата (Р-171)
+                                 limits=config.limits, fluids=config.fluids,
                                  norms_file=config.economics.norms_file)
 
         print("--- подтверждение полным расчётом ---")

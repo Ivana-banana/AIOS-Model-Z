@@ -865,6 +865,85 @@ def test_uncontrollable_well_returns_to_reference_on_every_step():
     ]
 
 
+def test_uncontrollable_well_cannot_gain_a_role_it_never_had():
+    """Запрещённой скважине нельзя **добавить** роль, а не только изменить её.
+
+    Найдено критиком 03.09: проход по записям кандидата не мог отменить
+    появление записи. Перевод запрещённой скважины под закачку добавлял
+    `WCONINJE`, которой в опоре нет; если в опоре скважина стояла закрытой,
+    перевод проходил молча и не ловился ничем — `controllable_wells` во всём
+    контуре проверяет только эта функция.
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.loop import _restore_uncontrolled
+
+    origin = [ScheduleStep(date(2014, 1, 1),
+                           (ProducerControl("P1", "SHUT", "LRAT", 0.0, 50.0),), ()),
+              ScheduleStep(date(2014, 2, 1), (), ())]
+    # планировщик перевёл её под закачку — при том что управлять ею нельзя
+    converted = [ScheduleStep(date(2014, 1, 1),
+                              (ProducerControl("P1", "SHUT", "LRAT", 0.0, 50.0),), ()),
+                 ScheduleStep(date(2014, 2, 1), (),
+                              (InjectorControl("P1", "WATER", "OPEN", "RATE",
+                                               30.0, 300.0),))]
+
+    restored = _restore_uncontrolled(origin, converted, frozenset())
+
+    assert all(not step.injectors for step in restored), "запись закачки обязана исчезнуть"
+    assert [c.status for step in restored for c in step.producers] == ["SHUT", "SHUT"]
+
+
+def test_a_controlled_well_keeps_its_new_role():
+    """Обратная сторона: разрешённой скважине перевод оставляют."""
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.loop import _restore_uncontrolled
+
+    origin = [ScheduleStep(date(2014, 1, 1),
+                           (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),), ())]
+    converted = [ScheduleStep(date(2014, 1, 1), (),
+                              (InjectorControl("P1", "WATER", "OPEN", "RATE",
+                                               30.0, 300.0),))]
+
+    restored = _restore_uncontrolled(origin, converted, frozenset({"P1"}))
+
+    assert [c.well for c in restored[0].injectors] == ["P1"]
+    assert not restored[0].producers
+
+
+def test_confirming_rechecks_the_case_conditions_on_the_real_rows():
+    """Подтверждение считает условия кейса по выгрузке ГГДМ, а не по прогнозу.
+
+    Найдено критиком 03.09: `confirm` переносил прогнозные `case_problems`, и
+    подтверждённый кандидат с реально нарушенным балансом воды выходил с пустым
+    списком нарушений и `is_improvement == True`.
+    """
+    from aios import loop
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.planner import Limits
+
+    steps = (ScheduleStep(date(2014, 1, 1),
+                          (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 200.0, 300.0),)),)
+    forecast = [make_row("2014-01-01", "P1", wlpr=30.0, womr=15.0, liquid=900.0, oil=450.0)]
+    # выгрузка ГГДМ: закачка втрое выше отбора — коридор нарушен
+    measured = forecast + [make_row("2014-01-01", "I1", wwir=200.0, injection=6000.0)]
+
+    result = loop.CycleResult(
+        base_chdd_m=1.0, chdd_m=2.0, actions=(), rate_choices=(), allocations=(),
+        steps=steps, warnings=(), problems=(), rows=forecast,
+    )
+    assert result.case_problems == ()
+
+    confirmed = loop.confirm(
+        result, measured, date(2014, 1, 1), base_rows=forecast,
+        limits=Limits(water_balance_rule="compensation", water_tolerance=1.1),
+    )
+
+    assert confirmed.confirmed
+    assert confirmed.case_problems, "нарушение обязано найтись на подтверждённой выгрузке"
+    assert not confirmed.is_improvement
+
+
 def test_uncontrollable_well_keeps_its_shut_status_from_the_reference():
     """Возврат к опоре возвращает и статус, а не только уставку."""
     from aios.deck import ProducerControl, ScheduleStep

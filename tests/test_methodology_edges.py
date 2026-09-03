@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from conftest import make_row, months
 
@@ -166,6 +168,32 @@ def test_the_liquid_limit_is_declared_once_and_comes_from_the_norms():
 
     # третьего быть не должно: в модуле экономики константа не используется вовсе
     assert not hasattr(economics, "MAX_LIQUID_RATE_M3_PER_DAY")
+
+
+def test_the_vendor_ceiling_is_checked_against_the_vendor_itself():
+    """Второе число 500 в модуле — потолок эталона, и он сверяется с эталоном.
+
+    `VENDOR_LIQUID_CEILING_M3_PER_DAY` объявлено рядом с
+    `MAX_LIQUID_RATE_M3_PER_DAY` и численно ему равно, то есть выглядит как то
+    самое «третье место с тем же литералом», от которого защищает тест выше
+    (найдено критиком 03.09). Разница в источнике: у первого источник —
+    таблица ЭЦН поставки, у второго — строка в коде расчётчика организаторов.
+    Одинаковыми они быть не обязаны: обновят архив, и потолок уедет. Поэтому
+    константа проверяется не глазами, а самим вендором.
+    """
+    import re
+
+    from aios.schedule import VENDOR_LIQUID_CEILING_M3_PER_DAY
+
+    source = (Path(__file__).resolve().parent.parent
+              / "vendor" / "CHDD_PYTHON" / "chdd_model.py").read_text(encoding="utf-8")
+    # ноль отсеивается намеренно: `WLPR > 0` в расчётчике — признак действующего
+    # фонда, а не предел режима. Нас интересует единственное сравнение с потолком
+    found = {float(one) for one
+             in re.findall(r'row\["WLPR"\]\s*>\s*(\d+(?:\.\d+)?)', source)} - {0.0}
+
+    assert found, "в расчётчике больше нет проверки WLPR — константу нужно пересмотреть"
+    assert found == {VENDOR_LIQUID_CEILING_M3_PER_DAY}
 
 
 def test_injection_only_well_counts_as_active_fund():
