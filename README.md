@@ -272,9 +272,11 @@ pip install -r requirements-dev.txt
 ```
 
 `requirements.txt` — рантайм решения, попадающий в Docker-образ;
-`requirements-dev.txt` — дополнительно тесты, линтер и инструменты разбора
-материалов. `requirements.lock` снят на Linux и предназначен для воспроизведения
-среды образа, а не рабочего места.
+`requirements-dev.txt` — дополнительно тесты и линтер: это всё, что нужно, чтобы
+проверить решение. `requirements-tools.txt` — инструменты разбора материалов
+организаторов (расшифровка записей встреч, чтение pdf-лекций); проверке они не
+нужны и ставятся долго, поэтому вынесены отдельно. `requirements.lock` снят на
+Linux и предназначен для воспроизведения среды образа, а не рабочего места.
 
 Распаковка дека из материалов организаторов:
 
@@ -306,12 +308,26 @@ python scripts/run_all.py --flow-args=--parsing-strictness=low
 ### Расчёт в Docker
 
 ```bash
-docker build -t aios -f docker/Dockerfile .
+docker build --platform linux/amd64 -t aios -f docker/Dockerfile .
 python scripts/build_case.py
 docker run --rm -v "$PWD:$PWD" -w "$PWD" aios \
     scripts/run_flow.sh runs/base/RUN.DATA 4 --parsing-strictness=low
 python scripts/export_rows.py runs/base
 ```
+
+Тот же сквозной прогон целиком в контейнере, одной командой:
+
+```bash
+docker run --rm -v "$PWD:$PWD" -w "$PWD" aios \
+    python scripts/run_all.py --flow-args=--parsing-strictness=low
+```
+
+**`--platform linux/amd64` при сборке обязателен на Apple Silicon и других
+arm64-машинах.** Образ ставит зависимости с `--require-hashes`, а
+`requirements.lock` содержит хэши колёс только под linux-x86_64 — на arm64 pip
+скажет `THESE PACKAGES DO NOT MATCH THE HASHES` и сборка упадёт. Это не дефект
+lock-файла: хэши и есть та проверка, ради которой он существует, а собирать под
+две архитектуры мы не проверяли ни разу.
 
 Два обязательных условия прогона:
 
