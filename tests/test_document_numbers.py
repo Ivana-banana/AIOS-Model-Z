@@ -329,7 +329,12 @@ def test_the_letter_no_longer_asks_the_question_answered_at_the_checkpoint():
     assert "## 1. Состав фонда в вашем экспортёре (В-04)" in letter
     assert "## 3. Точные границы коридора баланса воды" in letter
     assert "## 6. Значение `chargeInitialPump` при оценке" in letter
-    assert "## 7." not in letter
+    # Раздел 7 — не седьмой вопрос, а **ответ** на два вопроса трекера от 03.09
+    # (где у них стоит 2007 и что с разломами, Д3). Сторож держит прежний смысл:
+    # вопросов по-прежнему шесть, восьмого раздела нет, а седьмой обязан начинаться
+    # словом «Ответ» — иначе он и вправду станет седьмым вопросом.
+    assert "## 7. Ответ на два ваших вопроса" in letter
+    assert "## 8." not in letter
     assert "пять вопросов" not in letter, "шапка письма отстала от состава вопросов"
 
     for name in ("BLOCKED.md", "docs/kt2-plan.md"):

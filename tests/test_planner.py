@@ -1795,3 +1795,68 @@ def test_the_floor_top_up_respects_the_well_cap_the_case_declared(norms):
         f"добор поднял уставку до {max(rates):,.1f} при потолке кейса 150"
     )
     assert max(rates) > 100.0, "добор не сработал вовсе — проверка вырождена"
+
+
+def test_the_source_limit_acts_even_with_the_balance_rule_switched_off(norms):
+    """Мощность водозабора — физика, а не норма: выключение правила её не отменяет.
+
+    Правило отвечает на вопрос «сколько закачивать», источник — «сколько воды
+    физически есть». До 04.09 предел источника жил только внутри
+    `enforce_water_balance`, то есть выключение правила разрешало закачивать
+    воду, которой нет (2.1 #9).
+    """
+    steps = [month_step(2027, month, producers=[prod("A", 100.0)],
+                        injectors=[inj("B", 500.0)]) for month in (1, 2)]
+    forecast = [
+        make_row(f"2027-{month:02d}-01", "A", wlpr=100.0, womr=10.0,
+                 liquid=100.0, oil=10.0) for month in (1, 2)
+    ] + [
+        make_row(f"2027-{month:02d}-01", "B", wwir=500.0, injection=15000.0)
+        for month in (1, 2)
+    ]
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_external_water_m3_per_day=10.0)
+
+    result, decisions = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    rates = [c.rate for step in result for c in step.injectors if c.status == "OPEN"]
+    assert rates and max(rates) < 500.0, (
+        "закачка не срезана: воду, которой нет, выключенное правило не создаёт"
+    )
+    assert any("со стороны" in one.reason for one in decisions), (
+        "срезка по источнику не объяснена"
+    )
+
+
+def test_the_fund_limit_ranks_by_the_densities_of_the_case(norms, monkeypatch):
+    """Маржа под пределом действующих считается плотностями кейса, а не умолчанием.
+
+    Маржа считается в тоннах через плотности; подмена меняет порядок скважин под
+    пределом, то есть **кого закроют** (2.1 #12). Проверяется сама передача:
+    сравнивать порядок на выдуманных числах значило бы проверять фикстуру.
+    """
+    from aios.summary import Fluids
+
+    seen = []
+    original = planner._margin_per_liquid
+
+    def spy(forecast, norms_, fluids_):
+        seen.append(fluids_)
+        return original(forecast, norms_, fluids_)
+
+    monkeypatch.setattr(planner, "_margin_per_liquid", spy)
+
+    case_fluids = Fluids(oil_density=800.0, water_density=1050.0)
+    steps = [month_step(2027, 1, producers=[prod("A", 50.0), prod("B", 40.0)])]
+    forecast = [
+        make_row("2027-01-01", "A", wlpr=50.0, womr=5.0, liquid=100.0, oil=20.0),
+        make_row("2027-01-01", "B", wlpr=40.0, womr=1.0, liquid=100.0, oil=2.0),
+    ]
+    limits = planner.Limits(enforce_water_balance=False, max_active_wells=1)
+
+    planner.enforce(steps, forecast, norms, limits, case_fluids)
+
+    assert seen, "маржа не считалась вовсе — проверка вырождена"
+    assert all(one == case_fluids for one in seen), (
+        f"в расчёт маржи ушли чужие плотности: {seen}"
+    )

@@ -610,3 +610,74 @@ def test_the_cycle_itself_says_the_baseline_is_outside_the_corridor(norms):
         "цикл не сказал, что бездействие само вне коридора: "
         + "; ".join(one[:60] for one in result.warnings[:5])
     )
+
+
+def test_the_single_search_starts_from_the_start_scenario_not_the_deck(surrogate, norms):
+    """Одиночный перебор ведётся от стартового сценария, а не от дека.
+
+    У `choose_rates` нет параметра `start`, каким пользуется совместный перебор,
+    поэтому карта из `--base-schedule` терялась: поиск шёл по деку, а
+    `base_chdd_m` считался по стартовому сценарию — «прирост» сравнивал две
+    разные точки отсчёта (2.1 #8).
+
+    Набор множителей сведён к одному `1.0` намеренно: тогда результат зависит
+    **только** от системы координат, а не от того, что выбрал поиск. В системе
+    старта режим обязан остаться равным `дек × 0,9`, в системе дека вышел бы сам
+    дек.
+    """
+    start = {("production", "good"): 0.9}
+
+    result = loop.run_cycle(surrogate, plan(), norms,
+                            control_start=CONTROL_START, start_date=CONTROL_START,
+                            start_multipliers=start, joint_rate_search=False)
+
+    rates = {control.well: control.liquid_rate
+             for step in result.steps for control in step.producers
+             if control.status == "OPEN"}
+    deck = {control.well: control.liquid_rate
+            for step in plan() for control in step.producers
+            if control.status == "OPEN"}
+    chosen = {one.well: one.multiplier for one in result.rate_choices}
+
+    assert "good" in rates and deck.get("good"), "фикстура не даёт режима «good»"
+    assert "good" in chosen, "перебор не вернул решения по «good» — проверка вырождена"
+
+    # уставка обязана быть множителем от **стартового** режима (дек × 0,9), а не
+    # от дековского: в системе дека вышло бы deck × chosen
+    expected = deck["good"] * 0.9 * chosen["good"]
+    assert rates["good"] == pytest.approx(expected), (
+        f"режим «good» {rates['good']} против ожидаемых {expected} "
+        f"(дек {deck['good']} × старт 0,9 × выбор {chosen['good']}): "
+        f"перебор шёл по деку, а не по стартовому сценарию"
+    )
+
+
+def test_the_single_search_is_handed_the_start_scenario_itself(surrogate, norms, monkeypatch):
+    """Прямая проверка передачи: перебор получает стартовый сценарий, не дек.
+
+    Проверка результата этого не ловит, пока фикстура даёт один и тот же выбор в
+    обеих системах координат, — а различаться они начнут ровно тогда, когда
+    экономика режимов разойдётся. Поэтому здесь проверяется сама передача.
+    """
+    seen = {}
+    original = optimise.choose_rates
+
+    def spy(surrogate_, steps, norms_, **kwargs):
+        seen["rates"] = [control.liquid_rate
+                         for step in steps for control in step.producers
+                         if control.status == "OPEN"]
+        return original(surrogate_, steps, norms_, **kwargs)
+
+    monkeypatch.setattr(optimise, "choose_rates", spy)
+
+    deck = [control.liquid_rate for step in plan() for control in step.producers
+            if control.status == "OPEN"]
+    loop.run_cycle(surrogate, plan(), norms,
+                   control_start=CONTROL_START, start_date=CONTROL_START,
+                   start_multipliers={("production", "good"): 0.9},
+                   joint_rate_search=False)
+
+    assert seen, "перебор не вызывался — проверка вырождена"
+    assert seen["rates"] != deck, (
+        "перебору отдали дек, а не стартовый сценарий: карта старта потеряна"
+    )

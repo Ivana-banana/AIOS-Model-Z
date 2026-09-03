@@ -210,16 +210,25 @@ def run_cycle(surrogate: Surrogate,
                 seed=search_seed,
                 norms_file=norms_file,
             )
+            frame = base_steps
         else:
+            # Одиночный перебор ведётся от **стартового сценария**, а не от дека.
+            # У `choose_rates` нет параметра `start`, каким пользуется совместный
+            # перебор, поэтому карта из `--base-schedule` здесь просто терялась:
+            # поиск шёл по деку, а `base_chdd_m` считался по `origin` со стартом —
+            # «прирост» сравнивал две разные точки отсчёта (2.1 #8).
             choices = optimise.choose_rates(
-                surrogate, base_steps, norms, start_date=start_date,
+                surrogate, origin, norms, start_date=start_date,
                 **({} if multipliers is None else {"multipliers": multipliers}),
             )
+            frame = list(origin)
         # Пустой ответ поиска означает «ничего не менять», а не «вернуться к
         # деку»: `apply_choices(base_steps, [])` отдаёт опорное расписание и
         # молча теряет карту старта из `--base-schedule`. Тогда прирост считался
         # бы от одного сценария, а расписание собиралось из другого (Р-190).
-        tuned = optimise.apply_choices(base_steps, choices) if choices else list(origin)
+        # Множители осмысленны только в той системе координат, в которой их
+        # искали, поэтому применяются к ней же.
+        tuned = optimise.apply_choices(frame, choices) if choices else list(origin)
 
     forecast = surrogate.predict(tuned)
     actions = plan_shutdowns(

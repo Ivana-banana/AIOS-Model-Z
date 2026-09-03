@@ -497,7 +497,7 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     result, pressures = _fit_pressures(result, limits)
     decisions.extend(pressures)
 
-    result, fund = _fit_fund(result, forecast, norms, limits)
+    result, fund = _fit_fund(result, forecast, norms, limits, fluids)
     decisions.extend(fund)
 
     if limits.max_field_injection_m3_per_year is not None:
@@ -580,6 +580,17 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     # новый прогноз — а суррогата у планировщика нет и быть не должно. Эту часть
     # доводит до неподвижной точки цикл (`loop.run_cycle`): он умеет спросить
     # прогноз заново.
+    # Мощность водозабора действует **независимо от правила нормы**, в том числе
+    # когда баланс воды выключен вовсе: правило отвечает на вопрос «сколько
+    # закачивать», а источник — «сколько воды физически есть». Воды, которой нет,
+    # никакая норма не создаёт, и отключение правила её не создаёт тоже (2.1 #9).
+    # На Модели Z ключ не задан, поэтому здесь это ничего не меняет.
+    if not limits.enforce_water_balance and limits.max_external_water_m3_per_day is not None:
+        result, source = _fit_injection_to_external_water(
+            result, forecast, fluids, limits.max_external_water_m3_per_day
+        )
+        decisions.extend(source)
+
     if limits.enforce_water_balance:
         if limits.water_balance_rule == "external_water":
             result, water = _fit_injection_to_external_water(
@@ -919,7 +930,8 @@ def _shut_mark(well: str, forced: frozenset[str],
 def _fit_fund(steps: list[ScheduleStep],
               forecast: list[dict[str, Any]],
               norms: Norms | None,
-              limits: Limits) -> tuple[list[ScheduleStep], list[Allocation]]:
+              limits: Limits,
+              fluids: Fluids | None = None) -> tuple[list[ScheduleStep], list[Allocation]]:
     """Ограничения по составу фонда — три формы, все названы организаторами.
 
     1. **Обязательные остановки** (`forced_shut_wells`): скважина закрывается
@@ -959,7 +971,9 @@ def _fit_fund(steps: list[ScheduleStep],
     # ранжирование то же, что при нехватке мощности по жидкости: удельная маржа
     # на кубометр. Своего правила здесь заводить нельзя — две разные очереди «кого
     # резать первым» разъехались бы молча
-    margins = _margin_per_liquid(forecast, norms, Fluids()) if norms else {}
+    # плотности кейса, а не умолчания Модели Z: маржа считается в тоннах через
+    # них, и подмена меняет порядок скважин под пределом (2.1 #12)
+    margins = _margin_per_liquid(forecast, norms, fluids or Fluids()) if norms else {}
     decisions: list[Allocation] = []
     reported: set[str] = set()
     result: list[ScheduleStep] = []
