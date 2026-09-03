@@ -52,7 +52,7 @@ CHECKED_ELSEWHERE = {
     "enforce_water_balance": "баланс воды проверяется отдельно, ниже",
     "water_balance_rule": "баланс воды проверяется отдельно, ниже",
     "water_tolerance": "баланс воды проверяется отдельно, ниже",
-    "max_external_water_m3_per_day": "баланс воды проверяется отдельно, ниже",
+    "max_external_water_m3_per_day": "мощность водозабора — помесячный расход, ниже",
     "water_tolerance_min": "нижняя граница коридора баланса воды — проверяется отдельно, ниже",
     "min_reservoir_pressure_atm": "пластовое давление — отклик пласта, проверяется по выгрузке",
     "max_reservoir_pressure_atm": "пластовое давление — отклик пласта, проверяется по выгрузке",
@@ -174,6 +174,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--- баланс воды ({limits.water_balance_rule}): "
               f"{'нарушений нет' if not water else len(water)} ---")
         for line in water[:5]:
+            print(f"  {line}")
+        print()
+
+        # Мощность водозабора — отдельное условие, и оно действует **при любом
+        # правиле**: правило говорит, сколько закачивать по норме, источник — что
+        # столько воды физически есть. До 03.09 ручка проверялась только внутри
+        # ветки `external_water`, то есть при правиле `compensation` (нашем
+        # рабочем) была объявлена и не проверена — та самая мёртвая ручка, ради
+        # поиска которых репетиция и написана.
+        #
+        # Счёт помесячный, а не годовой: расход источника накопить нельзя, и
+        # годовое среднее прячет пиковый месяц (`balance.external_water_by_month`).
+        source = balance.external_water_capacity_problems(
+            forecast, config.fluids, limits.max_external_water_m3_per_day)
+        known = ("мощность источника неизвестна"
+                 if limits.max_external_water_m3_per_day is None
+                 else f"мощность {limits.max_external_water_m3_per_day:,.10g} м³/сут")
+        print(f"--- расход водозабора по месяцам ({known}): "
+              f"{'нарушений нет' if not source else len(source)} ---")
+        for line in source[:5]:
             print(f"  {line}")
         print()
 

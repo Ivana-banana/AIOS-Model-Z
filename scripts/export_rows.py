@@ -105,6 +105,16 @@ def water_notes(rows: list[dict[str, object]], config) -> list[str]:
             limit_m3_per_day=limits.max_external_water_m3_per_day)
         found = found + [f"источник: {line}" for line in source]
 
+    # Мощность водозабора — предел расхода, и год его усредняет. Строка печатается
+    # и когда мощность неизвестна: тогда она называет, какой расход источника
+    # сценарий требует, — это и есть вопрос, заданный организаторам (`BLOCKED.md`).
+    found = found + [
+        f"водозабор: {line}"
+        for line in balance.external_water_capacity_problems(
+            rows, fluids=config.fluids,
+            limit_m3_per_day=limits.max_external_water_m3_per_day)
+    ]
+
     return found or ["нарушений нет"]
 
 

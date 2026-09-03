@@ -98,7 +98,8 @@ def corpus(rows_path: Path, schedule_path: Path, config) -> list[tuple[str, expl
             norms_file=config.economics.norms_file,
             fluids=config.fluids,
         )
-        packets.append((selected.name, explain_module.evidence_from_cycle(result, selected.name)))
+        packets.append((selected.name, explain_module.evidence_from_cycle(
+            result, selected.name, limits=config.limits, fluids=config.fluids)))
     return packets
 
 

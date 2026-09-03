@@ -448,7 +448,9 @@ def create_app(root: Path | None = None) -> FastAPI:
         # проблеме возвращается шаблонное объяснение (ТЗ п. 3.1)
         try:
             explanation = explain_module.explain(
-                explain_module.evidence_from_cycle(cycle.result, cycle.surrogate_name),
+                explain_module.evidence_from_cycle(
+                    cycle.result, cycle.surrogate_name,
+                    limits=configuration.limits, fluids=configuration.fluids),
                 configuration.explain,
             )
         except Exception:  # noqa: BLE001 — объяснение не должно уносить результат цикла

@@ -426,6 +426,39 @@ def test_water_notes_follow_the_rule_named_in_the_config(tmp_path):
     ]
 
 
+def test_water_notes_name_the_intake_rate_even_when_its_capacity_is_unknown():
+    """Расход водозабора называется при любом правиле и при неизвестной мощности.
+
+    Правило компенсации отвечает на вопрос «сколько закачивать», а не «откуда
+    брать воду»: на Модели Z 60,8 % закачки за историю — вода со стороны. Пока
+    мощность источника не названа организаторами (`BLOCKED.md`), выгрузка обязана
+    хотя бы печатать, какой расход сценарий требует.
+    """
+    from dataclasses import replace
+
+    from conftest import make_row
+
+    from aios import config as config_module
+    from scripts import export_rows
+
+    configuration = config_module.load(config_module.DEFAULT_PATH)
+    assert configuration.limits.max_external_water_m3_per_day is None, (
+        "мощность водозабора появилась в конфиге — тест проверяет не тот случай"
+    )
+    rows = [
+        make_row("2013-07-01", "1", wlpr=30.0, womr=20.0, liquid=900.0, oil=600.0),
+        make_row("2013-07-01", "2", wwir=200.0, injection=6000.0),
+    ]
+
+    compensation = replace(configuration.limits, water_balance_rule="compensation",
+                           water_tolerance=100.0)
+    notes = export_rows.water_notes(rows, replace(configuration, limits=compensation))
+
+    assert any("водозабор" in line for line in notes), notes
+    assert any("2013-07" in line and "мощность источника неизвестна" in line
+               for line in notes), notes
+
+
 def test_pack_npv_skips_an_unfinished_scenario(tmp_path, monkeypatch, capsys):
     """Оборванный сценарий обязан выпасть из таблицы, а не встать в неё числом.
 

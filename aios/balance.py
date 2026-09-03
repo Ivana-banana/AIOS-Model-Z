@@ -317,6 +317,91 @@ def external_water_problems(rows: list[dict[str, Any]],
     return found
 
 
+def external_water_by_month(rows: list[dict[str, Any]],
+                            fluids: Fluids | None = None) -> list[tuple[str, float]]:
+    """Потребность в сторонней воде по месяцам: `[("2019-07", 812.4), …]`, м³/сут.
+
+    Годовая величина (`by_year`) — среднее по году, и она скрывает пик: месяц с
+    тройным расходом водозабора усредняется соседями и в годовом числе не виден
+    вовсе.
+
+    Почему это не противоречит накопительной логике `problems`. Там речь про
+    **объём** воды: её можно копить в системе подготовки и закачивать
+    неравномерно, поэтому отдельный месяц с превышением ничего не значит. Здесь
+    речь про **расход источника**, а расход накопить нельзя: насосная станция не
+    отдаёт за июль больше, чем может за июль, сколько бы ни простаивала в январе.
+    Две разные величины, и проверять их одним правилом — ошибка.
+
+    Месяцы возвращаются по возрастанию метки. Отрицательная потребность
+    сохраняется как есть (закачка меньше попутной воды) — обрезать её до нуля
+    значило бы прятать месяцы, в которых вода утилизируется мимо закачки.
+    """
+    fluids = fluids or Fluids()
+    water: dict[str, float] = {}
+    injected: dict[str, float] = {}
+
+    for row in rows:
+        if not counted_by_methodology(row):
+            continue
+        stamp = str(row["DATA"])[:7]
+        water[stamp] = water.get(stamp, 0.0) + max(
+            row["WLPT_Diff"] - row["WOMT_Diff"], 0.0) * 1000.0 / fluids.water_density
+        injected[stamp] = injected.get(stamp, 0.0) + row["WWIT_Diff"]
+
+    found: list[tuple[str, float]] = []
+    for stamp in sorted(injected.keys() | water.keys()):
+        days = monthrange(int(stamp[:4]), int(stamp[5:7]))[1]
+        found.append((stamp, (injected.get(stamp, 0.0) - water.get(stamp, 0.0)) / days))
+    return found
+
+
+def external_water_capacity_problems(rows: list[dict[str, Any]],
+                                     fluids: Fluids | None = None,
+                                     limit_m3_per_day: float | None = None) -> list[str]:
+    """Месяцы, в которых расход водозабора выше его мощности.
+
+    Четвёртая формулировка баланса и единственная **мгновенная**: три прежние
+    сравнивают объёмы за год или накопленным итогом, а мощность источника —
+    предел расхода, и год его усредняет. Проверку назвала трекер на КТ-2
+    («помесячный расход не превышает мощности»), и она ловит то, чего годовая не
+    видит: расписание с ровным годовым средним и пиковым июлем.
+
+    `limit_m3_per_day = None` — мощность неизвестна. Тогда ничего не нарушается,
+    но и молчать нельзя: возвращается одна строка про месяц наибольшей
+    потребности. Подставлять сюда правдоподобное число вместо неизвестного
+    запрещено по той же причине, что и в `external_water_problems`: заявленный
+    ЧДД опёрся бы на выдуманную мощность водозабора.
+    """
+    months = external_water_by_month(rows, fluids)
+    if not months:
+        return []
+
+    if limit_m3_per_day is None:
+        stamp, need = max(months, key=lambda item: item[1])
+        if need <= 0:
+            return []
+        return [
+            f"{stamp}: наибольший расход водозабора {need:,.0f} м³/сут — мощность "
+            f"источника неизвестна, режим не подтверждён"
+        ]
+
+    found = []
+    for stamp, need in months:
+        if need <= limit_m3_per_day:
+            continue
+        # мощность ноль — «источника нет вовсе»; процент превышения над нулём не
+        # определён, и печатать «inf%» вместо числа хуже, чем не печатать его.
+        # Из конфигурации ноль сюда не приходит (`_non_negative(...) or None`
+        # переводит его в «неизвестно»), но функция публичная и зовётся напрямую.
+        excess = (f" — превышение {(need / limit_m3_per_day - 1) * 100:.0f}%"
+                  if limit_m3_per_day > 0 else " — стороннего источника нет вовсе")
+        found.append(
+            f"{stamp}: расход водозабора {need:,.0f} м³/сут при мощности "
+            f"{limit_m3_per_day:,.10g} м³/сут{excess}"
+        )
+    return found
+
+
 def well_water_oil_ratio(rows: list[dict[str, Any]],
                          fluids: Fluids | None = None) -> dict[str, float]:
     """ВНФ по каждой скважине за весь горизонт — признак для агента и диагностика.

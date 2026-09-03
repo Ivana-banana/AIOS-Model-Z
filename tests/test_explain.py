@@ -440,3 +440,144 @@ def test_a_conversion_is_named_with_its_cost_and_its_unmeasured_gain():
     assert any("convert — 1" in line and "shut — 1" in line
                for line in evidence.observations)
     assert any("суррогатом не оценивался" in line for line in evidence.caveats)
+
+
+# --- сторонняя вода в объяснении ---------------------------------------------
+# Трекер на КТ-2: «использование докачки попадает в объяснение агента». До 03.09
+# слой молчал о ней вовсе — рассказывал про остановки и режимы так, будто воды в
+# системе сколько угодно.
+
+
+def _cycle_with_outside_water(allocations=()):
+    from conftest import make_row
+
+    from aios.loop import CycleResult
+    from aios.summary import Fluids
+
+    fluids = Fluids()
+    rows = []
+    for stamp, water_m3, injected_m3 in (("2014-01-01", 500.0, 600.0),
+                                         ("2014-07-01", 500.0, 3_000.0)):
+        oil_t = 10.0 * fluids.oil_density / 1000
+        rows.append(make_row(stamp, "1", wlpr=(10.0 + water_m3) / 30, womr=oil_t / 30,
+                             liquid=oil_t + water_m3 * fluids.water_density / 1000,
+                             oil=oil_t))
+        rows.append(make_row(stamp, "2", wwir=injected_m3 / 30, injection=injected_m3))
+
+    return CycleResult(
+        base_chdd_m=100.0, chdd_m=110.0, actions=(), rate_choices=(),
+        allocations=tuple(allocations), steps=(), warnings=(), problems=(), rows=rows,
+    )
+
+
+def test_need_for_outside_water_reaches_the_explanation():
+    """Потребность в сторонней воде — факт, а не служебная деталь планировщика."""
+    from aios.explain import evidence_from_cycle
+
+    evidence = evidence_from_cycle(_cycle_with_outside_water(), "тест")
+
+    assert evidence.numbers["сторонней воды на пике, м³/сут"] > 0
+    assert any("2014-07" in line for line in evidence.observations), evidence.observations
+
+
+def test_unknown_intake_capacity_is_a_caveat_not_a_silence():
+    """Мощность водозабора неизвестна — объяснение обязано это сказать.
+
+    Иначе выходит худший из вариантов: система молча приняла режим, обеспеченный
+    водой, которой, может быть, нет, и объяснила его не упомянув об этом.
+    """
+    from aios.explain import evidence_from_cycle
+
+    evidence = evidence_from_cycle(_cycle_with_outside_water(), "тест")
+
+    assert any("мощность водозабора неизвестна" in line for line in evidence.caveats)
+    assert "мощность водозабора, м³/сут" not in evidence.numbers
+
+
+def test_known_capacity_is_compared_and_the_shortfall_is_counted():
+    from aios.explain import evidence_from_cycle
+    from aios.planner import Limits
+
+    evidence = evidence_from_cycle(_cycle_with_outside_water(), "тест",
+                                   limits=Limits(max_external_water_m3_per_day=50.0))
+
+    assert evidence.numbers["мощность водозабора, м³/сут"] == 50.0
+    assert evidence.numbers["месяцев выше мощности водозабора"] == 1.0
+    assert any("выше его мощности" in line for line in evidence.caveats)
+    assert not any("неизвестна" in line for line in evidence.caveats)
+
+
+def test_capacity_that_covers_the_need_leaves_no_caveat():
+    from aios.explain import evidence_from_cycle
+    from aios.planner import Limits
+
+    evidence = evidence_from_cycle(_cycle_with_outside_water(), "тест",
+                                   limits=Limits(max_external_water_m3_per_day=5_000.0))
+
+    assert evidence.numbers["мощность водозабора, м³/сут"] == 5_000.0
+    assert "месяцев выше мощности водозабора" not in evidence.numbers
+    assert not any("водозабор" in line for line in evidence.caveats)
+
+
+def test_injection_cut_by_the_source_is_named_as_such():
+    """Срезка по источнику не «мероприятие» — в `actions` её нет, и без этого
+    блока о ней не узнать ниоткуда.
+
+    Текст решения берётся у планировщика дословно: разойдётся формулировка —
+    упадёт этот тест, а не тихо исчезнет факт из объяснения.
+    """
+    from aios.explain import evidence_from_cycle
+    from aios.planner import Allocation
+
+    cut = Allocation(
+        well="7", resource="закачка", before=100.0, after=40.0,
+        reason="закачке нужно 812 м³/сут воды со стороны при мощности источника 50 м³/сут",
+    )
+    evidence = evidence_from_cycle(_cycle_with_outside_water([cut]), "тест")
+
+    assert evidence.numbers["закачка урезана мощностью источника, скважин"] == 1.0
+    assert any("мощностью водозабора" in line for line in evidence.observations)
+
+
+def test_the_planner_really_says_what_the_explanation_looks_for():
+    """Связка «планировщик → объяснение» проверяется настоящим прогоном срезки.
+
+    Предыдущий тест берёт формулировку из литерала — то есть проверяет объяснение,
+    но не то, что планировщик её произносит. Здесь она приходит из самого
+    `planner.enforce`.
+    """
+    from datetime import date as date_type
+
+    from conftest import make_row
+
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.explain import evidence_from_cycle
+    from aios.loop import CycleResult
+    from aios.planner import Limits, enforce
+    from aios.summary import Fluids
+
+    fluids = Fluids()
+    oil_t = 10.0 * fluids.oil_density / 1000
+    forecast = [
+        make_row("2014-07-01", "1", wlpr=(10.0 + 100.0) / 31, womr=oil_t / 31,
+                 liquid=oil_t + 100.0 * fluids.water_density / 1000, oil=oil_t),
+        make_row("2014-07-01", "2", wwir=3_000.0 / 31, injection=3_000.0),
+    ]
+    steps = [ScheduleStep(
+        date_type(2014, 7, 1),
+        (ProducerControl("1", "OPEN", "LRAT", 110.0 / 31, None),),
+        (InjectorControl("2", "WATER", "OPEN", "RATE", 3_000.0 / 31, None),),
+    )]
+    limits = Limits(enforce_water_balance=True, water_balance_rule="external_water",
+                    max_external_water_m3_per_day=10.0)
+
+    _, decisions = enforce(steps, forecast, None, limits, fluids)
+
+    assert decisions, "срезка по источнику не сработала — тест проверяет не то"
+    result = CycleResult(
+        base_chdd_m=100.0, chdd_m=110.0, actions=(), rate_choices=(),
+        allocations=tuple(decisions), steps=(), warnings=(), problems=(), rows=forecast,
+    )
+    evidence = evidence_from_cycle(result, "тест", limits=limits, fluids=fluids)
+
+    assert evidence.numbers["закачка урезана мощностью источника, скважин"] >= 1.0

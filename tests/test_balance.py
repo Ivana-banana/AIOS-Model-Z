@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
+
 import pytest
 from conftest import make_row
 
@@ -291,3 +293,95 @@ def test_history_of_model_z_fails_produced_water_but_passes_external_water():
     assert balance.external_water_problems(
         rows, FLUIDS, limit_m3_per_day=220.0 / 31.0
     ) == [], "с названной мощностью источника тот же режим обеспечен"
+
+
+# --- мощность водозабора: помесячный расход, а не годовое среднее -------------
+# Проверка названа трекером на КТ-2 («помесячный расход не превышает мощности»)
+# и закрывает дыру, которой годовой баланс не видит по построению.
+
+
+def test_monthly_need_sums_to_the_annual_one():
+    """Помесячный счёт не расходится с годовым — иначе завелись бы два ответа.
+
+    Формула потребности повторена в `external_water_by_month` отдельным циклом,
+    и без этой проверки два счёта разошлись бы при первой же правке одного из них.
+    """
+    rows = [
+        produced("2014-01-01", "1", 10.0, 500.0), injected("2014-01-01", "2", 900.0),
+        produced("2014-07-01", "1", 10.0, 400.0), injected("2014-07-01", "2", 1500.0),
+    ]
+
+    year = balance.by_year(rows, FLUIDS)[0]
+    months = balance.external_water_by_month(rows, FLUIDS)
+
+    assert [stamp for stamp, _ in months] == ["2014-01", "2014-07"]
+    volume = sum(need * monthrange(2014, int(stamp[5:7]))[1] for stamp, need in months)
+    assert volume == pytest.approx(year.external_water_m3)
+
+
+def test_a_peak_month_hides_inside_the_annual_average():
+    """Год в норме, июль втрое выше мощности — годовая проверка молчит, месячная нет.
+
+    Это и есть цена усреднения: насосная станция не отдаёт за июль больше, чем
+    может за июль, сколько бы ни простаивала в январе.
+    """
+    rows = [
+        produced("2014-01-01", "1", 10.0, 500.0), injected("2014-01-01", "2", 500.0),
+        produced("2014-07-01", "1", 10.0, 500.0), injected("2014-07-01", "2", 3_000.0),
+    ]
+    limit = 50.0
+
+    assert balance.external_water_problems(rows, FLUIDS, limit) == []
+
+    peaks = balance.external_water_capacity_problems(rows, FLUIDS, limit)
+    assert len(peaks) == 1
+    assert "2014-07" in peaks[0]
+    # 2 500 м³ за 31 сутки — 80,6 м³/сут против мощности 50
+    assert "81 м³/сут" in peaks[0]
+    assert "превышение 61%" in peaks[0]
+
+
+def test_a_month_inside_the_capacity_is_not_a_problem():
+    rows = [produced("2014-07-01", "1", 10.0, 500.0), injected("2014-07-01", "2", 800.0)]
+
+    assert balance.external_water_capacity_problems(rows, FLUIDS, 50.0) == []
+
+
+def test_unknown_capacity_names_the_peak_month_instead_of_staying_silent():
+    """Мощность неизвестна — не нарушение, но и не молчание.
+
+    Тот же выбор, что в `external_water_problems`: подставить правдоподобное
+    число вместо неизвестного нельзя, а скрыть потребность — тем более.
+    """
+    rows = [
+        produced("2014-01-01", "1", 10.0, 500.0), injected("2014-01-01", "2", 600.0),
+        produced("2014-07-01", "1", 10.0, 500.0), injected("2014-07-01", "2", 3_000.0),
+    ]
+
+    found = balance.external_water_capacity_problems(rows, FLUIDS, None)
+
+    assert len(found) == 1, "неизвестная мощность не должна печатать все месяцы подряд"
+    assert "2014-07" in found[0]
+    assert "мощность источника неизвестна" in found[0]
+
+
+def test_schedule_that_needs_no_outside_water_says_nothing():
+    """Закачка ниже попутной воды — потребности нет, и печатать нечего."""
+    rows = [produced("2014-07-01", "1", 10.0, 900.0), injected("2014-07-01", "2", 100.0)]
+
+    assert balance.external_water_capacity_problems(rows, FLUIDS, None) == []
+    assert balance.external_water_by_month(rows, FLUIDS)[0][1] < 0
+
+
+def test_zero_capacity_does_not_divide_by_it():
+    """Мощность ноль — «источника нет вовсе», а не деление на ноль.
+
+    Из конфигурации ноль сюда не приходит (`_non_negative(...) or None`), но
+    функция публичная, и падать `ZeroDivisionError` она не должна.
+    """
+    rows = [produced("2014-07-01", "1", 10.0, 100.0), injected("2014-07-01", "2", 900.0)]
+
+    found = balance.external_water_capacity_problems(rows, FLUIDS, 0.0)
+
+    assert len(found) == 1
+    assert "стороннего источника нет вовсе" in found[0]

@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from aios import balance
+
 #: Модель по умолчанию. Меняется через конфиг, а не правкой кода.
 DEFAULT_MODEL = "claude-opus-5"
 
@@ -343,13 +345,20 @@ def template_text(evidence: Evidence) -> str:
     return "\n".join(lines)
 
 
-def evidence_from_cycle(result: Any, surrogate_name: str = "") -> Evidence:
+def evidence_from_cycle(result: Any, surrogate_name: str = "", *,
+                        limits: Any = None, fluids: Any = None) -> Evidence:
     """Собрать набор фактов из итога цикла (`aios.loop.CycleResult`).
 
     Числа берутся ровно те, что посчитал цикл, — модели остаётся их изложить.
     Оговорки собираются здесь же, а не в подсказке: неподтверждённый прирост,
     выход за обучающий диапазон суррогата и нарушения ограничений обязаны попасть
     в объяснение, даже если модель сочтёт их незначительными.
+
+    `limits` и `fluids` нужны одному факту — сторонней воде. Оба необязательны:
+    без них потребность всё равно считается (плотности по умолчанию — первый
+    PVT-регион Модели Z, та же условность, что во всём `aios.balance`), но
+    сравнить её с мощностью водозабора нечем, и объяснение говорит об этом
+    прямо, а не умалчивает.
     """
     numbers = {
         "ЧДД базового сценария, млн руб.": result.base_chdd_m,
@@ -383,7 +392,52 @@ def evidence_from_cycle(result: Any, surrogate_name: str = "") -> Evidence:
             sum(action.cost_m for action in converted)
         )
 
+    # Сторонняя вода. Без этого блока слой интерпретируемости молчал о докачке
+    # вовсе: планировщик её учитывает и при нужде режет закачку, а объяснение
+    # рассказывало про остановки и режимы так, будто воды в системе сколько
+    # угодно. Требование трекера с КТ-2 — «использование докачки попадает в
+    # объяснение агента».
+    rows = getattr(result, "rows", None) or []
+    capacity = getattr(limits, "max_external_water_m3_per_day", None)
+    outside: list[str] = []
+    if rows:
+        months = balance.external_water_by_month(rows, fluids)
+        if months:
+            stamp, need = max(months, key=lambda item: item[1])
+            if need > 0:
+                numbers["сторонней воды на пике, м³/сут"] = need
+                observations.append(
+                    f"закачка не покрывается собственной попутной водой: пик "
+                    f"потребности в {stamp}"
+                )
+                if capacity is None:
+                    outside.append(
+                        "мощность водозабора неизвестна: потребность в сторонней воде "
+                        "ничем не ограничивалась, и по источнику воды режим не подтверждён"
+                    )
+                else:
+                    numbers["мощность водозабора, м³/сут"] = float(capacity)
+                    over = balance.external_water_capacity_problems(rows, fluids, capacity)
+                    if over:
+                        numbers["месяцев выше мощности водозабора"] = float(len(over))
+                        outside.append(
+                            f"расход водозабора выше его мощности в {len(over)} мес.: "
+                            f"закачка обеспечена водой не во всём периоде"
+                        )
+
+    # Срезка по источнику — отдельное решение планировщика, и его видно только
+    # здесь: в `actions` его нет, это не мероприятие, а изменение уставок.
+    limited = [one for one in getattr(result, "allocations", ()) or ()
+               if "со стороны" in getattr(one, "reason", "")]
+    if limited:
+        numbers["закачка урезана мощностью источника, скважин"] = float(len(limited))
+        observations.append(
+            "закачка урезана не нормой компенсации, а мощностью водозабора: "
+            f"{limited[0].reason}"
+        )
+
     caveats = []
+    caveats.extend(outside)
     if converted:
         caveats.append(
             "выигрыш перевода под закачку суррогатом не оценивался: отклик соседей "
