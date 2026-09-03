@@ -1040,3 +1040,98 @@ def test_the_cycle_page_folds_warnings_instead_of_printing_all_of_them(client,
     # «Отчёт целиком» ниже печатает свои первые десять строк и в счёт не идёт
     assert text.count("например:") == 2
     assert len(text.encode("utf-8")) < 100_000, "страница обязана весить десятки килобайт"
+
+
+# --- С7: имя прогона из адреса попадало в HTML без экранирования -------------
+
+
+def test_the_fallback_refusal_escapes_the_name_from_the_url(project, monkeypatch):
+    """Запасной путь отказа обязан экранировать текст причины.
+
+    Причина несёт имя прогона **из адреса** (`_find`: «Прогон «{name}» не
+    найден»), то есть текст, который задаёт открывающий ссылку. Основной путь
+    идёт через шаблон Jinja и экранирует сам; дыра была в запасном, который
+    собирает HTML строкой. Воспроизведено 04.09: `/run/<img src=x onerror=…>`
+    возвращал разметку как есть.
+    """
+    import aios.web.app as app_module
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("шаблон сломан")
+
+    monkeypatch.setattr(app_module.TEMPLATES, "TemplateResponse", broken)
+    client = TestClient(create_app(project), raise_server_exceptions=False)
+
+    payload = "<img src=x onerror=alert(1)>"
+    answer = client.get("/run/" + payload)
+
+    assert answer.status_code == 404
+    assert payload not in answer.text, "разметка из адреса дошла до страницы как есть"
+    assert "&lt;img" in answer.text, "текст причины пропал вместе с экранированием"
+
+
+# --- С8: /forecast падал в голый 500 на трёх формах cycle.json ---------------
+
+
+def _write_marker(project, payload):
+    import json
+
+    run = project / "runs" / "probe"
+    if not run.is_dir():
+        run.mkdir(parents=True)
+        import shutil
+        shutil.copy(project / "runs" / "base" / "rows.csv", run / "rows.csv")
+    (run / "cycle.json").write_text(json.dumps(payload), encoding="utf-8")
+    return TestClient(create_app(project), raise_server_exceptions=False)
+
+
+def test_forecast_survives_a_marker_that_is_not_an_object(project):
+    """Один испорченный `cycle.json` не должен уносить всю таблицу.
+
+    `list.get` роняло страницу в голый 500 — то есть сравнение «прогноз против
+    факта», главный ответ трека 2, пропадало целиком из-за одного файла.
+    """
+    answer = _write_marker(project, [1, 2, 3]).get("/forecast")
+
+    assert answer.status_code == 200
+
+
+def test_forecast_survives_a_number_written_as_a_string(project):
+    """`cycle.json` пишем мы, но читаем у чужого прогона: файл мог быть правлен."""
+    answer = _write_marker(project, {
+        "start_date": "2014-01-01", "source_run": "base",
+        "forecast_gain_m": "12.5", "forecast_chdd_m": "1.0",
+    }).get("/forecast")
+
+    assert answer.status_code == 200
+
+
+def test_forecast_survives_a_marker_without_the_promised_gain(project):
+    """Обещания нет, а полученное есть — разность роняла страницу.
+
+    Столбец диаграммы требует **обоих** чисел; до правки `None - 12.5` уходило в
+    500 ровно на этом сочетании.
+    """
+    answer = _write_marker(project, {
+        "start_date": "2014-01-01", "source_run": "base",
+    }).get("/forecast")
+
+    assert answer.status_code == 200
+
+
+def test_a_number_from_a_marker_is_read_or_refused_but_never_guessed():
+    """Помощник разбора: строка с числом читается, мусор даёт None.
+
+    `True` отдельно: он `int` по наследству, и без явной проверки прогноз
+    «единица» появился бы из флага.
+    """
+    from aios.web.app import _as_number
+
+    assert _as_number(12.5) == 12.5
+    assert _as_number("12.5") == 12.5
+    assert _as_number("не число") is None
+    assert _as_number(None) is None
+    assert _as_number([1]) is None
+    assert _as_number(True) is None
+    assert _as_number("nan") is None
+    assert _as_number("inf") is None

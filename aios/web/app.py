@@ -20,6 +20,7 @@ import csv
 import json
 import math
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -305,9 +306,15 @@ def create_app(root: Path | None = None) -> FastAPI:
             # Если сломан сам шаблон, отказ всё равно должен быть виден и
             # объясним. Молчаливое падение в голый 500 хуже некрасивого текста:
             # оно превращает законный 404 в «сервис лежит» (Р-186).
+            # Экранирование обязательно: `detail` несёт имя прогона **из адреса**
+            # (`_find`: «Прогон «{name}» не найден»), то есть текст, который задаёт
+            # тот, кто открывает ссылку. Без него запрос `/run/<img src=x
+            # onerror=…>` выполняет свой код на нашей странице — воспроизведено
+            # 04.09 (С7). Основной путь идёт через шаблон Jinja, он экранирует сам;
+            # дыра была ровно в запасном.
             return HTMLResponse(
-                f"<pre>{error.status_code}: {detail}\n\n"
-                f"страница отказа не отрисовалась: {type(broken).__name__}</pre>",
+                f"<pre>{error.status_code}: {escape(detail)}\n\n"
+                f"страница отказа не отрисовалась: {escape(type(broken).__name__)}</pre>",
                 status_code=error.status_code,
             )
 
@@ -525,6 +532,12 @@ def create_app(root: Path | None = None) -> FastAPI:
                 forecast = json.loads(marker.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
+            # Маркер, который не объект, — не маркер. Прежде страница падала на
+            # нём в голый 500 (`list.get`), то есть один испорченный файл в
+            # каталоге прогонов уносил всю таблицу «прогноз против факта» (С8).
+            # Пропуск здесь тот же, что и у нечитаемого JSON строкой выше.
+            if not isinstance(forecast, dict):
+                continue
             # Сопоставимость проверяется, а не предполагается. Прогноз, записанный
             # при базе дисконтирования 2007, и факт, посчитанный при 1991, — числа
             # из разных систем отсчёта, и по их величине этого не видно. Маркеры
@@ -538,7 +551,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             source_fact = chdd(source_run) if source_run is not None else None
 
             fact = chdd(run) if comparable else None
-            promised = forecast.get("forecast_gain_m") if comparable else None
+            promised = _as_number(forecast.get("forecast_gain_m")) if comparable else None
             # Прогон, названный источником самого себя, прироста не измеряет:
             # разность выйдет нулём при любом решении. Такое бывает у запуска
             # `--from runs/policy --out runs/policy`, и показывать «получено 0»
@@ -552,7 +565,8 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "written_start": written_start,
                 "source": source_name,
                 "self_source": same,
-                "forecast_chdd": forecast.get("forecast_chdd_m") if comparable else None,
+                "forecast_chdd": (_as_number(forecast.get("forecast_chdd_m"))
+                                  if comparable else None),
                 "fact_chdd": fact,
                 "promised": promised,
                 "delivered": delivered,
@@ -575,11 +589,13 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "pairs": pairs,
                 "base_name": base,
                 "settings": configuration,
+                # На столбце должны быть **оба** числа. Маркер без
+                # `forecast_gain_m` при чужом источнике даёт `promised = None` и
+                # посчитанный `delivered`, и разность роняла страницу в 500 (С8).
                 "chart": bar_chart(
-                    [one["name"] for one in pairs if one["delivered"] is not None],
-                    [one["promised"] - one["delivered"]
-                     for one in pairs if one["delivered"] is not None],
-                ) if any(one["delivered"] is not None for one in pairs) else None,
+                    [one["name"] for one in pairs if _both(one)],
+                    [one["promised"] - one["delivered"] for one in pairs if _both(one)],
+                ) if any(_both(one) for one in pairs) else None,
             },
         )
 
@@ -880,6 +896,28 @@ def _steps_from(schedule_file: Path, configuration) -> list[ScheduleStep]:
     """Шаги управления начиная с даты, с которой мы управляем фондом."""
     parsed = parse_schedule(schedule_file)
     return [step for step in parsed.steps if step.date >= configuration.case.control_start]
+
+
+def _as_number(value: Any) -> float | None:
+    """Число из маркера — или None, если там не число.
+
+    `cycle.json` пишем мы, но читаем его у **чужого** прогона: файл мог остаться
+    от прежней версии, быть отредактирован руками или собран другой машиной.
+    Строка «12.5» вместо 12.5 роняла страницу в голый 500 при делении (С8), то
+    есть один файл уносил всю таблицу «прогноз против факта».
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number not in (float("inf"), float("-inf")) else None
+
+
+def _both(pair: dict[str, Any]) -> bool:
+    """Есть ли у пары оба числа — обещанное и полученное."""
+    return pair["promised"] is not None and pair["delivered"] is not None
 
 
 def _find(items: list[Run], name: str) -> Run:

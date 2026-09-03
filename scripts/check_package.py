@@ -279,6 +279,13 @@ def _trace_problem(schedule: Path, declared: str | None) -> str | None:
     if expected_version and record.get("vendorVersion") != expected_version:
         return (f"след посчитан другой версией расчётчика: {record.get('vendorVersion')} "
                 f"против {expected_version}")
+    # Стартовый год, нормативы и выгрузка — три величины, которые меняют число
+    # молча. Прежде след их **писал**, но никто не сверял: пересимулированный
+    # `rows.csv` или подменённые нормативы пункт проходили (С9).
+    problem = _trace_inputs_problem(schedule, record)
+    if problem is not None:
+        return problem
+
     if declared is not None:
         digits = declared.split("млн")[0].replace("\u00a0", "").replace(" ", "").replace(",", ".")
         try:
@@ -288,6 +295,68 @@ def _trace_problem(schedule: Path, declared: str | None) -> str | None:
         except (ValueError, KeyError, TypeError):
             return f"в следе нет сверяемого числа: {record.get('claimedM')!r}"
     return None
+
+
+def _trace_inputs_problem(schedule: Path, record: dict) -> str | None:
+    """Сверить входы расчёта: стартовый год, нормативы и выгрузку.
+
+    Что сверяется и почему каждое:
+
+    * **стартовый год** — одно расписание при базе 1991 и 2007 даёт числа,
+      различающиеся в 4,6 раза (Р-158, Р-159). След, посчитанный при прежней
+      базе, совпадёт с заявкой прежней базы и промолчит;
+    * **нормативы** — цена нефти, ставки и таблица ЭЦН задают экономику целиком;
+      подменённый файл меняет число, не трогая ни расписание, ни выгрузку;
+    * **выгрузка** — пересимулированный `rows.csv` даёт другое число из того же
+      расписания.
+
+    Отсутствие `rows.csv` рядом со следом — **не** расхождение: выгрузка
+    намеренно не отслеживается git (5 МБ на прогон), и у проверяющего её нет.
+    Тогда сверять нечем, и молчание не выдаётся за совпадение.
+    """
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    try:
+        from aios import config as config_module
+    except Exception:  # noqa: BLE001 — без зависимостей сверяем то, что можем
+        return None
+
+    try:
+        configuration = config_module.load()
+    except Exception:  # noqa: BLE001 — конфигурацию проверяет отдельный пункт
+        return None
+
+    expected_year = configuration.economics.start_date.year
+    written_year = record.get("startYear")
+    if written_year is not None and int(written_year) != expected_year:
+        return (f"след посчитан от {written_year} года, а конфигурация называет "
+                f"{expected_year}: одно расписание в двух системах отсчёта даёт "
+                f"числа, различающиеся в разы")
+
+    norms = Path(configuration.economics.norms_file)
+    written_norms = record.get("normsSha256")
+    if written_norms is not None and norms.is_file():
+        actual = _sha256(norms)
+        if actual != written_norms:
+            return (f"след посчитан по другим нормативам: в нём sha256 "
+                    f"{written_norms[:12]}, у {norms.name} — {actual[:12]}")
+
+    rows = schedule.parent / "rows.csv"
+    written_rows = record.get("rowsMd5")
+    if written_rows is not None and rows.is_file():
+        actual = _md5(rows)
+        if actual != written_rows:
+            return (f"след посчитан по другой выгрузке: в нём md5 {written_rows}, "
+                    f"у {rows.name} — {actual}")
+    return None
+
+
+def _sha256(path: Path) -> str:
+    accumulator = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            accumulator.update(block)
+    return accumulator.hexdigest()
 
 
 def _md5(path: Path) -> str:

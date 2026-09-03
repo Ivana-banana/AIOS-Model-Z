@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 from check_package import _schedule_problem, audit  # noqa: E402
 
@@ -417,3 +420,100 @@ def test_the_package_is_incomplete_when_the_image_omits_our_license(tmp_path):
     assert not checks["L"].ready
     assert "Docker-образ не получает" in checks["L"].detail
     assert "COPY LICENSE" in checks["L"].detail
+
+
+# --- С9: след сверялся не весь -----------------------------------------------
+# Проверялись `agreed`, md5 расписания, версия вендора и число заявки — но не
+# стартовый год, не нормативы и не выгрузка. Пересимулированный `rows.csv` или
+# подменённые нормативы пункт 6 проходили.
+
+
+def _trace_record(**overrides):
+    """Машинный след с заведомо верными полями, поверх которых кладут порчу."""
+    import sys as system
+
+    from aios import config as config_module
+    from aios import economics
+
+    system.path.insert(0, str(ROOT))
+    configuration = config_module.load()
+    record = {
+        "run": "matched-0995",
+        "chddM": 5579.5,
+        "claimedM": 5579.5,
+        "agreed": True,
+        "startYear": configuration.economics.start_date.year,
+        "vendorVersion": economics.VENDOR_VERSION,
+        "normsSha256": None,
+        "rowsMd5": None,
+        "scheduleMd5": None,
+    }
+    record.update(overrides)
+    return record
+
+
+def test_a_trace_from_another_starting_year_is_refused(tmp_path):
+    """База 1991 и 2007 дают числа, различающиеся в 4,6 раза.
+
+    След, посчитанный при прежней базе, совпадёт с заявкой прежней базы и
+    промолчит — а проверяющий считает по своей.
+    """
+    from check_package import _trace_inputs_problem
+
+    problem = _trace_inputs_problem(tmp_path / "wells_schedule.inc",
+                                    _trace_record(startYear=2007))
+
+    assert problem is not None
+    assert "2007" in problem
+
+
+def test_a_trace_computed_by_other_norms_is_refused(tmp_path):
+    """Нормативы задают экономику целиком: подмена меняет число молча."""
+    from check_package import _trace_inputs_problem
+
+    problem = _trace_inputs_problem(tmp_path / "wells_schedule.inc",
+                                    _trace_record(normsSha256="0" * 64))
+
+    assert problem is not None
+    assert "норматив" in problem
+
+
+def test_a_trace_computed_by_another_export_is_refused(tmp_path):
+    """Пересимулированный `rows.csv` даёт другое число из того же расписания."""
+    from check_package import _trace_inputs_problem
+
+    rows = tmp_path / "rows.csv"
+    rows.write_text("DATA,well" + chr(10), encoding="utf-8")
+
+    problem = _trace_inputs_problem(tmp_path / "wells_schedule.inc",
+                                    _trace_record(rowsMd5="f" * 32))
+
+    assert problem is not None
+    assert "выгрузк" in problem
+
+
+def test_a_missing_export_is_not_treated_as_agreement(tmp_path):
+    """Выгрузки рядом нет — сверять нечем, и это не расхождение.
+
+    `rows.csv` намеренно не отслеживается git (5 МБ на прогон), и у проверяющего
+    его нет. Отказ здесь объявил бы негодным пакет, который в порядке.
+    """
+    from check_package import _trace_inputs_problem
+
+    assert _trace_inputs_problem(tmp_path / "wells_schedule.inc",
+                                 _trace_record(rowsMd5="f" * 32)) is None
+
+
+def test_the_shipped_trace_agrees_with_the_files_next_to_it():
+    """Настоящий след заявки обязан сходиться с конфигурацией и нормативами."""
+    import pytest
+    from check_package import _trace_inputs_problem
+
+    schedule = ROOT / "runs" / "matched-0995" / "wells_schedule.inc"
+    trace = schedule.parent / "npv.json"
+    if not trace.is_file():
+        pytest.skip("следа заявки нет на этой машине")
+
+    record = json.loads(trace.read_text(encoding="utf-8"))
+
+    assert _trace_inputs_problem(schedule, record) is None
