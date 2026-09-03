@@ -361,6 +361,69 @@ def test_tracked_weight_stays_under_the_ceiling():
     )
 
 
+#: Предел длины отслеживаемого пути. Не про красоту: `git clone` на Windows
+#: обрывается по `MAX_PATH` (260 символов) вместе с путём каталога, в который
+#: клонируют. `docs/clean-clone-check.md` описывает это как первую находку
+#: протокола: клон в глубокий путь «succeeded», а рабочее дерево пустое —
+#: `git status` показал 289 удалённых файлов. Организаторы работают в
+#: тНавигаторе, то есть с высокой вероятностью на Windows (С14).
+TRACKED_PATH_LIMIT = 80
+
+
+def test_no_tracked_path_is_long_enough_to_break_a_windows_clone():
+    """Длинный путь ломает не наш клон, а клон проверяющего — и молча.
+
+    Хуже всего то, как это выглядит: `git clone` печатает «succeeded», а рабочее
+    дерево остаётся пустым. Проверяющий видит пустой репозиторий, а не ошибку.
+
+    **`vendor/` исключён, и это не поблажка себе.** Там лежит расчётчик
+    организаторов, вендоренный побайтово; переименовать его файлы значит нарушить
+    правило `CLAUDE.md` «вендор оставляем как есть» и сломать сверку отпечатков.
+    Два самых длинных пути там — 92 символа
+    (`vendor/CHDD_PYTHON/output/Расчет_ЧДД_…_OPTIMIZED_AlenkinDA.json` и `.xlsx`),
+    и это остаточный риск, который мы снять не можем: он называется здесь, а не
+    прячется.
+    """
+    too_long = sorted((name for _, name in _tracked_files()
+                       if len(name) > TRACKED_PATH_LIMIT
+                       and not name.startswith("vendor/")), key=len, reverse=True)
+
+    assert not too_long, (
+        "путь длиннее " + str(TRACKED_PATH_LIMIT) + " символов: "
+        + "; ".join(f"{len(name)} — {name}" for name in too_long[:5])
+    )
+
+
+def test_every_manus_path_named_in_the_docs_exists():
+    """Ссылка на разбор внешнего агента обязана указывать на живой файл.
+
+    Файлы переименованы 03.09 из-за длины пути (С14). Ссылка, оставшаяся от
+    прежнего имени, ведёт в никуда — и заметно это только тому, кто по ней пошёл.
+    Разбор без регулярного выражения намеренно: имя обрывается по первому
+    разделителю, и читать такую проверку проще, чем шаблон с экранированием.
+    """
+    root = Path(__file__).resolve().parent.parent
+    stop = set("`)]*<>|") | {chr(34), chr(39), chr(10), chr(9), " "}
+    broken: list[str] = []
+
+    for path in sorted(root.rglob("*.md")):
+        if ".venv" in path.parts or ".git" in path.parts or "__MACOSX" in path.parts:
+            continue
+        if path.name.startswith("._"):
+            continue  # ресурсные вилки macOS из распакованного архива — не текст
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for chunk in text.split("manus-answered/")[1:]:
+            name = ""
+            for char in chunk:
+                if char in stop:
+                    break
+                name += char
+            if name.endswith(".md") and not (root / "manus-answered" / name).is_file():
+                broken.append(f"{path.relative_to(root)} -> {name}")
+
+    assert not broken, "ссылки в никуда: " + "; ".join(broken[:5])
+
+
 def test_readme_does_not_expand_mit_beyond_the_licence_boundary():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
