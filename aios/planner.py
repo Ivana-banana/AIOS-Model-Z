@@ -2025,7 +2025,7 @@ def _fit_injection_to_water_corridor(
                 bucket["base"] += oil_t * 1000.0 / fluids.oil_density
         bucket["planned"] += max(row["WWIT_Diff"], 0.0)
 
-    if strays or not years:
+    if strays:
         # Тихо подставить 365 суток или свалить всё в один год нельзя: коридор
         # проверяется по календарным годам, и строка без даты означает, что счёт
         # не с чем сверить. Лимит источника тем более суточный.
@@ -2033,6 +2033,12 @@ def _fit_injection_to_water_corridor(
             "коридору баланса воды нужна колонка DATA в каждой строке прогноза: "
             f"без даты строку не отнести к году (строк без даты {strays})"
         )
+    if not years:
+        # Пустой прогноз — это «сверять нечего», а не «данные испорчены». Так
+        # бывает на расписании без управляемых шагов: `NeuralSurrogate.predict`
+        # возвращает пустой список, и до 03.09 функция здесь тихо выходила
+        # (найдено критиком).
+        return steps, []
 
     planned_total = sum(one["planned"] for one in years.values())
     base_total = sum(one["base"] for one in years.values())
@@ -2052,6 +2058,19 @@ def _fit_injection_to_water_corridor(
 
         factor = 1.0
         reason = ""
+
+        if base_c <= 0:
+            # Закачка есть, а возмещать нечего: отбора не было ни в этом году, ни
+            # раньше. Такое бывает на новом элементе заводнения — нагнетательная
+            # пущена раньше добывающей. Аудит для этого случая говорит
+            # «возмещать нечего» (`balance.compensation_problems`), и правильный
+            # множитель здесь ноль, а не деление на ноль (найдено критиком 03.09).
+            factors[year] = 0.0
+            reasons[year] = (
+                f"{year}: закачка {planned_y:,.0f} м³ при нулевом накопленном отборе — "
+                "возмещать нечего"
+            )
+            continue
 
         # верхняя граница: накопленное на конец года не выше базы × ceiling
         room = base_c * ceiling - injected_c

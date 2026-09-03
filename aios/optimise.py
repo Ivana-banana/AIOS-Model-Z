@@ -352,6 +352,14 @@ def choose_joint_rates(
     current_steps = _scale_individually(base_steps, selected)
     current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids,
                              region, margin, penalty, weight, norms_file)
+    if current_chdd == float("-inf"):
+        # Стартовая точка сама вне доверенной области — ранжировать нечем и не от
+        # чего. Продолжать нельзя не из осторожности, а арифметически: разность
+        # «стало минус было» дала бы `+inf` и уехала бы в отчёт, в интерфейс и в
+        # JSON (`Infinity` — невалидный JSON). Пустой список выборов означает
+        # «поиск ничего не менял»; причину называют предупреждения цикла
+        # (`trust.routed_to_full_run`), найдено критиком 03.09.
+        return []
     choices: list[JointRateChoice] = []
 
     for kind, well, start in controls:

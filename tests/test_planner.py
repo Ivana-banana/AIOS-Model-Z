@@ -145,6 +145,43 @@ def test_without_a_floor_the_corridor_stays_one_sided(norms):
     assert result == steps
 
 
+def test_injection_before_any_production_is_zeroed_not_divided_by_zero(norms):
+    """Закачка раньше добычи: возмещать нечего, и это ноль, а не исключение.
+
+    Найдено критиком 03.09: при нулевой накопленной базе ветка потолка делила на
+    неё в тексте обоснования и роняла весь цикл `ZeroDivisionError`. Случай не
+    экзотический — новый элемент заводнения запускают с нагнетательной.
+    """
+    forecast = [injected("2020-01-01", "9", 1000.0),
+                produced("2021-01-01", "1", 100.0, 900.0)]
+    steps = [ScheduleStep(date(2020, 1, 1), (), (inj("9", 50.0),)),
+             ScheduleStep(date(2021, 1, 1), (prod("1", 30.0),), ())]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
+    )
+
+    assert result[0].injectors[0].rate == pytest.approx(0.0)
+    assert decisions and "возмещать нечего" in decisions[0].reason
+
+
+def test_an_empty_forecast_leaves_the_corridor_alone(norms):
+    """Пустой прогноз — «сверять нечего», а не «данные испорчены».
+
+    До правки критика проверка «нужна колонка DATA» срабатывала и на полностью
+    пустом прогнозе, то есть роняла `enforce` там, где раньше был тихий выход.
+    Пустой прогноз возвращает `NeuralSurrogate.predict` на расписании без
+    управляемых шагов.
+    """
+    steps = [ScheduleStep(date(2014, 1, 1), (prod("1", 30.0),), (inj("9", 50.0),))]
+
+    result, decisions = planner.enforce(steps, [], norms, planner.Limits(), FLUIDS)
+
+    assert result == steps
+    assert decisions == []
+
+
 def test_the_corridor_is_held_year_by_year_not_over_the_horizon(norms):
     """Коридор проверяется накопленным итогом на конец каждого года.
 

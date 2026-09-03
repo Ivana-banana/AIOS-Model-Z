@@ -430,6 +430,43 @@ def test_conversion_multiplier_scales_the_injection_rate():
     assert result[0].injectors[0].rate == pytest.approx(60.0)
 
 
+def test_a_search_that_starts_outside_the_region_returns_nothing():
+    """Старт вне области — поиск не ранжирует и не выдумывает бесконечных приростов.
+
+    Найдено критиком 03.09: с жёстким фильтром стартовое значение становилось
+    `-inf`, а выбранное оставалось конечным, и разность давала `+inf`. Это число
+    уезжало в отчёт, в интерфейс и в JSON, где `Infinity` невалиден.
+    """
+    from aios.margin import Norms
+
+    calls: list[str] = []
+
+    def always_outside(*args, **kwargs):
+        calls.append("value")
+        return float("-inf")
+
+    steps = [ScheduleStep(date(2007, 1, 1),
+                          (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),), ())]
+    saved = optimise._value_of
+    optimise._value_of = always_outside
+    try:
+        choices = optimise.choose_joint_rates(
+            optimise_stub(), steps, start_date=date(2007, 1, 1), norms=Norms.from_file())
+    finally:
+        optimise._value_of = saved
+
+    assert choices == []
+    assert len(calls) == 1, "после отказа стартовой точки поиск не продолжается"
+
+
+def optimise_stub():
+    """Суррогат-заглушка: значение кандидата подменено, прогноз не нужен."""
+    class Stub:
+        def predict(self, steps):
+            return []
+    return Stub()
+
+
 def test_a_candidate_outside_the_trust_region_is_not_selected():
     """Вне доверенной области кандидат выбывает из поиска, а не дешевеет.
 
