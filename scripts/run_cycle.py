@@ -420,6 +420,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"закачка:                   {base_npv.injection_km3:.1f} → "
               f"{confirmed_npv.injection_km3:.1f} тыс. м3")
         print(f"подтверждено: {confirmed.confirmed}")
+
+        # Условия кейса на подтверждённой выгрузке — их считает `loop.confirm`
+        # по факту ГГДМ, а не по прогнозу (Р-171). Молчать о них здесь нельзя:
+        # это последний шаг единой команды, и именно её вывод читает проверяющий.
+        if confirmed.case_problems:
+            print()
+            print(f"УСЛОВИЯ КЕЙСА НАРУШЕНЫ ({len(confirmed.case_problems)}):",
+                  file=sys.stderr)
+            for line in confirmed.case_problems[:10]:
+                print(f"  ! {line}", file=sys.stderr)
+
+        # Ненулевой код при непригодном результате — не строгость, а честность.
+        # README велит проверяющему запускать `scripts/run_all.py`, последний шаг
+        # которого — этот самый `--confirm`; собственные замеры проекта дают на
+        # этом пути −63…−70 % ЧДД против бездействия. Прогон, завершившийся
+        # успехом на расписании втрое хуже истории, сообщает проверяющему
+        # неправду (Р-191).
+        if confirmed.case_problems or confirmed.gain_m <= 0:
+            print()
+            print("РЕЗУЛЬТАТ НЕПРИГОДЕН: "
+                  + ("прирост не положителен" if confirmed.gain_m <= 0
+                     else "нарушены условия кейса")
+                  + ". Сдавать это расписание нельзя; заявляемым остаётся то, "
+                    "что подтверждено (см. docs/submission.md).", file=sys.stderr)
+            return 2
         return 0
 
     print(result.summary())

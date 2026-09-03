@@ -212,8 +212,14 @@ def main(argv: list[str] | None = None) -> int:
     code = execute(steps, _run)
     if code == 0:
         print(f"\nготово. Расписание: {Path(arguments.out) / 'wells_schedule.inc'}")
-        print("Заявляемый ЧДД — тот, что напечатал последний шаг: он посчитан "
-              "эталонным расчётчиком по полному расчёту, а не суррогатом.")
+        print("Число, напечатанное последним шагом, посчитано эталонным "
+              "расчётчиком по полному расчёту, а не суррогатом.")
+        print()
+        print("Но заявляемым оно от этого не становится. Эта команда показывает, "
+              "что контур проходит целиком; заявка — отдельный, выбранный и "
+              "проверенный сценарий, и воспроизводится она командой")
+        print("    python scripts/verify_declared.py --run runs/matched-0995")
+        print("(docs/submission.md, docs/submission-day.md).")
     return code
 
 
