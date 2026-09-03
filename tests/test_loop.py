@@ -95,6 +95,39 @@ class _Responsive:
         return []
 
 
+def test_an_empty_search_keeps_the_starting_scenario(norms, surrogate, monkeypatch):
+    """Пустой ответ поиска — «ничего не менять», а не «вернуться к деку».
+
+    `apply_choices(base_steps, [])` отдаёт опорное расписание и молча теряет
+    карту старта из `--base-schedule`: прирост считался бы от одного сценария, а
+    расписание собиралось из другого. Поиск возвращает пустой список законно —
+    когда стартовая точка вне области доверия (Р-174, Р-190).
+    """
+    monkeypatch.setattr(loop.optimise, "choose_rates", lambda *a, **k: [])
+
+    start = {("production", "good"): 1.5}
+    result = loop.run_cycle(
+        surrogate, plan(), norms,
+        control_start=CONTROL_START, start_date=CONTROL_START,
+        start_multipliers=start,
+    )
+
+    rates = {control.well: control.liquid_rate
+             for step in result.steps for control in step.producers
+             if control.status == "OPEN"}
+    assert rates.get("good") == pytest.approx(45.0), (
+        f"стартовый сценарий обязан сохраниться, получено {rates}"
+    )
+    # Прирост при этом нулевым быть не обязан: цикл, кроме подбора режимов,
+    # ещё останавливает убыточные скважины — и это отдельное решение, которое
+    # пустой ответ поиска не отменяет.
+    assert result.base_chdd_m == pytest.approx(
+        loop.run_cycle(surrogate, plan(), norms, control_start=CONTROL_START,
+                       start_date=CONTROL_START, start_multipliers=start,
+                       tune_rates=False).base_chdd_m
+    ), "точка отсчёта остаётся стартовым сценарием"
+
+
 def test_the_corridor_holds_after_the_cuts_that_follow_it(norms):
     """Срезки отбора поднимают компенсацию — цикл обязан довести её до коридора.
 

@@ -215,7 +215,11 @@ def run_cycle(surrogate: Surrogate,
                 surrogate, base_steps, norms, start_date=start_date,
                 **({} if multipliers is None else {"multipliers": multipliers}),
             )
-        tuned = optimise.apply_choices(base_steps, choices)
+        # Пустой ответ поиска означает «ничего не менять», а не «вернуться к
+        # деку»: `apply_choices(base_steps, [])` отдаёт опорное расписание и
+        # молча теряет карту старта из `--base-schedule`. Тогда прирост считался
+        # бы от одного сценария, а расписание собиралось из другого (Р-190).
+        tuned = optimise.apply_choices(base_steps, choices) if choices else list(origin)
 
     forecast = surrogate.predict(tuned)
     actions = plan_shutdowns(
@@ -264,7 +268,10 @@ def run_cycle(surrogate: Surrogate,
     # области нет и быть не может, и «область не собрана» про него — не
     # предупреждение, а описание другой вещи. Заявку он не обосновывает.
     if getattr(surrogate, "bundle", None) is not None:
-        warnings += trust.routed_to_full_run(distance, margin)
+        # В начало, а не в хвост: `summary()` печатает первые десять
+        # предупреждений из семидесяти трёх, и причина, по которой поиск ничего
+        # не выбрал, оказывалась невидимой в отчёте цикла (Р-190).
+        warnings = trust.routed_to_full_run(distance, margin) + warnings
     # предел дебита жидкости — из таблицы ЭЦН тех нормативов, по которым считается
     # ЧДД этого прогона, а не из литерала 500 от Модели Z (Б28)
     problems = validate(
