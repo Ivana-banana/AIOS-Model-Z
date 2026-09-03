@@ -905,6 +905,17 @@ def _fit_fund(steps: list[ScheduleStep],
        предела, закрываются худшие по удельной марже — тем же правилом, каким
        планировщик режет отбор при нехватке мощности. Без нормативов правило
        решать нечем, и это отказ, а не молчаливое «закроем первых попавшихся».
+
+       **Выбирают только добывающие, и это не вкусовое решение.** Удельная маржа
+       определена через поднятый объём (`_margin_per_liquid`), а у нагнетательной
+       объёма нет — для неё та же функция возвращает суммарную маржу в млн руб.,
+       то есть величину другого масштаба: −0,26 млн против ±0,0005 млн/м³ у
+       добывающих. В общем сорте нагнетательные оказывались худшими всегда, и
+       предел числа действующих скважин первым делом рубил закачку — при том что
+       срез закачки на Модели Z обрушивает нефть вчетверо (замер 20.08). Если
+       добывающих не хватило, чтобы уйти под предел, закачка закрывается, но
+       после них и с самой мелкой: крупная закачка держит пластовое давление
+       (ревизия 03.09, 2.1 #5).
     3. **Разрешённые к управлению** (`controllable_wells`) применяются **не
        здесь**: чтобы вернуть скважину к историческому режиму, нужно само
        историческое расписание, а планировщик его не видит — он получает уже
@@ -979,9 +990,20 @@ def _fit_fund(steps: list[ScheduleStep],
             active += [control.well for control in injectors if control.status == "OPEN"]
             if len(active) > limit:
                 # закрываем худших по удельной марже: то же правило, что и при
-                # нехватке мощности по жидкости — иначе выбор был бы произвольным
-                worst = sorted(set(active), key=lambda well: margins.get(well, 0.0))
-                closing = set(worst[: len(active) - limit])
+                # нехватке мощности по жидкости — иначе выбор был бы произвольным.
+                # Ранжируются только добывающие: у нагнетательной удельной маржи
+                # нет, и в общем сорте она оказывалась худшей всегда (Р-163)
+                excess = len(active) - limit
+                producing = {control.well for control in producers
+                             if control.status == "OPEN"}
+                worst = sorted(producing, key=lambda well: margins.get(well, 0.0))
+                closing = set(worst[:excess])
+                if len(closing) < excess:
+                    # добывающих не хватило: остаток берём с самой мелкой закачки
+                    pumping = {control.well: control.rate or 0.0 for control in injectors
+                               if control.status == "OPEN"}
+                    closing |= set(sorted(pumping, key=lambda well: pumping[well])
+                                   [: excess - len(closing)])
                 for index, control in enumerate(producers):
                     if control.well in closing and control.status == "OPEN":
                         shut(control.well, "предел числа действующих скважин",
@@ -994,7 +1016,8 @@ def _fit_fund(steps: list[ScheduleStep],
                 for index, control in enumerate(injectors):
                     if control.well in closing and control.status == "OPEN":
                         shut(control.well, "предел числа действующих скважин",
-                             f"действующих {len(active)} > предела {limit}",
+                             f"действующих {len(active)} > предела {limit}; "
+                             "добывающих не хватило, закрыта самая мелкая закачка",
                              control.rate or 0.0)
                         injectors[index] = InjectorControl(control.well, control.fluid,
                                                            "SHUT", control.mode, None,
@@ -1338,7 +1361,26 @@ def _fit_liquid_to_annual_volume(
                 control.well, "SHUT" if reduced <= 0 else control.status,
                 control.mode, reduced or None, control.bhp,
             ))
-        result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
+
+        # Год, в котором бюджет отбора равен нулю, закрывает и закачку. Иначе
+        # получается год без добычи, но с закачкой: вода идёт в пласт, OPEX
+        # тратится, выручки нет вовсе — прямое следствие раздачи объёма ранним
+        # годам (Р-147). Компенсировать в такой год нечего: отбора нет, а правило
+        # баланса воды считает закачку от отбора (ревизия 03.09, 2.1 #6).
+        injectors = list(step.injectors)
+        if factor <= 0.0:
+            for index, control in enumerate(injectors):
+                if control.status != "OPEN":
+                    continue
+                decisions.append(Allocation(
+                    well=control.well, resource=f"{reason}, {step.date.year}",
+                    before=control.rate or 0.0, after=0.0,
+                    reason=(f"за {step.date.year} отбор закрыт целиком: закачка без "
+                            "добычи тратит OPEX без выручки, компенсировать нечего"),
+                ))
+                injectors[index] = InjectorControl(control.well, control.fluid, "SHUT",
+                                                   control.mode, None, control.bhp)
+        result.append(ScheduleStep(step.date, tuple(producers), tuple(injectors)))
     return result, decisions
 
 

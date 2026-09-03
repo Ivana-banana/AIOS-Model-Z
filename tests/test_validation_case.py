@@ -757,6 +757,87 @@ def test_uncontrollable_wells_keep_the_reference_regime():
     restored = _restore_uncontrolled(origin, changed, frozenset({"P1"}))
 
     assert [c.liquid_rate for c in restored[0].producers] == [45.0, 30.0]
+def test_an_exhausted_liquid_budget_closes_injection_too():
+    """Год без добычи не должен оставаться годом с закачкой.
+
+    Объём за горизонт раздаётся ранним годам (Р-147), поздним достаётся ноль, и
+    всем добывающим ставится SHUT. Закачку при этом не трогали: вода шла в пласт,
+    OPEX тратился, выручки не было (ревизия 03.09, 2.1 #6).
+    """
+    from aios import planner
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.margin import Norms
+
+    steps = [ScheduleStep(
+        date(2014 + index // 12, index % 12 + 1, 1),
+        (ProducerControl("P1", "OPEN", "LRAT", 100.0, 50.0),),
+        (InjectorControl("I1", "WATER", "OPEN", "RATE", 150.0, 300.0),),
+    ) for index in range(24)]
+
+    # объёма хватает меньше чем на год: второй год получит ноль
+    fitted, decisions = planner.enforce(
+        steps, _forecast(months=3), Norms.from_file(),
+        _limits(max_field_liquid_m3_total=100.0 * 30 * 6))
+
+    second = [step for step in fitted if step.date.year == 2015]
+    assert second, "второй год в расписании есть"
+    assert all(c.status == "SHUT" for step in second for c in step.producers)
+    assert all(c.status == "SHUT" for step in second for c in step.injectors), (
+        "закачка обязана закрыться вместе с отбором"
+    )
+    assert any("компенсировать нечего" in d.reason for d in decisions)
+
+
+def test_the_active_wells_limit_closes_producers_not_injectors():
+    """Предел числа действующих скважин рубил закачку первой.
+
+    Удельная маржа определена через поднятый объём, а у нагнетательной объёма
+    нет — `_margin_per_liquid` возвращает для неё суммарную маржу в млн руб.,
+    величину другого масштаба. В общем сорте нагнетательная всегда оказывалась
+    худшей, и предел закрывал именно её, хотя срез закачки на Модели Z
+    обрушивает нефть вчетверо (ревизия 03.09, 2.1 #5).
+    """
+    from aios import planner
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.margin import Norms
+
+    steps = [ScheduleStep(
+        date(2014, month, 1),
+        (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),
+         ProducerControl("P2", "OPEN", "LRAT", 30.0, 50.0)),
+        (InjectorControl("I1", "WATER", "OPEN", "RATE", 200.0, 300.0),),
+    ) for month in (1, 2, 3)]
+    forecast = _forecast(wells=("P1", "P2"))
+
+    fitted, decisions = planner.enforce(
+        steps, forecast, Norms.from_file(), _limits(max_active_wells=2))
+
+    injecting = [c.well for step in fitted for c in step.injectors if c.status == "OPEN"]
+    assert injecting, "закачка не должна закрываться, пока есть добывающие"
+    assert any(d.resource == "предел числа действующих скважин" for d in decisions)
+
+
+def test_the_active_wells_limit_reaches_injectors_when_producers_run_out():
+    """Если добывающих не хватило — закрывается самая мелкая закачка."""
+    from aios import planner
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.margin import Norms
+
+    steps = [ScheduleStep(
+        date(2014, month, 1),
+        (ProducerControl("P1", "OPEN", "LRAT", 30.0, 50.0),),
+        (InjectorControl("I1", "WATER", "OPEN", "RATE", 50.0, 300.0),
+         InjectorControl("I2", "WATER", "OPEN", "RATE", 300.0, 300.0)),
+    ) for month in (1, 2, 3)]
+
+    fitted, _ = planner.enforce(
+        steps, _forecast(), Norms.from_file(), _limits(max_active_wells=1))
+
+    still = {c.well for step in fitted for c in step.injectors if c.status == "OPEN"}
+    assert "I2" not in still or "I1" not in still
+    assert "I1" not in still, "мелкая закачка уходит раньше крупной"
+
+
 def test_uncontrollable_well_returns_to_reference_on_every_step():
     """Опора — расписание-дельты: скважина упомянута раз, действует до конца.
 
