@@ -263,6 +263,102 @@ def test_service_archives_stay_out_of_tracking():
         )
 
 
+#: Порог «тяжёлого» файла и причина, по которой каждый такой файл здесь лежит.
+#: Порог не про место на диске: п. 8.3 ТЗ запрещает «избыточные или несвязанные
+#: материалы, затрудняющие проверку решения», а тяжёлый файл в репозитории
+#: решения — ровно тот случай, который обязан быть объяснён словами. Причина
+#: пишется здесь, а не в комментарии к коммиту: коммит через месяц никто не
+#: найдёт, а этот список читается вместе с тестом.
+HEAVY_BYTES = 1_000_000
+HEAVY_ALLOWED = {
+    "materials/Model_Z_final_OPM.zip":
+        "действующая поставка дека — вход воспроизведения (README, разд. 6)",
+    "materials/Model_Z.zip":
+        "первая поставка, тНавигатор — источник разбора COMPDATMD (aios/pvt.py)",
+    "materials/3. AIOS_Лекция_Разработка.pdf":
+        "лекция организаторов; выжимка — docs/method/lecture-3-reservoir.txt",
+    "materials/AIOS_Лекция.pptx":
+        "лекция организаторов; выжимка — docs/method/lecture-2-ml.txt",
+    "materials/Техническое_задание_хакатона_«AIOS».docx":
+        "ТЗ хакатона — сама постановка задачи",
+}
+
+#: Потолок веса рабочего дерева. Держится с запасом к нынешним 55 МБ: смысл не в
+#: точном числе, а в том, чтобы прибавка мегабайтов замечалась сразу, а не через
+#: ревизию.
+TRACKED_CEILING_BYTES = 60 * 1024 * 1024
+
+
+def _tracked_files() -> list[tuple[int, str]]:
+    """Отслеживаемые файлы и их размеры. `-z`, потому что иначе git цитирует имена.
+
+    Без `-z` git отдаёт кириллические имена в кавычках и восьмеричными кодами
+    вместо букв. Сравнить такое имя с записью списка нельзя, и проверка молча
+    перестаёт что-либо находить — худший исход для сторожа.
+    """
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True,
+                            check=True).stdout.decode("utf-8").split('\x00')
+    found = []
+    for name in listed:
+        if not name:
+            continue
+        path = root / name
+        if path.is_file():
+            found.append((path.stat().st_size, name))
+    return found
+
+
+def test_every_heavy_tracked_file_has_a_written_reason():
+    """Тяжёлый файл в репозитории обязан быть объяснён, иначе он груз (п. 8.3 ТЗ).
+
+    Прежний сторож ловил `.7z` по расширению — то есть ровно те два архива,
+    которые уже нашли. Любой другой тяжёлый файл (`.zip`, датасет, веса) вошёл бы
+    так же тихо, как в своё время `data.7z`: правило `.gitignore` на уже
+    отслеживаемый файл не действует, а по расширению его никто не ждал.
+    Здесь проверяется вес, а не расширение.
+    """
+    heavy = sorted(name for size, name in _tracked_files() if size >= HEAVY_BYTES)
+    unexplained = [name for name in heavy if not HEAVY_ALLOWED.get(name)]
+
+    assert not unexplained, (
+        "отслеживается тяжёлый файл без записанной причины: " + ", ".join(unexplained)
+        + " — либо снять через git rm --cached, либо дописать причину в HEAVY_ALLOWED"
+    )
+
+
+def test_the_list_of_heavy_files_does_not_outlive_them():
+    """Список причин не превращается в кладбище: снятый файл убирается из него.
+
+    Иначе через месяц он описывает не репозиторий, а память о нём — и разрешает
+    вернуть файл, про который решили обратное.
+    """
+    tracked = {name for _, name in _tracked_files()}
+    stale = sorted(name for name in HEAVY_ALLOWED if name not in tracked)
+
+    assert not stale, (
+        "в HEAVY_ALLOWED остались файлы, которых больше нет в отслеживании: "
+        + ", ".join(stale))
+
+
+def test_tracked_weight_stays_under_the_ceiling():
+    """Вес рабочего дерева под потолком — защита от прибавки по мегабайту.
+
+    Отдельно от проверки выше: сто файлов по 900 КБ каждый порог «тяжёлого» не
+    берут, а проверку решения затрудняют так же.
+    """
+    files = _tracked_files()
+    total = sum(size for size, _ in files)
+
+    assert total <= TRACKED_CEILING_BYTES, (
+        f"отслеживается {total / 1048576:.1f} МБ в {len(files)} файлах при потолке "
+        f"{TRACKED_CEILING_BYTES / 1048576:.0f} МБ — либо груз лишний, либо потолок "
+        f"поднимается осознанно и с записью в docs/decisions.md"
+    )
+
+
 def test_readme_does_not_expand_mit_beyond_the_licence_boundary():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
