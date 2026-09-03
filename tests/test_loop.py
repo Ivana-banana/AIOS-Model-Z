@@ -66,6 +66,73 @@ def plan(months: int = 18):
     return steps
 
 
+class _Responsive:
+    """Суррогат, чей прогноз следует за уставками расписания.
+
+    Нужен ровно для одного свойства: после того как планировщик срежет отбор,
+    следующий прогноз обязан показать **меньший** отбор. На тривиальном
+    бейзлайне этого не видно — он предсказывает по истории скважины, а не по
+    поданной уставке, — а именно это свойство и делает коридор баланса воды
+    неподвижной точкой, а не одним проходом (Р-189).
+    """
+
+    def predict(self, steps):
+        rows = []
+        for step in steps:
+            for control in step.producers:
+                rate = (control.liquid_rate or 0.0) if control.status == "OPEN" else 0.0
+                oil_t = rate * 0.1 * FLUIDS.oil_density / 1000
+                water_t = rate * 0.9 * FLUIDS.water_density / 1000
+                rows.append(make_row(step.date.isoformat(), control.well, wlpr=rate,
+                                     womr=oil_t / 30, liquid=oil_t + water_t, oil=oil_t))
+            for control in step.injectors:
+                rate = (control.rate or 0.0) if control.status == "OPEN" else 0.0
+                rows.append(make_row(step.date.isoformat(), control.well,
+                                     wwir=rate, injection=rate * 30.0))
+        return rows
+
+    def in_training_range(self, steps):
+        return []
+
+
+def test_the_corridor_holds_after_the_cuts_that_follow_it(norms):
+    """Срезки отбора поднимают компенсацию — цикл обязан довести её до коридора.
+
+    Компенсация есть отношение закачки к отобранному объёму, и каждая срезка
+    отбора её поднимает. Пока коридор подбирался первым и одним проходом,
+    расписание выходило из планировщика нарушающим тот самый коридор: замер
+    ревизии — 16 нарушений и 133–141 % на полном цикле, то есть при включённой
+    проверке fail-closed (Р-165) ни один кандидат не проходил сертификацию.
+    Лечится порядком **и** пересчётом прогноза (Р-189).
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.planner import Limits
+
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("P1", "OPEN", "LRAT", 100.0, 50.0),),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 100.0, 300.0),))
+             for month in range(1, 13)]
+
+    result = loop.run_cycle(
+        _Responsive(), steps, norms,
+        control_start=CONTROL_START, start_date=CONTROL_START,
+        tune_rates=False,
+        # предел по жидкости срежет отбор вдвое уже ПОСЛЕ того, как коридор
+        # подобран по исходному отбору
+        limits=Limits(max_field_liquid_m3_per_day=50.0,
+                      enforce_water_balance=True,
+                      water_balance_rule="compensation",
+                      water_tolerance=1.3),
+        fluids=FLUIDS,
+    )
+
+    assert result.case_problems == (), (
+        "расписание, только что приведённое к ограничениям, их нарушает: "
+        + "; ".join(result.case_problems)
+    )
+    assert result.allocations, "срезки обязаны быть названы, а не потеряны"
+
+
 def test_cycle_stops_the_watered_out_well_and_keeps_the_good_one(surrogate, norms):
     result = loop.run_cycle(surrogate, plan(), norms,
                             control_start=CONTROL_START, start_date=CONTROL_START)

@@ -195,7 +195,11 @@ def test_injection_before_any_production_is_zeroed_not_divided_by_zero(norms):
         planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
     )
 
-    assert result[0].injectors[0].rate == pytest.approx(0.0)
+    # ноль приёмистости закрывает скважину, а не оставляет её открытой с нулём:
+    # `WCONINJE` в режиме RATE требует уставку, и такую запись мы сами бракуем
+    assert result[0].injectors[0].status == "SHUT"
+    assert result[0].injectors[0].rate is None
+    assert validate(result) == []
     assert decisions and "возмещать нечего" in decisions[0].reason
 
 

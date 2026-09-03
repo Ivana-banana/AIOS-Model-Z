@@ -447,21 +447,6 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             f"выше верхней {limits.water_tolerance:.10g}"
         )
 
-    if limits.enforce_water_balance:
-        if limits.water_balance_rule == "external_water":
-            result, water = _fit_injection_to_external_water(
-                result, forecast, fluids, limits.max_external_water_m3_per_day
-            )
-        else:
-            result, water = _fit_injection_to_water_corridor(
-                result, forecast, fluids,
-                rule=limits.water_balance_rule,
-                ceiling=limits.water_tolerance,
-                floor=limits.water_tolerance_min,
-                source_m3_per_day=limits.max_external_water_m3_per_day,
-            )
-        decisions.extend(water)
-
     if limits.max_field_liquid_m3_per_day is not None:
         if limits.field_limits_are_annual_average:
             result, liquid = _fit_liquid_to_annual_volume(
@@ -577,6 +562,38 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             | _events_holding_the_fund(result, limits),
         )
         decisions.extend(events)
+
+    # Баланс воды подбирается ПОСЛЕДНИМ, и это исправление, а не перестановка.
+    #
+    # До 03.09 коридор стоял первым. Каждая следующая срезка уменьшает отбор — а
+    # компенсация есть отношение закачки к отбору, — то есть поднимает
+    # компенсацию выше уже подобранного потолка. Замер ревизии: нетронутая
+    # история при «только коридоре» даёт ноль решений, а с добавленными пределами
+    # по фазам — **15 нарушений** коридора и компенсацию 1,41; полный цикл на
+    # репетиции — 16 нарушений и 133–141 %. С включённой проверкой fail-closed
+    # (Р-165) это означает, что ни один кандидат не проходит сертификацию, то
+    # есть контур отказывается от собственных решений (Р-189).
+    #
+    # Здесь же кончается то, что можно сделать одним проходом: база коридора
+    # берётся из **прогноза**, а прогноз посчитан для расписания ДО срезок. Чтобы
+    # коридор считался по тому отбору, который расписание реально даёт, нужен
+    # новый прогноз — а суррогата у планировщика нет и быть не должно. Эту часть
+    # доводит до неподвижной точки цикл (`loop.run_cycle`): он умеет спросить
+    # прогноз заново.
+    if limits.enforce_water_balance:
+        if limits.water_balance_rule == "external_water":
+            result, water = _fit_injection_to_external_water(
+                result, forecast, fluids, limits.max_external_water_m3_per_day
+            )
+        else:
+            result, water = _fit_injection_to_water_corridor(
+                result, forecast, fluids,
+                rule=limits.water_balance_rule,
+                ceiling=limits.water_tolerance,
+                floor=limits.water_tolerance_min,
+                source_m3_per_day=limits.max_external_water_m3_per_day,
+            )
+        decisions.extend(water)
 
     # Квота отменяет мероприятие снятием записи со шага, поэтому на выходе
     # расписание снова частично дельтовое — а вся арифметика ограничений (и наша,
@@ -2127,6 +2144,23 @@ def _fit_injection_to_water_corridor(
         return steps, []
     return _scale_injection_by_year(steps, factors, reasons)
 
+def _injecting(control: InjectorControl, rate: float) -> InjectorControl:
+    """Запись закачки с новой приёмистостью; ноль закрывает скважину.
+
+    Открытая нагнетательная с приёмистостью 0 — недопустимая запись: `WCONINJE`
+    в режиме `RATE` требует уставку, и `schedule.validate` отвергает такую строку
+    («открытая скважина не может закачивать ноль»). Множитель ноль появляется у
+    коридора законно — например, в год, когда возмещать нечего (Р-178), — и
+    оставлять после него открытую скважину значило бы собирать расписание,
+    которое сами же браковали бы на выходе (Р-189).
+    """
+    if rate > 0:
+        return InjectorControl(control.well, control.fluid, control.status,
+                               control.mode, rate, control.bhp)
+    return InjectorControl(control.well, control.fluid, "SHUT", control.mode,
+                           None, control.bhp)
+
+
 def _scale_injection_by_year(steps: list[ScheduleStep],
                              factors: dict[int, float],
                              reasons: dict[int, str],
@@ -2164,8 +2198,7 @@ def _scale_injection_by_year(steps: list[ScheduleStep],
                     before=control.rate, after=reduced,
                     reason=reasons.get(step.date.year, ""),
                 ))
-            injectors.append(InjectorControl(control.well, control.fluid, control.status,
-                                             control.mode, reduced, control.bhp))
+            injectors.append(_injecting(control, reduced))
         result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
 
     return result, decisions
@@ -2196,10 +2229,7 @@ def _scale_injection(steps: list[ScheduleStep], factor: float,
                     Allocation(well=control.well, resource="закачка",
                                before=control.rate, after=reduced, reason=reason)
                 )
-            injectors.append(
-                InjectorControl(control.well, control.fluid, control.status, control.mode,
-                                reduced, control.bhp)
-            )
+            injectors.append(_injecting(control, reduced))
         result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
 
     return result, decisions

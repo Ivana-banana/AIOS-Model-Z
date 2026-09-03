@@ -238,8 +238,8 @@ def run_cycle(surrogate: Surrogate,
     # на себя, а вода и мощность по жидкости принадлежат объекту целиком
     allocations: list[planner.Allocation] = []
     if limits is not None:
-        steps, allocations = planner.enforce(
-            steps, surrogate.predict(steps), norms, limits, fluids
+        steps, allocations = _enforce_to_fixed_point(
+            surrogate, steps, norms, limits, fluids
         )
 
     # Скважины, которыми управлять не разрешено, возвращаются к опорному режиму.
@@ -391,6 +391,54 @@ def _restore_uncontrolled(origin: list[ScheduleStep] | tuple[ScheduleStep, ...],
         )
         result.append(ScheduleStep(step.date, producers, injectors))
     return result
+
+
+#: Сколько раз цикл готов пересчитать прогноз и повторить приведение к
+#: ограничениям. Три — не подобранное число, а потолок: на замерах хватало двух
+#: проходов, третий оставлен запасом. Больше значило бы прятать расхождение,
+#: которое надо не сглаживать, а называть.
+MAX_ENFORCE_PASSES = 3
+
+
+def _enforce_to_fixed_point(surrogate: Surrogate,
+                            steps: list[ScheduleStep],
+                            norms: Norms,
+                            limits: planner.Limits,
+                            fluids: Fluids | None,
+                            ) -> tuple[list[ScheduleStep], list[planner.Allocation]]:
+    """Приводить расписание к ограничениям, пока оно не перестанет меняться.
+
+    Один проход планировщика этого не даёт, и причина не в реализации, а в
+    устройстве задачи. База коридора баланса воды — **отобранный объём**, то есть
+    отклик на расписание; планировщик получает прогноз, посчитанный для
+    расписания **до** срезок, и после того, как он срежет отбор, тот же коридор
+    считался бы уже по другой базе. Замер ревизии 03.09: на репетиции полный
+    цикл давал 16 нарушений коридора и компенсацию 133–141 % — то есть
+    расписание, только что приведённое к ограничениям, их нарушало (Р-189).
+
+    Поэтому прогноз спрашивается заново, и приведение повторяется. Суррогат для
+    того и нужен: спросить его ещё раз стоит миллисекунды, а полный расчёт —
+    четверть часа.
+
+    Итерация останавливается, когда расписание совпало с предыдущим, либо на
+    `MAX_ENFORCE_PASSES`. Недостижение неподвижной точки не глушится: расписание
+    остаётся последним посчитанным, а нарушения назовёт `_case_problems` — они
+    для того и считаются по свежему прогнозу.
+    """
+    decisions: list[planner.Allocation] = []
+    current = list(steps)
+    for _ in range(MAX_ENFORCE_PASSES):
+        fitted, made = planner.enforce(
+            current, surrogate.predict(current), norms, limits, fluids
+        )
+        # Решения копятся по всем проходам, а не берутся с последнего: последний
+        # проход ничего не режет (потому и последний), и брать его список значило
+        # бы отчитаться пустотой о расписании, которое на самом деле урезано.
+        decisions.extend(made)
+        if fitted == current:
+            break
+        current = fitted
+    return current, decisions
 
 
 def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
