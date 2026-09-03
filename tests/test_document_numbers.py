@@ -21,6 +21,39 @@ def test_declared_npv_is_the_same_in_all_current_documents():
         assert "5 579,5" in _read(name), f"{name} потерял заявляемый ЧДД"
 
 
+def test_the_old_triple_never_stands_unlabelled_next_to_the_claim():
+    """Прежняя тройка при базе 2007 не стоит рядом с заявкой без подписи базы.
+
+    Смена базы дисконтирования на 1991 (Р-158) — не равномерный пересчёт, поэтому
+    сравнительные разборы остались при базе 2007, и сами по себе старые числа
+    законны. Опасна **смесь в одном абзаце**: ревизия 03.09 нашла в сценарии
+    защиты фразу «Заявляем 5 579,5 … при базовом 11 851,8, то есть плюс 1 281,9»
+    — докладчик так и прочитает, а жюри услышит противоречие с пакетом.
+
+    Правило: абзац, где заявляемое число стоит вместе с числом прежней тройки,
+    обязан называть базу — иначе читатель не может знать, какое из них к чему.
+    """
+    old = ("11 851,8", "13 133,8", "1 281,9", "13 152,9")
+    new = ("5 579,5", "5 300,5", "+279,0")
+    excuses = ("2007", "1991", "прежн", "прошл", "не заявля", "отозв")
+    offenders: list[str] = []
+
+    for name in ("README.md", "docs/submission.md", "docs/report.md",
+                 "docs/defence-final.md", "docs/defence-qa.md", "docs/demo.md",
+                 "docs/team-brief.md", "docs/tz-compliance.md",
+                 "docs/presentation.md", "docs/submission-day.md"):
+        for number, block in enumerate(_read(name).split("\n\n"), start=1):
+            if not (any(one in block for one in old) and any(one in block for one in new)):
+                continue
+            if not any(excuse in block for excuse in excuses):
+                offenders.append(f"{name}, абзац {number}: {block.strip()[:100]}")
+
+    assert offenders == [], (
+        "заявляемое число стоит в одном абзаце с прежней тройкой и базы не называет:"
+        "\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_submission_pairs_declared_npv_with_same_run_baseline_and_uplift():
     submission = _read("docs/submission.md")
 
