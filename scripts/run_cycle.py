@@ -37,6 +37,7 @@ from aios import (  # noqa: E402
     summary,
     trust,
 )
+from aios import explain as explain_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
 from aios.deckfiles import layout  # noqa: E402
 from aios.margin import Norms  # noqa: E402
@@ -140,6 +141,37 @@ def confirmation_command(*, case_dir: str | Path, source: Path,
         command.extend(("--multipliers", ",".join(str(value) for value in multipliers)))
     command.extend(("--search-seed", str(search_seed)))
     return shlex.join(command)
+
+
+def _write_explanation(out_dir: Path, result, surrogate_name: str, config) -> Path:
+    """Написать объяснение решения рядом с кейсом и вернуть путь к файлу.
+
+    Отказ слоя не роняет прогон: объяснение — отчётность о решении, а не само
+    решение. Но и молчать нельзя, поэтому источник (`llm`, `cache`, `template`,
+    `template-rejected`, `template-failed`) пишется в файл рядом с текстом: по
+    нему видно, объясняла модель или подставился шаблон.
+    """
+    path = out_dir / "explanation.json"
+    try:
+        explanation = explain_module.explain(
+            explain_module.evidence_from_cycle(
+                result, surrogate_name,
+                limits=config.limits, fluids=config.fluids),
+            config.explain,
+        )
+        record = {
+            "text": explanation.text,
+            "source": explanation.source,
+            "fingerprint": explanation.fingerprint,
+            "model": explanation.model,
+            "rejected_numbers": list(explanation.rejected_numbers),
+            "failure": explanation.failure,
+        }
+    except Exception as error:  # noqa: BLE001 — слой не должен уносить результат цикла
+        record = {"text": "", "source": "failed", "failure": f"{type(error).__name__}: {error}"}
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+    return path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -431,10 +463,18 @@ def main(argv: list[str] | None = None) -> int:
         model_dir=config.case.model_dir,
         forecast_fluids=config.fluids,
     )
+    # Слой интерпретируемости — часть единой команды, а не только интерфейса.
+    # До 03.09 объяснение рождалось лишь на странице цикла (`aios/web/app.py`),
+    # то есть автоматический прогон (п. 3.2.3 ТЗ) слой не задействовал вовсе и
+    # артефакта объяснения не оставлял. Объяснение пишется **тем же прогоном**,
+    # что и решение, — это требование `CLAUDE.md`, и файл рядом с кейсом
+    # доказывает его сам: другие числа туда попасть не могут (Р-180).
+    explanation_file = _write_explanation(Path(arguments.out), result, selected.name, config)
     print(f"кейс собран: {case.data_file}")
     print(f"расписание:  {case.schedule_file}")
     print(f"чем считался прогноз: {marker}")
     print(f"на каких плотностях:  {fluids_note}")
+    print(f"объяснение решения:   {explanation_file}")
     print()
     print("дальше — полный расчёт, без него прирост остаётся прогнозом:")
     # путь печатается относительным, когда кейс внутри репозитория, и абсолютным,

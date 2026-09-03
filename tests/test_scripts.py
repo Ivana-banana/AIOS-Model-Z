@@ -710,6 +710,17 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert "прогноз цикла считался одной плотностью" in note.read_text(encoding="utf-8")
     assert "на каких плотностях:" in printed
 
+    # Слой интерпретируемости — часть единой команды, а не только интерфейса
+    # (Р-180). До 03.09 объяснение рождалось лишь на странице цикла, то есть
+    # автоматический прогон (п. 3.2.3 ТЗ) его не производил вовсе.
+    explanation = json.loads(
+        (tmp_path / "out" / "explanation.json").read_text(encoding="utf-8"))
+    assert explanation["text"], printed
+    assert explanation["source"] in {
+        "llm", "cache", "template", "template-rejected", "template-failed"
+    }, explanation
+    assert "объяснение решения:" in printed
+
     # Маркер пишется в первом шаге, а сравнение происходит прежде чтения
     # выгрузки: случайно потерянный `--no-tune-rates` не должен заново запускать
     # поиск с настройкой дебитов и выдавать его прогноз за старый кейс.
