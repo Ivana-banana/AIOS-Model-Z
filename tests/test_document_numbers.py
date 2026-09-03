@@ -914,6 +914,40 @@ def test_slides_name_the_limits_count_the_code_actually_has():
     assert "27 ключ" not in slides, "в слайдах осталось прежнее число ключей"
 
 
+def _speed_measurement() -> tuple[float, float]:
+    """Замер 01.09: секунды полного расчёта ГГДМ и во сколько раз быстрее MLP.
+
+    Источник — запись «Ускорение прогноза измерено» в `docs/experiments.md`: она
+    в репозитории и есть на любой машине. Машиночитаемый слепок
+    `artifacts/forecast-speed.json` лежит только у той машины, что мерила
+    (`artifacts/` не отслеживается), поэтому читать его как **единственный**
+    источник значило бы ронять сбор у всех остальных и в чистом клоне, где
+    `docs/clean-clone-check.md` требует «0 падений». Слепок не выброшен: когда он
+    есть, он сверяется с журналом — расхождение между тем, что померили, и тем,
+    что записали, ловится здесь же (Р-161).
+    """
+    import json
+    import re
+
+    section = _read("docs/experiments.md").split("## Ускорение прогноза измерено", 1)[1]
+    section = section.split('\n## ', 1)[0]
+    ggdm_seconds = float(re.search(r"\| полный расчёт.*?\*\*(\d+) с\*\*", section).group(1))
+    speedup = float(
+        re.search(r"\| обученный суррогат.*?\*\*в ([\d ]+) раз\*\*", section)
+        .group(1).replace(" ", ""))
+
+    artifact = ROOT / "artifacts" / "forecast-speed.json"
+    if artifact.is_file():
+        speed = json.loads(artifact.read_text(encoding="utf-8"))
+        mlp = next(one for one in speed["замеры"] if one["модель"] == "MLP по сценариям DoE")
+        assert speed["ггдм_секунд"] == ggdm_seconds, (
+            "журнал разошёлся с замером по времени ГГДМ")
+        assert round(mlp["быстрее ГГДМ, раз"]) == speedup, (
+            "журнал разошёлся с замером по ускорению")
+
+    return ggdm_seconds, speedup
+
+
 def test_slides_price_of_transfer_follows_the_speed_measurement():
     """Цена переноса в часах пересчитывается из замера, а не переписывается.
 
@@ -921,16 +955,12 @@ def test_slides_price_of_transfer_follows_the_speed_measurement():
     это 60 × 660 с, то есть замер **первой** машины, тогда как ускорение 1 668 раз
     рядом взято из замера второй. Ровно тот след дублирования, о котором
     предупреждает `HANDOFF.md`: числа из двух разных замеров сошлись на одном
-    слайде. Считаем из `artifacts/forecast-speed.json` — он и есть источник.
+    слайде.
     """
-    import json
-
-    speed = json.loads(_read("artifacts/forecast-speed.json"))
-    ggdm_seconds = speed["ггдм_секунд"]
-    mlp = next(one for one in speed["замеры"] if one["модель"] == "MLP по сценариям DoE")
+    ggdm_seconds, speedup_times = _speed_measurement()
 
     hours = round(60 * ggdm_seconds / 3600)
-    speedup = f"{mlp['быстрее ГГДМ, раз']:,.0f}".replace(",", " ")
+    speedup = f"{speedup_times:,.0f}".replace(",", " ")
 
     slides = _read("docs/slides.html")
     assert hours == 14, "замер изменился — обновить слайды"
