@@ -26,7 +26,7 @@ from aios import balance, economics, optimise, planner, trust
 from aios.deck import ScheduleStep
 from aios.margin import Norms
 from aios.policy import Action, apply, explain, plan_conversions, plan_shutdowns
-from aios.schedule import ScheduleProblem, liquid_limit, validate
+from aios.schedule import MAX_INJECTION_BHP_ATM, ScheduleProblem, liquid_limit, validate
 from aios.summary import Fluids
 from aios.surrogate import Surrogate
 
@@ -240,9 +240,16 @@ def run_cycle(surrogate: Surrogate,
 
     warnings = list(surrogate.in_training_range(steps))
     # предел дебита жидкости — из таблицы ЭЦН тех нормативов, по которым считается
-    # ЧДД этого прогона, а не из литерала 500 от Модели Z (Б28)
-    problems = validate(steps, known_wells,
-                        max_liquid_rate=liquid_limit(economics.load_norms(norms_file)[1]))
+    # ЧДД этого прогона, а не из литерала 500 от Модели Z (Б28). То же и с
+    # давлением нагнетания: 300 атм — умолчание Модели Z, а кейс объявляет своё в
+    # `[limits].max_injector_bhp_atm`, и до 03.09 проверка результата его не знала,
+    # хотя планировщик исполнял (ревизия 03.09, п. 2.3 #5).
+    injection_bhp = getattr(limits, "max_injector_bhp_atm", None)
+    problems = validate(
+        steps, known_wells,
+        max_liquid_rate=liquid_limit(economics.load_norms(norms_file)[1]),
+        max_injection_bhp=(MAX_INJECTION_BHP_ATM if injection_bhp is None else injection_bhp),
+    )
 
     return CycleResult(
         base_chdd_m=base.chdd_m,

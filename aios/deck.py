@@ -130,16 +130,16 @@ def parse_keywords(text: str) -> list[Keyword]:
     keywords: list[Keyword] = []
     index = 0
     while index < len(tokens):
-        token = tokens[index]
+        token, at_line_start = tokens[index]
         index += 1
-        if not _is_keyword(token):
+        if not (at_line_start and _is_keyword(token)):
             continue  # мусор вне блока: пропускаем, а не угадываем
         name = token
         records: list[tuple[str | None, ...]] = []
         current: list[str] = []
         while index < len(tokens):
-            token = tokens[index]
-            if not current and _is_keyword(token):
+            token, at_line_start = tokens[index]
+            if not current and at_line_start and _is_keyword(token):
                 break  # блок без закрывающего '/' закрывается следующим ключевым словом
             index += 1
             if token == "/":
@@ -203,9 +203,38 @@ UNSUPPORTED_CONTROL_KEYWORDS = frozenset({
 })
 
 
+#: Ключевые слова, у которых пустой блок означает не «нечего назначать», а
+#: непрочитанную запись. Ни одно из них в настоящем деке без записей не стоит:
+#: `WCONPROD` без записей не назначает режим никому, `DATES` без записей не
+#: заводит шаг. Пустой блок здесь — признак того, что разбор споткнулся.
+_KEYWORDS_THAT_MUST_HAVE_RECORDS = WELL_CONTROL_KEYWORDS | {"DATES", "WELSPECS"}
+
+
 def parse_schedule_text(text: str) -> Schedule:
-    """Разобрать SCHEDULE-секцию из строки."""
+    """Разобрать SCHEDULE-секцию из строки.
+
+    Отказывает, если блок режима разобрался **пустым**. Это единственный известный
+    нам признак того, что запись прочитана не до конца: имя скважины без кавычек
+    (`WCONPROD` и на следующей строке ` P1 OPEN LRAT …`) неотличимо от ключевого
+    слова, потому что и то и другое — заглавный токен в начале строки. Различить
+    их без таблицы всех ключевых слов Eclipse нельзя, а вот заметить последствие
+    можно: `WCONPROD` остаётся без записей, и скважина исчезает из фонда,
+    SUMMARY-секции и ЧДД **молча**. Отказ превращает молчание в отказ — по тому
+    же правилу, по которому мы не подставляем умолчания за организаторов.
+    """
     keywords = parse_keywords(text)
+
+    empty = [one.name for one in keywords
+             if one.name in _KEYWORDS_THAT_MUST_HAVE_RECORDS and not one.records]
+    if empty:
+        raise ValueError(
+            f"блок {empty[0]} разобрался без записей — запись прочитана не до "
+            f"конца. Частая причина: имя скважины без кавычек в начале строки "
+            f"(строка {empty[0]}, следующая строка ` P1 OPEN …`): такой токен "
+            "неотличим от ключевого слова. "
+            f"Взять имена в кавычки либо записать запись на одной строке с "
+            f"ключевым словом"
+        )
 
     preamble: list[Keyword] = []
     steps: list[ScheduleStep] = []
@@ -272,16 +301,26 @@ def format_date_record(value: date) -> str:
     return f"{value.day:02d} {_MONTH_NAMES[value.month]} {value.year}"
 
 
-def _tokenize(text: str) -> list[str]:
-    tokens: list[str] = []
+def _tokenize(text: str) -> list[tuple[str, bool]]:
+    """Токены вместе с признаком «первый в своей строке».
+
+    Признак нужен разбору ключевых слов: в Eclipse ключевое слово стоит в начале
+    строки, а данные записи — нет. Без него любой заглавный токен считался
+    ключевым словом, и запись `WCONPROD P1 OPEN LRAT …` разбиралась как четыре
+    пустых ключевых слова подряд (`P1`, `OPEN`, `LRAT`), а скважина исчезала из
+    фонда молча.
+    """
+    tokens: list[tuple[str, bool]] = []
     for line in text.splitlines():
-        line = _strip_comment(line)
-        if line.strip():
-            tokens.extend(_TOKEN_RE.findall(line))
+        line = strip_comment(line)
+        if not line.strip():
+            continue
+        found = _TOKEN_RE.findall(line)
+        tokens.extend((token, index == 0) for index, token in enumerate(found))
     return tokens
 
 
-def _strip_comment(line: str) -> str:
+def strip_comment(line: str) -> str:
     """Убрать комментарий, не тронув `--` внутри кавычек.
 
     Простое `split("--")` режет запись посреди строки в кавычках: путь

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import pathlib
 from datetime import date
 
 import pytest
 from conftest import MODEL_Z_SCHEDULE
 
 from aios import deck
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 SAMPLE = """\
 -- комментарий, который не должен попасть в разбор
@@ -255,3 +258,99 @@ def test_a_comment_outside_quotes_is_still_removed():
     found = deck.parse_keywords("DATES\n  1 'JAN' 2007 /  -- начало горизонта\n/\n")
 
     assert found[0].records == (("1", "JAN", "2007"),)
+
+
+# --- ключевое слово — только первый токен строки -----------------------------
+# Ревизия 03.09 (п. 2.3 #1): `_KEYWORD_RE` считала ключевым словом любой заглавный
+# токен, и запись без кавычек разбиралась как цепочка пустых ключевых слов, а
+# скважина исчезала из фонда молча.
+
+
+def test_data_on_the_keyword_line_is_not_mistaken_for_keywords():
+    """`WCONPROD 'P1' OPEN LRAT …` — одна запись, а не четыре ключевых слова.
+
+    До правки `P1`, `OPEN` и `LRAT` становились именами ключевых слов: они
+    заглавные и подходят под шаблон. Скважина при этом пропадала — `producers`
+    оставался пустым **без единой жалобы**.
+    """
+    text = """
+DATES
+ 1 JAN 2014 /
+/
+WCONPROD 'P1' OPEN LRAT 4* 100 50 /
+/
+"""
+
+    assert [one.name for one in deck.parse_keywords(text)] == ["DATES", "WCONPROD"]
+
+    schedule = deck.parse_schedule_text(text)
+    assert [one.well for step in schedule.steps for one in step.producers] == ["P1"]
+
+
+def test_an_unquoted_well_name_on_the_keyword_line_is_read_too():
+    """Кавычки перестали быть условием разбора, когда запись на строке слова."""
+    text = """
+DATES
+ 1 JAN 2014 /
+/
+WCONPROD P1 OPEN LRAT 4* 100 50 /
+/
+"""
+
+    schedule = deck.parse_schedule_text(text)
+    assert [one.well for step in schedule.steps for one in step.producers] == ["P1"]
+
+
+def test_an_empty_control_block_is_refused_instead_of_losing_the_well():
+    """Имя без кавычек с новой строки различить нельзя — но промолчать нельзя тем более.
+
+    Заглавный токен в начале строки неотличим от ключевого слова без таблицы всех
+    слов Eclipse. Зато последствие видно: `WCONPROD` остаётся без записей.
+    Молчание тут стоит скважины в фонде, в SUMMARY и в ЧДД, поэтому — отказ.
+    """
+    text = """
+DATES
+ 1 JAN 2014 /
+/
+WCONPROD
+ P1 OPEN LRAT 4* 100 50 /
+/
+"""
+
+    with pytest.raises(ValueError) as refusal:
+        deck.parse_schedule_text(text)
+
+    assert "WCONPROD" in str(refusal.value)
+    assert "без записей" in str(refusal.value)
+
+
+def test_the_quoted_form_of_the_same_record_still_reads():
+    """Проверка отказа не должна ловить нормальный дек: тот же режим в кавычках."""
+    text = """
+DATES
+ 1 JAN 2014 /
+/
+WCONPROD
+ 'P1' OPEN LRAT 4* 100 50 /
+/
+"""
+
+    schedule = deck.parse_schedule_text(text)
+    assert [one.well for step in schedule.steps for one in step.producers] == ["P1"]
+
+
+def test_the_real_submitted_schedule_parses_the_same_after_the_change():
+    """Сдаваемый файл — 371 шаг и 103 скважины — читается как читался.
+
+    Правка трогает распознавание ключевых слов, то есть самый низ разбора. Без
+    этой проверки «стало строже» неотличимо от «стало ломать наш же файл».
+    """
+    path = ROOT / "runs" / "base" / "wells_schedule.inc"
+    if not path.is_file():
+        pytest.skip("нет выгрузки runs/base на этой машине")
+
+    schedule = deck.parse_schedule(path)
+    assert len(schedule.steps) == 371
+    assert len(schedule.wells) == 103
+    assert len(schedule.producer_wells) == 92
+    assert len(schedule.injector_wells) == 41
