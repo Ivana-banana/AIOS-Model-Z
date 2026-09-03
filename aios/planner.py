@@ -1984,69 +1984,172 @@ def _fit_injection_to_water_corridor(
 
     Правило `external_water` сюда не попадает: оно целиком про источник и
     обслуживается `_fit_injection_to_external_water`.
+
+    **Коридор подбирается по годам накопительно, и это не уточнение, а условие
+    допустимости.** До 03.09 здесь считался один множитель на весь горизонт:
+    суммы `base` и `planned` брались за все годы сразу. Проверяется же коридор
+    иначе — `aios.balance.compensation_problems` ведёт бегущие накопленные суммы
+    и сверяет отношение **на конец каждого года**. Числа расходились не в
+    последнем знаке: закачка 1 800 м³ при отборе 1 000 в первый год и 300 при
+    1 000 во второй дают в сумме 1,05 — планировщик молчал, — а на конец первого
+    года 180 % против потолка 115 %. То есть расписание проходило планировщик и
+    оставалось недопустимым, причём именно тем классом отказа, который не виден
+    до полного расчёта (ревизия 03.09, 2.1 #2).
+
+    Поэтому здесь тот же счёт, что в аудите: год за годом, накопленным итогом.
+    Множитель у каждого года свой и подбирается так, чтобы накопленное отношение
+    на конец этого года легло в коридор; перебор предыдущего года не забывается,
+    а вычитается из того, что можно закачать в следующем.
+
+    Предел источника остаётся годовым: мощность — расход, накопить его нельзя,
+    поэтому он ограничивает **свой** год, а не сумму (Р-162 про тот же счёт по
+    месяцам в аудите).
     """
-    base = 0.0
-    produced_water = 0.0
-    planned = 0.0
-    stamps: set[str] = set()
+    years: dict[int, dict[str, float]] = {}
+    stamps_by_year: dict[int, set[str]] = {}
+    strays = 0
     for row in forecast:
+        stamp = str(row.get("DATA", ""))[:7]
+        if len(stamp) != 7 or not stamp[:4].isdigit():
+            strays += 1
+            continue
+        year = int(stamp[:4])
+        bucket = years.setdefault(year, {"base": 0.0, "produced": 0.0, "planned": 0.0})
+        stamps_by_year.setdefault(year, set()).add(stamp)
         oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
         if liquid_t > 0 and 0 <= oil_t <= liquid_t:
             water_m3 = (liquid_t - oil_t) * 1000.0 / fluids.water_density
-            produced_water += water_m3
-            base += water_m3
+            bucket["produced"] += water_m3
+            bucket["base"] += water_m3
             if rule == "compensation":
-                base += oil_t * 1000.0 / fluids.oil_density
-        planned += max(row["WWIT_Diff"], 0.0)
-        stamp = str(row.get("DATA", ""))[:7]
-        if len(stamp) == 7:
-            stamps.add(stamp)
+                bucket["base"] += oil_t * 1000.0 / fluids.oil_density
+        bucket["planned"] += max(row["WWIT_Diff"], 0.0)
 
-    if planned <= 0 or base <= 0:
+    if strays or not years:
+        # Тихо подставить 365 суток или свалить всё в один год нельзя: коридор
+        # проверяется по календарным годам, и строка без даты означает, что счёт
+        # не с чем сверить. Лимит источника тем более суточный.
+        raise ValueError(
+            "коридору баланса воды нужна колонка DATA в каждой строке прогноза: "
+            f"без даты строку не отнести к году (строк без даты {strays})"
+        )
+
+    planned_total = sum(one["planned"] for one in years.values())
+    base_total = sum(one["base"] for one in years.values())
+    if planned_total <= 0 or base_total <= 0:
         return steps, []
 
-    allowed = base * ceiling
-    reason = (
-        f"закачка {planned:,.0f} м³ даёт компенсацию {planned / base:.2f} "
-        f"от отобранных {base:,.0f} м³ при потолке {ceiling:.2f}"
-        if rule == "compensation" else
-        f"закачка {planned:,.0f} м³ превышает добытую воду "
-        f"{base:,.0f} м³; источника сверх неё нет"
-    )
+    factors: dict[int, float] = {}
+    reasons: dict[int, str] = {}
+    base_c = 0.0
+    injected_c = 0.0
+    for year in sorted(years):
+        bucket = years[year]
+        base_c += bucket["base"]
+        planned_y = bucket["planned"]
+        if planned_y <= 0:
+            continue
 
-    if source_m3_per_day is not None:
-        if not stamps:
-            # Тихо подставить 365 нельзя: на длинном горизонте это занизило бы
-            # доступную воду в разы и срезало бы закачку без всякой причины.
-            raise ValueError(
-                "лимиту стороннего источника нужна колонка DATA в прогнозе: он "
-                "задан в м³/сут, и без календаря его не с чем сравнивать"
-            )
-        days = balance.days_of(stamps)
-        by_source = produced_water + source_m3_per_day * days
-        if by_source < allowed:
-            allowed = by_source
+        factor = 1.0
+        reason = ""
+
+        # верхняя граница: накопленное на конец года не выше базы × ceiling
+        room = base_c * ceiling - injected_c
+        if planned_y > room:
+            factor = max(room / planned_y, 0.0)
             reason = (
-                f"закачке нужно {(planned - produced_water) / days:,.0f} м³/сут воды "
-                f"со стороны при мощности источника {source_m3_per_day:,.10g} м³/сут"
+                f"{year}: накопленная закачка {injected_c + planned_y:,.0f} м³ даёт "
+                f"компенсацию {(injected_c + planned_y) / base_c:.2f} от отобранных "
+                f"{base_c:,.0f} м³ при потолке {ceiling:.2f}"
+                if rule == "compensation" else
+                f"{year}: накопленная закачка {injected_c + planned_y:,.0f} м³ превышает "
+                f"добытую воду {base_c:,.0f} м³; источника сверх неё нет"
             )
 
-    if planned > allowed:
-        return _scale_injection(steps, allowed / planned, reason)
+        # физика источника: своя вода этого года плюс мощность за его сутки.
+        # Воды, которой нет, никакая норма не создаёт — этот предел бьёт и
+        # верхнюю границу, и добор снизу.
+        if source_m3_per_day is not None:
+            days = balance.days_of(stamps_by_year[year])
+            by_source = bucket["produced"] + source_m3_per_day * days
+            if planned_y * factor > by_source:
+                factor = max(by_source / planned_y, 0.0)
+                reason = (
+                    f"{year}: закачке нужно "
+                    f"{(planned_y - bucket['produced']) / days:,.0f} м³/сут воды со "
+                    f"стороны при мощности источника {source_m3_per_day:,.10g} м³/сут"
+                )
 
-    if floor is None:
+        # нижняя граница коридора: добираем, но не выше того, что есть
+        if floor is not None:
+            required = base_c * floor - injected_c
+            if planned_y * factor < required:
+                wanted = required / planned_y
+                if source_m3_per_day is not None:
+                    days = balance.days_of(stamps_by_year[year])
+                    ceiling_by_source = (
+                        (bucket["produced"] + source_m3_per_day * days) / planned_y)
+                    wanted = min(wanted, ceiling_by_source)
+                if wanted > factor:
+                    factor = wanted
+                    reason = (
+                        f"{year}: накопленная закачка {injected_c + planned_y:,.0f} м³ "
+                        f"даёт компенсацию {(injected_c + planned_y) / base_c:.2f} от "
+                        f"базы правила {base_c:,.0f} м³ — ниже границы коридора "
+                        f"{floor:.2f}"
+                    )
+
+        injected_c += planned_y * factor
+        if abs(factor - 1.0) > 1e-12:
+            factors[year] = factor
+            reasons[year] = reason
+
+    if not factors:
         return steps, []
+    return _scale_injection_by_year(steps, factors, reasons)
 
-    # Добор ограничен той же доступной водой: `allowed` уже её учитывает.
-    required = min(base * floor, allowed)
-    if planned >= required:
-        return steps, []
+def _scale_injection_by_year(steps: list[ScheduleStep],
+                             factors: dict[int, float],
+                             reasons: dict[int, str],
+                             ) -> tuple[list[ScheduleStep], list[Allocation]]:
+    """Изменить закачку каждого года своим множителем.
 
-    return _scale_injection(
-        steps, required / planned,
-        f"закачка {planned:,.0f} м³ даёт {planned / base:.2f} от базы правила "
-        f"{base:,.0f} м³ — ниже границы коридора {floor:.2f}",
-    )
+    Отличие от `_scale_injection` — не в реализации, а в том, что множитель у
+    коридора баланса воды **годовой**: накопленное отношение проверяется на конец
+    каждого года, и один множитель на горизонт этому условию не отвечает (Р-170).
+    Решение по каждому году печатается один раз на скважину: иначе на девятнадцати
+    годах отчёт распухает в разы и перестаёт читаться. Имя ресурса остаётся
+    «закачка» — год назван в обосновании, а по имени ресурса решения группируют
+    и репетиция приёмки, и отчёт.
+    """
+    decisions: list[Allocation] = []
+    seen: set[tuple[int, str]] = set()
+    result: list[ScheduleStep] = []
+
+    for step in steps:
+        factor = factors.get(step.date.year, 1.0)
+        if factor == 1.0:
+            result.append(step)
+            continue
+        injectors = []
+        for control in step.injectors:
+            if control.status != "OPEN" or control.rate is None:
+                injectors.append(control)
+                continue
+            reduced = control.rate * factor
+            key = (step.date.year, control.well)
+            if key not in seen:
+                seen.add(key)
+                decisions.append(Allocation(
+                    well=control.well, resource="закачка",
+                    before=control.rate, after=reduced,
+                    reason=reasons.get(step.date.year, ""),
+                ))
+            injectors.append(InjectorControl(control.well, control.fluid, control.status,
+                                             control.mode, reduced, control.bhp))
+        result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
+
+    return result, decisions
 
 
 def _scale_injection(steps: list[ScheduleStep], factor: float,

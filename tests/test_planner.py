@@ -145,6 +145,65 @@ def test_without_a_floor_the_corridor_stays_one_sided(norms):
     assert result == steps
 
 
+def test_the_corridor_is_held_year_by_year_not_over_the_horizon(norms):
+    """Коридор проверяется накопленным итогом на конец каждого года.
+
+    Дефект ревизии 03.09 (2.1 #2): планировщик считал один множитель на весь
+    горизонт, а `balance.compensation_problems` ведёт бегущие суммы и сверяет
+    отношение на конец каждого года. Закачка 1 500 м³ при отборе 1 000 в первый
+    год и 300 при 1 000 во втором даёт в сумме 0,90 — планировщик молчал, — а на
+    конец первого года 150 % против потолка 130 %. Расписание проходило
+    планировщик и оставалось недопустимым.
+    """
+    from aios import balance
+
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0),
+                injected("2007-01-01", "9", 1500.0),
+                produced("2008-01-01", "1", 100.0, 900.0),
+                injected("2008-01-01", "9", 300.0)]
+    steps = [ScheduleStep(date(2007, 1, 1), (prod("1", 30.0),), (inj("9", 50.0),)),
+             ScheduleStep(date(2008, 1, 1), (prod("1", 30.0),), (inj("9", 10.0),))]
+
+    assert balance.compensation_problems(forecast, FLUIDS, 1.3), (
+        "исходный прогноз коридор нарушает — иначе тест ничего не проверяет"
+    )
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
+    )
+
+    # первый год срезан до потолка, второй остался как был
+    assert result[0].injectors[0].rate == pytest.approx(50.0 * 1300.0 / 1500.0)
+    assert result[1].injectors[0].rate == pytest.approx(10.0)
+    assert decisions and "2007" in decisions[0].reason
+
+
+def test_an_over_injected_year_is_paid_back_by_the_next_one(norms):
+    """Перебор прошлого года вычитается из того, что можно закачать в следующем.
+
+    Накопленный счёт тем и отличается от годового: если в первый год закачано
+    больше потолка и срезать это уже нельзя (год прошёл в прогнозе), то во второй
+    год допустимо меньше нормы самого второго года.
+    """
+    forecast = [produced("2007-01-01", "1", 100.0, 900.0),
+                injected("2007-01-01", "9", 1300.0),
+                produced("2008-01-01", "1", 100.0, 900.0),
+                injected("2008-01-01", "9", 1300.0)]
+    steps = [ScheduleStep(date(2007, 1, 1), (prod("1", 30.0),), (inj("9", 50.0),)),
+             ScheduleStep(date(2008, 1, 1), (prod("1", 30.0),), (inj("9", 50.0),))]
+
+    result, _ = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3), FLUIDS,
+    )
+
+    # база каждого года 1 000 м³, потолок 1,3 — на конец второго года допустимо
+    # 2 600 м³ накопленной закачки, из которых 1 300 уже израсходовано первым
+    assert result[0].injectors[0].rate == pytest.approx(50.0)
+    assert result[1].injectors[0].rate == pytest.approx(50.0)
+
+
 def test_compensation_below_the_floor_is_raised_to_the_floor(norms):
     """Отобрано 1 000 м³, закачано 100 — при коридоре снизу 0.85 нужно 850."""
     forecast = [produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 100.0)]
