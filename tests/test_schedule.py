@@ -218,3 +218,43 @@ def test_case_limits_still_caps_the_liquid_rate_at_the_vendor_ceiling():
     from aios.schedule import case_limits
 
     assert case_limits([{"max": 700.0}])["max_liquid_rate"] == 500.0
+
+
+def test_the_generated_header_is_pure_ascii():
+    """Заголовок сдаваемого файла — только ASCII, и это закреплено (Р-179).
+
+    Комментарий безвреден для парсера, но файл читает чужой симулятор в чужой
+    локали: под cp1251 кириллица превращается в мусор в первых строках
+    результата — там, где проверяющий смотрит первым делом. И наш собственный
+    входной контроль не-ASCII вне комментария считает отказом: держать у себя то,
+    что мы помечаем у других, — двойной стандарт.
+
+    Сторожа на это не было: решение записали закрытым, а проверка отсутствовала
+    (Б5 выжимки `STOP-BEFORE-SUBMIT.md`).
+    """
+    from aios.schedule import HEADER
+
+    assert HEADER.isascii(), (
+        "в заголовке снова не-ASCII: " + repr([line for line in HEADER.splitlines()
+                                               if not line.isascii()])
+    )
+
+
+def test_a_rendered_schedule_carries_no_non_ascii_of_its_own():
+    """Не только заголовок: весь наш сгенерированный текст обязан быть ASCII.
+
+    Заголовок — единственное место, где кириллица уже заводилась, но проверять
+    надо результат целиком: следующая строка на русском появится не в HEADER.
+    """
+    from datetime import date as date_type
+
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.schedule import render
+
+    text = render([ScheduleStep(
+        date_type(2014, 1, 1),
+        (ProducerControl("1", "OPEN", "LRAT", 100.0, 50.0),),
+        (InjectorControl("2", "WATER", "OPEN", "RATE", 40.0, 250.0),),
+    )])
+
+    assert text.isascii(), [line for line in text.splitlines() if not line.isascii()]

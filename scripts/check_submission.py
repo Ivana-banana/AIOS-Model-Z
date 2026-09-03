@@ -91,6 +91,7 @@ def check(text: str, deck_text: str, control_start: date,
     notes.extend(_horizon_notes(first, last, reference))
     notes.extend(_completion_notes(text, submitted))
     notes.extend(_declaration_notes(submitted))
+    notes.extend(_non_ascii_notes(text))
 
     silent = [well for well in reference.wells if well not in set(submitted.wells)]
     if silent:
@@ -140,6 +141,36 @@ def _preamble_problems(text: str, submitted: deck_module.Schedule,
     return [str(problem) for problem in schedule_module.validate(
         [head], known, max_liquid_rate=max_liquid_rate,
         max_injection_bhp=max_injection_bhp)]
+
+
+def _non_ascii_notes(text: str) -> list[str]:
+    """Не-ASCII байты в сдаваемом файле — заметка, а не отказ.
+
+    Комментарий сам по себе безвреден: парсер обязан выбросить всё от `--` до
+    конца строки. Но файл читает чужой симулятор в чужой локали, и под cp1251
+    кириллица превращается в мусор ровно там, куда проверяющий смотрит первым
+    делом. Заголовок генератора переведён на ASCII (Р-179) — а файл, собранный до
+    этой правки, по-прежнему несёт две кириллические строки, и узнать об этом
+    надо **до** отправки, а не от организаторов.
+
+    Почему заметка. Перегенерация меняет `md5` сдаваемого файла, а с ним тег и
+    числа в семи документах: это решение владельца, а не побочный эффект
+    проверки. Отказывать значило бы объявить непригодным файл, которым посчитано
+    заявляемое число.
+    """
+    lines = [number for number, line in enumerate(text.splitlines(), 1)
+             if not line.isascii()]
+    if not lines:
+        return []
+    listed = ", ".join(str(number) for number in lines[:5])
+    if len(lines) > 5:
+        listed += f" и ещё {len(lines) - 5}"
+    return [
+        f"не-ASCII байты в строках {listed} ({len(lines)} всего): под чужой "
+        f"локалью они превратятся в мусор. Генератор с Р-179 пишет заголовок "
+        f"только ASCII — значит, файл собран до этой правки и перегенерация "
+        f"уберёт их (но изменит md5, тег и числа в документах)"
+    ]
 
 
 def _horizon_notes(first: date, last: date, reference: deck_module.Schedule) -> list[str]:

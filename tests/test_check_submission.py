@@ -224,3 +224,65 @@ def test_a_file_declaring_every_controlled_well_keeps_quiet():
     _, notes = check(text, DECK, CONTROL_START)
 
     assert not [note for note in notes if "WELSPECS" in note]
+
+
+# --- Б5: не-ASCII в сдаваемом файле ------------------------------------------
+# Заголовок генератора переведён на ASCII (Р-179), но файл, собранный до этой
+# правки, по-прежнему несёт две кириллические строки. Сторожа на это не было:
+# решение записали закрытым, а проверки не завели.
+
+
+def test_non_ascii_bytes_are_reported_as_a_note_with_line_numbers():
+    """Кириллица в файле — заметка с номерами строк, а не отказ.
+
+    Отказ объявил бы непригодным файл, которым посчитано заявляемое число.
+    Заметка называет, где именно байты и чем это грозит: под чужой локалью они
+    превратятся в мусор ровно в тех строках, куда проверяющий смотрит первым
+    делом.
+    """
+    cyrillic = "-- wells_schedule.inc" + chr(10) + "-- Управляющие последовательности"
+    text = DECK.replace("-- wells_schedule.inc", cyrillic)
+
+    failures, notes = check(text, DECK, CONTROL_START)
+
+    about = [note for note in notes if "ASCII" in note]
+    assert about, notes
+    assert "2" in about[0], "заметка не называет строку"
+    assert not [failure for failure in failures if "ASCII" in failure], (
+        "не-ASCII объявлен отказом — так заявляемый файл станет непригодным"
+    )
+
+
+def test_a_pure_ascii_schedule_gets_no_such_note():
+    """Проверка не должна жаловаться на файл, с которым всё в порядке."""
+    _, notes = check(DECK, DECK, CONTROL_START)
+
+    assert DECK.isascii(), "фикстура сама не ASCII — тест проверяет не то"
+    assert not [note for note in notes if "ASCII" in note]
+
+
+def test_the_shipped_schedule_is_checked_for_it_too():
+    """Сдаваемый файл под трекингом — значит, его состояние проверяется здесь.
+
+    Не «должно быть ASCII»: файл собран до Р-179 и две кириллические строки в нём
+    есть. Тест стережёт, что проверка их **видит**, — превращение известного
+    дефекта в замолчанный стоило бы дороже самого дефекта.
+    """
+    import pytest
+
+    shipped = Path(__file__).resolve().parent.parent / "runs" / "matched-0995" / "wells_schedule.inc"
+    if not shipped.is_file():
+        pytest.skip("сдаваемого расписания нет на этой машине")
+
+    text = shipped.read_text(encoding="utf-8")
+    lines = [number for number, line in enumerate(text.splitlines(), 1)
+             if not line.isascii()]
+
+    if not lines:
+        return  # файл перегенерирован — заметке взяться неоткуда, и это хорошо
+
+    _, notes = check(text, text, CONTROL_START)
+    about = [note for note in notes if "ASCII" in note]
+
+    assert about, "в сдаваемом файле есть не-ASCII, а проверка молчит"
+    assert str(lines[0]) in about[0]

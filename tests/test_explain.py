@@ -644,3 +644,67 @@ def test_the_planner_really_says_what_the_explanation_looks_for():
     evidence = evidence_from_cycle(result, "тест", limits=limits, fluids=fluids)
 
     assert evidence.numbers["закачка урезана мощностью источника, скважин"] >= 1.0
+
+
+# --- Е4: кэш демо-объяснений на клоне проверяющего ---------------------------
+# ТЗ п. 3.1 требует языковую модель в ядре слоя, а на клоне организаторов нет ни
+# ключа, ни сети. `explain()` читает кэш раньше, чем проверяет `enabled`, —
+# значит, закоммиченный кэш показывает настоящий ответ модели без вызова.
+
+
+def test_a_cached_answer_is_shown_even_with_the_layer_switched_off(tmp_path):
+    """Кэш читается раньше `enabled` — на этом и стоит вся затея Е4.
+
+    Без этого свойства закоммиченный кэш был бы бесполезен: у проверяющего слой
+    выключен по умолчанию (`config.toml`, `[explain].enabled = false`), потому
+    что учётных данных у него нет.
+    """
+    import json
+
+    from aios.explain import Evidence, Settings, explain
+
+    evidence = Evidence(subject="остановка скважины 42", numbers={"убыток, млн руб.": 6.0})
+    settings = Settings(enabled=False, cache_dir=str(tmp_path))
+
+    stored = {"text": "Скважина остановлена: убыток 6,0 млн руб.",
+              "model": "yandexgpt/latest", "fingerprint": evidence.fingerprint()}
+    (tmp_path / f"{evidence.fingerprint()}.json").write_text(
+        json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+
+    answer = explain(evidence, settings)
+
+    assert answer.source == "cache", "кэш не прочитан при выключенном слое"
+    assert answer.text == stored["text"]
+    assert answer.model == "yandexgpt/latest"
+
+
+def test_a_committed_cache_entry_is_a_real_model_answer():
+    """Закоммиченный кэш обязан нести имя модели и свой же отпечаток.
+
+    Смысл кэша — показать проверяющему **ответ модели** без ключа. Файл,
+    написанный руками или собранный шаблоном, выдал бы наш текст за ответ модели
+    — то есть ровно то, что этот проект запрещает. `explain()` пишет кэш только
+    на пути `llm`, уже после проверки чисел; тест стережёт, что в репозиторий
+    попадает именно такой файл.
+
+    Пока кэша нет — пропуск: сгенерировать его может только машина с ключом, и
+    это записано открытым пунктом Е4.
+    """
+    import json
+
+    import pytest
+
+    root = Path(__file__).resolve().parent.parent
+    cached = sorted((root / "artifacts" / "explanations").glob("*.json"))         if (root / "artifacts" / "explanations").is_dir() else []
+    if not cached:
+        pytest.skip("кэша демо-объяснений в репозитории нет — Е4 остаётся открытым")
+
+    for path in cached:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        assert stored.get("text", "").strip(), f"{path.name}: пустой текст"
+        assert stored.get("model", "").strip(), (
+            f"{path.name}: нет имени модели — такой файл неотличим от шаблона"
+        )
+        assert stored.get("fingerprint") == path.stem, (
+            f"{path.name}: отпечаток не совпадает с именем файла — кэш не от этих фактов"
+        )
