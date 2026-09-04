@@ -29,6 +29,17 @@ def main() -> int:
         print(f"дека нет: {args.deck}")
         return 2
 
+    # Каталог вместо `.DATA` — самая вероятная ошибка вызова: `docs/portability.md`
+    # пишет «check_deck.py <дек>», и это читается как каталог дека. Прежде здесь
+    # приходила трассировка `PermissionError` из `Path.read_text` — сообщение,
+    # которое не говорит ни что не так, ни что делать (найдено 05.09).
+    if args.deck.is_dir():
+        found = sorted(args.deck.glob("*.DATA")) + sorted(args.deck.glob("*.data"))
+        hint = (f" Похоже, вам нужен {found[0].as_posix()}"
+                if found else " В этом каталоге .DATA не найден.")
+        print(f"нужен корневой .DATA дека, а не каталог: {args.deck}.{hint}")
+        return 2
+
     print(deckcheck.report(args.deck))
     return 1 if deckcheck.check(args.deck) else 0
 

@@ -1454,3 +1454,60 @@ def test_rehearsal_runs_on_the_model_and_leaves_no_violation(tmp_path):
     code = rehearse_case.main(["--config", str(config), "--rows", str(rows)])
 
     assert code == 0, "после срезки осталось нарушенное условие — см. вывод"
+
+
+def test_check_deck_refuses_a_directory_with_a_usable_hint(tmp_path, capsys):
+    """Каталог вместо `.DATA` — отказ с подсказкой, а не трассировка.
+
+    `docs/portability.md` пишет «check_deck.py <дек>», и это читается как каталог
+    дека; на кейсе организаторов входной контроль запускают первым. Прежде здесь
+    приходил `PermissionError` из `Path.read_text` — сообщение, которое не
+    говорит ни что не так, ни что делать (найдено 05.09).
+    """
+    from scripts.check_deck import main
+
+    deck = tmp_path / "Модель"
+    deck.mkdir()
+    (deck / "CASE.DATA").write_text("RUNSPEC" + chr(10), encoding="utf-8")
+
+    import sys as system
+
+    argv = system.argv
+    try:
+        system.argv = ["check_deck.py", str(deck)]
+        code = main()
+    finally:
+        system.argv = argv
+
+    printed = capsys.readouterr().out
+    assert code == 2, "каталог принят как дек"
+    assert ".DATA" in printed and "не каталог" in printed
+    assert "CASE.DATA" in printed, "подсказка не называет найденный файл"
+
+
+def test_check_deck_reads_the_real_deck(capsys):
+    """Опорный случай: настоящий дек проходит контроль без отказов.
+
+    Без него предыдущий тест сторожит только отказ и не замечает, если контроль
+    перестанет работать вовсе.
+    """
+    import sys as system
+
+    import pytest
+
+    from scripts.check_deck import main
+
+    deck = ROOT / "vendor" / "Model_Z_OPM" / "Model_Z.data"
+    if not deck.is_file():
+        pytest.skip("дек Модели Z не распакован")
+
+    argv = system.argv
+    try:
+        system.argv = ["check_deck.py", str(deck)]
+        code = main()
+    finally:
+        system.argv = argv
+
+    printed = capsys.readouterr().out
+    assert code == 0, "настоящий дек отвергнут входным контролем"
+    assert "отказов нет" in printed
