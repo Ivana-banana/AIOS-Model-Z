@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -856,3 +858,44 @@ def test_a_healthy_region_says_nothing_about_degeneracy():
     )
     assert not [one for one in routed_to_full_run(None, None, region=region)
                 if "вырожден" in one]
+
+
+def test_the_submitted_schedule_is_outside_the_trust_region_and_that_is_said():
+    """Заявляемое расписание вне доверенной области — и документы это называют.
+
+    Замер 05.09: d = 127,5 при пороге 24,13, впятеро дальше границы. Это не
+    дефект, а устройство: расписание собрано простым правилом, а его ЧДД
+    посчитан полным расчётом — суррогат в этой цепочке не участвует. Но молчать
+    об этом нельзя: жюри спросит, что шлюз говорит про саму заявку, и ответ «мы
+    не смотрели» хуже ответа «вне области, и вот почему это правильно».
+
+    Судит не пересказ шлюза, а сам шлюз: тест запускает ту же команду, что
+    записана в ответе, и читает её вывод. Пересказ разошёлся бы с кодом молча.
+    """
+    pytest.importorskip("joblib")
+    root = Path(__file__).resolve().parent.parent
+    model = root / "artifacts" / "surrogate.joblib"
+    schedule = root / "runs" / "matched-0995" / "wells_schedule.inc"
+    if not model.is_file() or not schedule.is_file():
+        pytest.skip("нет артефакта суррогата или сдаваемого расписания")
+
+    done = subprocess.run(
+        [sys.executable, str(root / "scripts" / "trust_gate.py"),
+         "--model", str(model), "--schedule", str(schedule)],
+        capture_output=True, text=True, encoding="utf-8", cwd=root, timeout=600,
+    )
+    assert done.returncode == 2, (
+        f"шлюз не отправил заявку на полный расчёт (код {done.returncode}):"
+        f"\n{done.stdout}\n{done.stderr}"
+    )
+    assert "ВНЕ области" in done.stdout, (
+        "заявляемое расписание оказалось внутри области — тогда ошибка суррогата "
+        "переносится на заявку, и ответ 2.7 в docs/defence-qa.md надо переписать:"
+        f"\n{done.stdout}"
+    )
+
+    answers = (root / "docs" / "defence-qa.md").read_text(encoding="utf-8")
+    assert "127,5" in answers, "ответы защиты не называют расстояние заявки"
+    assert "не выбиралось суррогатом" in answers, (
+        "не сказано, почему «вне области» здесь правильный исход"
+    )
