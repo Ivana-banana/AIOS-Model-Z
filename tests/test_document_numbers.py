@@ -1158,3 +1158,26 @@ def test_the_reference_gap_names_the_flag_it_was_measured_with():
 
     readme = _read("README.md")
     assert "chargeInitialPump = ДА" in readme, "README называет разрыв без предпосылки"
+
+
+def test_the_scale_benchmark_numbers_carry_their_date_or_the_new_count():
+    """Числа замера масштабирования подписаны датой или новым счётом.
+
+    Замер 31.08 дал 20 действий и 41 урезание. После Р-189 (коридор по годам) на
+    том же фонде выходит 59 и 618: планировщик принимает решение на скважину ×
+    год вместо одного на горизонт. Свойство, ради которого замер делался,
+    сохранилось — рост кратен фонду, — но само число решений устарело, а в речи
+    защиты оно произносится вслух.
+
+    Стереть числа нельзя: замер снят и записан. Обязательна подпись рядом.
+    """
+    marks = ("31.08", "Р-189", "59 и 618", "05.09")
+    separator = '\n' * 2
+    for name in ("docs/defence-final.md", "docs/defence-qa.md",
+                 "docs/tz-compliance.md", "docs/report.md"):
+        for paragraph in _read(name).split(separator):
+            if "41 " + chr(8594) + " 328" not in paragraph:
+                continue
+            assert any(mark in paragraph for mark in marks), (
+                name + ": число замера без подписи: " + paragraph[:300]
+            )
