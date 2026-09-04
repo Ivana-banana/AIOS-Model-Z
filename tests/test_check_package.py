@@ -517,3 +517,63 @@ def test_the_shipped_trace_agrees_with_the_files_next_to_it():
     record = json.loads(trace.read_text(encoding="utf-8"))
 
     assert _trace_inputs_problem(schedule, record) is None
+
+
+def test_the_gate_measures_records_even_without_a_scaling_report():
+    """Нет карты множителей — мерить всё равно есть что, и это делается.
+
+    Раньше отсутствие `scaling.json` давало строку «не измерена». Честно, но
+    слабее возможного: обнулённая уставка видна из пары «эталон и сдаваемый
+    файл» без всякого намерения. Сдаваемый кейс собран до появления отчёта,
+    поэтому это не гипотетическая ветка, а рабочая.
+
+    Числа привязаны к самому файлу: 21 594 уставочных записи — это ровно та
+    величина, которой отчитывался прогон `inj-1.6`, и расхождение означало бы,
+    что сдаётся не то расписание.
+    """
+    import pytest
+    from check_package import _audit_without_report
+
+    root = Path(__file__).resolve().parent.parent
+    schedule = root / "runs" / "matched-0995" / "wells_schedule.inc"
+    if not schedule.is_file():
+        pytest.skip("нет сдаваемого расписания")
+    try:
+        from aios import config as config_module
+        from aios.deckfiles import layout
+
+        config = config_module.load(root / "config.toml")
+        layout(config.case.model_dir).one("SCHEDULE")
+    except Exception:  # noqa: BLE001 — дек в репозиторий не кладём (GIT.md)
+        pytest.skip("нет дека Модели Z — сверять не с чем")
+
+    problem, note = _audit_without_report(schedule)
+
+    assert problem is None, note
+    assert "21594 уставочных записей" in note, note
+    assert "обнулённых нет" in note, note
+    assert "producer 1.500–1.500" in note, note
+
+
+def test_the_gate_refuses_a_schedule_whose_records_lost_their_rate(monkeypatch):
+    """Обнуление — отказ, а не примечание: иначе множитель тихо закрыл бы фонд."""
+    import check_package
+    import pytest
+
+    from aios import optimise
+
+    root = Path(__file__).resolve().parent.parent
+    schedule = root / "runs" / "matched-0995" / "wells_schedule.inc"
+    if not schedule.is_file():
+        pytest.skip("нет сдаваемого расписания")
+
+    dirty = optimise.RecordAudit(records=3, zeroed=(("2014-01-01", "p"),),
+                                 off_mode={}, ratios={})
+    monkeypatch.setattr(optimise, "audit_records", lambda before, after: dirty)
+
+    problem, _ = check_package._audit_without_report(schedule)
+
+    assert problem is not None
+    assert "1 открытых записей без расхода" in problem
+    assert "2014-01-01 p" in problem
+

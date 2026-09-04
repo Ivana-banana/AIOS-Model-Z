@@ -473,7 +473,7 @@ def _scaling_problem(path: Path) -> tuple[str | None, str]:
     """
     report = path.parent / "scaling.json"
     if not report.is_file():
-        return None, "доля буквально применённых записей не измерена (нет scaling.json)"
+        return _audit_without_report(path)
     try:
         data = json.loads(report.read_text(encoding="utf-8"))
         share = float(data["share"])
@@ -490,6 +490,60 @@ def _scaling_problem(path: Path) -> tuple[str | None, str]:
             "",
         )
     return None, f"множитель применён буквально ко всем {records} записям"
+
+
+def _audit_without_report(path: Path) -> tuple[str | None, str]:
+    """Мерить и без карты множителей: обнуление записи видно из пары файлов.
+
+    Раньше отсутствие `scaling.json` означало строку «не измерена», и это было
+    честно, но слабее возможного. Карта намерения нужна, чтобы судить, применён
+    ли **заявленный** множитель; чтобы поймать запись, потерявшую расход, она не
+    нужна — достаточно эталона и сдаваемого файла. Первое остаётся неизвестным
+    и так и называется, второе теперь проверяется.
+
+    Обнулённая уставка — отказ: открытая скважина без расхода означает, что
+    множитель попал на пустое поле, а не на уставку.
+    """
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    try:
+        from aios import config as config_module
+        from aios import optimise
+        from aios.deck import parse_schedule
+        from aios.deckfiles import layout
+
+        config = config_module.load(ROOT / "config.toml")
+        reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+        start = config.case.control_start
+        before = [one for one in reference.steps if one.date >= start]
+        after = [one for one in parse_schedule(path).steps if one.date >= start]
+    except Exception as error:  # noqa: BLE001 — причина уходит в строку проверки
+        return None, f"сверка записей не выполнена: {type(error).__name__}: {error}"
+
+    if len(before) != len(after):
+        # разные календари — это не «сверка не удалась», а другой файл; отказом
+        # здесь не делаем: календарь проверяет отдельный пункт, и дублировать
+        # его вердикт значило бы получить два разных объяснения одной причины
+        return None, (
+            f"scaling.json нет, и сверить записи не с чем: у эталона {len(before)} "
+            f"шагов с {start}, у файла {len(after)}"
+        )
+    audit = optimise.audit_records(before, after)
+
+    if not audit.clean:
+        first = ", ".join(f"{when} {well}" for when, well in audit.zeroed[:3])
+        return (
+            f"в сдаваемом файле {len(audit.zeroed)} открытых записей без расхода "
+            f"(первые: {first}): множитель попал на пустое поле, а не на уставку",
+            "",
+        )
+    span = "; ".join(f"{kind} {low:.3f}–{high:.3f}"
+                     for kind, (low, high) in sorted(audit.ratios.items()))
+    return None, (
+        f"scaling.json нет — доля буквально применённых записей неизвестна; "
+        f"сверка с эталоном: {audit.records} уставочных записей, обнулённых нет, "
+        f"фактический множитель {span}"
+    )
 
 
 def _schedule_problem(path: Path) -> str | None:

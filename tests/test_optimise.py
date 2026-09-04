@@ -1070,3 +1070,52 @@ def test_the_joint_search_can_start_from_a_given_scenario():
     with pytest.raises(ValueError, match="которых нет в расписании"):
         choose_joint_rates(Flat(), steps, start_date=date(2007, 1, 1),
                            start={("production", "нет такой"): 0.5})
+
+
+def _pair(before_rate, after_rate, *, mode="LRAT", status="OPEN"):
+    """Пара «эталон и сдаваемый файл» из одного шага и одной скважины."""
+    return (
+        [ScheduleStep(START, (ProducerControl("p", status, mode, before_rate, 50.0),), ())],
+        [ScheduleStep(START, (ProducerControl("p", status, mode, after_rate, 50.0),), ())],
+    )
+
+
+def test_record_audit_finds_a_setpoint_that_lost_its_rate():
+    """Открытая запись без расхода — отказ, а не «множитель применён».
+
+    Это тот самый случай, ради которого бакет и заведён: `(None or 0.0) × 1.5`
+    даёт ноль, то есть множитель молча закрывает скважину. Карта намерения для
+    его обнаружения не нужна — хватает пары файлов.
+    """
+    before, after = _pair(30.0, 0.0)
+    audit = optimise.audit_records(before, after)
+
+    assert audit.records == 1
+    assert not audit.clean
+    assert audit.zeroed == ((START.isoformat(), "p"),)
+
+
+def test_record_audit_reports_the_actual_span_when_nothing_was_lost():
+    before, after = _pair(30.0, 45.0)
+    audit = optimise.audit_records(before, after)
+
+    assert audit.clean
+    assert audit.ratios["producer"] == (1.5, 1.5)
+
+
+def test_record_audit_separates_records_that_are_not_setpoints():
+    """Под `BHP` то же поле — предел, а не уставка: в долю оно не входит."""
+    before, after = _pair(30.0, 45.0, mode="BHP")
+    audit = optimise.audit_records(before, after)
+
+    assert audit.records == 0
+    assert audit.off_mode == {"BHP": 1}
+    assert audit.clean
+
+
+def test_record_audit_refuses_schedules_of_different_length():
+    """Разные календари сравнивать нечем; молчаливое усечение хуже отказа."""
+    before, after = _pair(30.0, 45.0)
+    with pytest.raises(ValueError):
+        optimise.audit_records(before + before, after)
+

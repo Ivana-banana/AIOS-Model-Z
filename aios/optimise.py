@@ -643,6 +643,82 @@ def scaling_report(before: list[ScheduleStep] | tuple[ScheduleStep, ...],
                          off_mode=off_mode, without_rate=without_rate)
 
 
+@dataclass(frozen=True)
+class RecordAudit:
+    """Что стало с записями режимов, если карта множителей неизвестна.
+
+    `scaling_report` отвечает на вопрос «применён ли **заявленный** множитель
+    буквально» и потому требует карту намерения. Она живёт в `scaling.json`
+    рядом с кейсом, а кейс, собранный до её появления (или полученный без
+    выгрузки прогона), карты не имеет — и тогда доля буквально применённых
+    записей неизвестна навсегда.
+
+    Но отказ мерить и невозможность мерить — разные вещи. Без карты всё ещё
+    проверяемо главное, ради чего бакет и заведён: **не потеряла ли запись
+    уставку**. Множитель, применённый к полю, которое под данным режимом
+    является пределом, а не уставкой, ослабляет ограничение молча; множитель,
+    попавший на `None`, обнуляет скважину. Оба случая видны из пары «эталон и
+    сдаваемый файл», без всякого намерения.
+
+    Поля: `records` — открытые записи с уставкой в эталоне; `zeroed` — из них
+    те, что в сдаваемом файле лишились расхода (обнуление); `off_mode` —
+    открытые записи, где эталон управляет не уставкой; `ratios` — фактические
+    отношения «стало / было» по видам, для показа диапазона.
+    """
+
+    records: int
+    zeroed: tuple[tuple[str, str], ...]
+    off_mode: dict[str, int]
+    ratios: dict[str, tuple[float, float]]
+
+    @property
+    def clean(self) -> bool:
+        """Ни одна уставочная запись не потеряла расход."""
+        return not self.zeroed
+
+
+def audit_records(before: list[ScheduleStep] | tuple[ScheduleStep, ...],
+                  after: list[ScheduleStep] | tuple[ScheduleStep, ...]) -> RecordAudit:
+    """Сверить эталон и сдаваемый файл запись за записью без карты множителей.
+
+    Шаги обязаны соответствовать друг другу один в один: сравнение расписаний
+    разной длины означало бы, что сравниваются разные календари, и молчаливое
+    усечение здесь опаснее отказа.
+    """
+    records = 0
+    zeroed: list[tuple[str, str]] = []
+    off_mode: dict[str, int] = {}
+    seen: dict[str, list[float]] = {"producer": [], "injector": []}
+
+    for step_before, step_after in zip(before, after, strict=True):
+        pairs = [("producer", one, two) for one, two
+                 in zip(step_before.producers, step_after.producers, strict=True)]
+        pairs += [("injector", one, two) for one, two
+                  in zip(step_before.injectors, step_after.injectors, strict=True)]
+        for kind, control_before, control_after in pairs:
+            if control_before.status != "OPEN":
+                continue
+            rate_before = (control_before.liquid_rate if kind == "producer"
+                           else control_before.rate)
+            rate_after = (control_after.liquid_rate if kind == "producer"
+                          else control_after.rate)
+            if control_before.mode != SETPOINT_MODES[kind]:
+                off_mode[control_before.mode] = off_mode.get(control_before.mode, 0) + 1
+                continue
+            if rate_before is None or rate_before == 0:
+                continue
+            records += 1
+            if not rate_after:
+                zeroed.append((step_before.date.isoformat(), control_before.well))
+                continue
+            seen[kind].append(rate_after / rate_before)
+
+    ratios = {kind: (min(values), max(values))
+              for kind, values in seen.items() if values}
+    return RecordAudit(records=records, zeroed=tuple(zeroed),
+                       off_mode=off_mode, ratios=ratios)
+
+
 def _multiplier_of(spec: float | Mapping[str, float], well: str) -> float:
     """Множитель записи: общий или назначенный этой скважине картой."""
     if isinstance(spec, Mapping):

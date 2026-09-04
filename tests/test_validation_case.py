@@ -439,7 +439,10 @@ def test_the_preflight_refuses_a_label_that_does_not_describe_the_file(tmp_path:
     schedule.write_text("-- пусто\n", encoding="utf-8")
 
     missing, detail = _scaling_problem(schedule)
-    assert missing is None and "не измерена" in detail
+    # без отчёта проверка не молчит и не падает: она говорит, что именно
+    # неизвестно. Здесь файл пуст, поэтому сверять записи не с чем — и это
+    # сказано числом шагов, а не исключением (Р-215)
+    assert missing is None and "сверить записи не с чем" in detail
 
     (tmp_path / "scaling.json").write_text(
         json.dumps({"records": 10, "literal": 4, "share": 0.4}), encoding="utf-8"
