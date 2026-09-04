@@ -1181,3 +1181,37 @@ def test_the_scale_benchmark_numbers_carry_their_date_or_the_new_count():
             assert any(mark in paragraph for mark in marks), (
                 name + ": число замера без подписи: " + paragraph[:300]
             )
+
+
+def test_surrogate_metrics_in_documents_come_from_the_shipped_artifact():
+    """Метрики суррогата читаются из артефакта, а не переписываются из документа.
+
+    `R²` отклика по нефти 0,5081 и медиана `Skill` 0,0966 названы в отчёте,
+    ответах защиты, `surrogate.md` и сводке докладчику — и до 05.09 ничем не были
+    связаны с самим файлом. Переобучение меняет их молча, а в отчёте остаётся
+    прежняя пара: ровно тот класс расхождения, из-за которого в этом проекте
+    заведены сторожа на числа.
+
+    Пропуск, если артефакта нет: на машине без него сверять нечего, и это
+    законный исход (`README.md`, раздел про пропуски).
+    """
+    import pytest
+
+    joblib = pytest.importorskip("joblib")
+    artefact = ROOT / "artifacts" / "surrogate.joblib"
+    if not artefact.is_file():
+        pytest.skip("обученного суррогата нет на этой машине")
+
+    metrics = joblib.load(artefact).report.metrics["WOMT_Diff"]
+    r2 = f"{metrics.neural_response_r2:.4f}".replace(".", ",")
+    skill = f"{metrics.neural_skill_median:.4f}".replace(".", ",")
+
+    for name in ("docs/report.md", "docs/defence-qa.md", "docs/surrogate.md",
+                 "docs/team-brief.md"):
+        document = _read(name)
+        assert r2 in document, (
+            name + ": R² отклика по нефти разошёлся с артефактом, в файле " + r2
+        )
+        assert skill in document, (
+            name + ": медиана Skill по нефти разошлась с артефактом, в файле " + skill
+        )
