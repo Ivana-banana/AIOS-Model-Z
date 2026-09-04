@@ -7,11 +7,40 @@
 
 from __future__ import annotations
 
+import ctypes
+import os
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from aios import economics, summary
+
+
+def _resdata_path(directory: Path) -> Path:
+    """Вернуть путь, который понимает нативный writer ``resdata`` на Windows.
+
+    ``resdata==6.3.3`` читает готовые файлы из Unicode-путей, но его тестовый
+    ``Summary.writer`` возвращает null, если хотя бы один компонент пути не
+    ASCII. Это относится только к синтетическим файлам этого модуля. Короткое
+    имя существующего каталога оставляет файлы в ``tmp_path`` и не меняет
+    проверяемый код.
+    """
+    if os.name != "nt" or str(directory).isascii():
+        return directory
+
+    get_short_path = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+    get_short_path.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint)
+    get_short_path.restype = ctypes.c_uint
+    buffer = ctypes.create_unicode_buffer(32_768)
+    length = get_short_path(str(directory), buffer, len(buffer))
+    error = ctypes.get_last_error()
+    if length == 0 or length >= len(buffer) or not buffer.value.isascii():
+        pytest.skip(
+            "resdata Summary.writer не поддерживает Unicode-путь, "
+            f"а короткое имя Windows недоступно (ошибка {error})"
+        )
+    return Path(buffer.value)
 
 
 def _write_case(tmp_path, monthly_oil_m3, monthly_water_m3, monthly_injection_m3=None,
@@ -32,7 +61,8 @@ def _write_case(tmp_path, monthly_oil_m3, monthly_water_m3, monthly_injection_m3
     ]
     injection_rate = injection_rate or [value / 31.0 for value in injections]
 
-    writer = Summary.writer(str(tmp_path / "CASE"), start, 10, 10, 3)
+    case = _resdata_path(tmp_path) / "CASE"
+    writer = Summary.writer(str(case), start, 10, 10, 3)
     all_vectors = (
         ("WOPT", "SM3"), ("WWPT", "SM3"), ("WWIT", "SM3"),
         ("WOPR", "SM3/DAY"), ("WLPR", "SM3/DAY"), ("WWIR", "SM3/DAY"),
@@ -62,7 +92,7 @@ def _write_case(tmp_path, monthly_oil_m3, monthly_water_m3, monthly_injection_m3
             if keyword in requested:
                 t_step[f"{keyword}:{well}"] = value
     writer.fwrite()
-    return tmp_path / "CASE"
+    return case
 
 
 def test_a_well_with_no_vectors_at_all_is_refused(tmp_path):
@@ -365,7 +395,8 @@ def test_an_export_without_our_summary_section_is_refused_not_read_as_zeros(tmp_
     """
     from resdata.summary import Summary
 
-    writer = Summary.writer(str(tmp_path / "CASE"), datetime(2014, 1, 1), 10, 10, 3)
+    case = _resdata_path(tmp_path) / "CASE"
+    writer = Summary.writer(str(case), datetime(2014, 1, 1), 10, 10, 3)
     writer.add_variable("FOPT", unit="SM3")
     writer.add_t_step(0, sim_days=0.0)
     for step in range(3):
@@ -373,7 +404,7 @@ def test_an_export_without_our_summary_section_is_refused_not_read_as_zeros(tmp_
     writer.fwrite()
 
     with pytest.raises(ValueError, match="SUMMARY"):
-        summary.monthly_rows(tmp_path / "CASE", wells=["1"])
+        summary.monthly_rows(case, wells=["1"])
 
 
 def test_watercut_limit_lives_apart_from_the_physical_sanity_checks():
