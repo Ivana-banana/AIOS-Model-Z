@@ -461,3 +461,19 @@ def test_launch_check_still_fails_without_the_single_entry_point(tmp_path):
     readme.write_text("# Проект\n\n## Установка\n\n## Запуск\n", encoding="utf-8")
 
     assert not _readme_has_launch(readme)
+
+
+def test_the_readme_explains_the_skips_a_clean_clone_will_show():
+    """Проверяющий увидит 18 пропусков и должен понимать, что это не поломка.
+
+    Замер 04.09 на чистом клоне: 1 452 теста, 0 падений, **18 пропусков** против
+    6 на машине с выгрузками. Пропуск здесь означает «проверять нечего на этой
+    машине», а не «проверка не работает», — и без объяснения в README это
+    читается как треть молчащих проверок.
+    """
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "18 тестов пропускаются" in readme, "README не готовит к пропускам"
+    assert "-rs" in readme, "не сказано, как увидеть причины пропусков"
+    for source in ("runs/base", "portability.md", "core.js"):
+        assert source in readme, f"не названа причина пропусков: {source}"
