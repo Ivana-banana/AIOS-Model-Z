@@ -1228,3 +1228,25 @@ def test_the_allocation_table_is_folded_when_the_planner_actually_cuts(project):
         "решения печатаются по одному: коридор по годам даст сотни строк"
     )
     assert "Решений" in text and "ресурсов" in text
+
+
+def test_the_form_default_does_not_lead_straight_into_a_refusal(client):
+    """Умолчание формы не должно вести в 409 на первом же нажатии.
+
+    Совместный подбор режимов на обученной модели идёт больше часа — веб-запрос
+    столько не живёт, и страница честно отвечает отказом с командой для
+    терминала. Но пока «подбор режимов» стоял первым в списке, именно он
+    выбирался по умолчанию: проверяющий, выбравший обученную модель и нажавший
+    «Запустить», получал отказ, ничего не сделав неправильно (2.4 #1).
+    """
+    import re
+
+    page = client.get("/run/base").text
+    start = page.index('<select name="mode">')
+    modes = re.findall(r'<option value="(\w+)"', page[start:start + 500])
+
+    assert modes, "в форме не осталось вариантов режима"
+    assert modes[0] == "stops", (
+        f"по умолчанию выбран {modes[0]!r} — на обученной модели это сразу 409"
+    )
+    assert "full" in modes, "вариант с подбором режимов пропал вовсе"
