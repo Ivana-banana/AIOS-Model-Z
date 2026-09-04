@@ -172,3 +172,56 @@ def test_a_model_below_the_quality_gate_is_refused_before_the_simulator(tmp_path
     refusal = refuse_surrogate(path)
 
     assert refusal is not None and "порог" in refusal
+
+
+# --- поведение без симулятора: это увидит проверяющий без Docker --------------
+
+
+def test_a_failed_step_stops_the_run_and_returns_its_code():
+    """Первый же отказ останавливает прогон и возвращает свой код.
+
+    Продолжать нельзя: шаг 4 на непосчитанном шаге 3 даёт не ошибку, а тихо
+    неверное число. Проверено запуском 05.09 на машине без симулятора — шаг 2
+    отвечает «не найден flow», прогон останавливается с кодом 1, а шаги 3–5 не
+    выполняются вовсе.
+    """
+    from run_all import execute
+
+    done = []
+
+    def runner(command):
+        done.append(command[0])
+        return 0 if len(done) == 1 else 1
+
+    steps = [(f"шаг {n}", [f"cmd{n}"]) for n in range(1, 6)]
+    code = execute(steps, runner)
+
+    assert code == 1, "отказ шага не дошёл до кода возврата команды"
+    assert done == ["cmd1", "cmd2"], (
+        f"после отказа выполнялись дальнейшие шаги: {done}"
+    )
+
+
+def test_the_run_reports_which_step_failed():
+    """Сообщение называет номер и название шага, а не только код.
+
+    «Завершился с кодом 1» без указания шага заставляет проверяющего гадать,
+    какой из пяти упал.
+    """
+    import io
+    import sys as system
+
+    from run_all import execute
+
+    stderr = io.StringIO()
+    original = system.stderr
+    try:
+        system.stderr = stderr
+        execute([("сборка кейса", ["a"]), ("расчёт на ГГДМ", ["b"])],
+                lambda command: 0 if command == ["a"] else 3)
+    finally:
+        system.stderr = original
+
+    printed = stderr.getvalue()
+    assert "шаг 2" in printed and "расчёт на ГГДМ" in printed
+    assert "кодом 3" in printed, "код отказа не назван"
