@@ -1139,3 +1139,22 @@ def test_no_slide_carries_more_text_than_the_measured_maximum():
         "слайд тяжелее измеренного максимума — перемерить в браузере: "
         + "; ".join(worst)
     )
+
+
+def test_the_reference_gap_names_the_flag_it_was_measured_with():
+    """Сверка с эталоном обязана называть значение `chargeInitialPump`.
+
+    То же сравнение при двух значениях их же параметра даёт +0,98 % и +2,78 %:
+    их публикация посчитана при ДА (счётчик насосов 145 сходится только так,
+    Р-119), а наша заявка — при НЕТ, как стоит в поставленных нормативах. Число
+    без предпосылки воспроизводится не той командой, которой получено (04.09).
+    """
+    report = _read("docs/report.md")
+
+    assert "+0,98 %" in report
+    assert "chargeInitialPump = ДА" in report, "предпосылка сверки не названа"
+    assert "--charge-initial-pump" in report, "команда воспроизведения не названа"
+    assert "2,78" in report, "второе значение той же сверки скрыто"
+
+    readme = _read("README.md")
+    assert "chargeInitialPump = ДА" in readme, "README называет разрыв без предпосылки"
