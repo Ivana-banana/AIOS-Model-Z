@@ -1496,3 +1496,77 @@ def test_the_warning_names_the_transfer_and_its_measured_price():
     assert about, f"перенос не назван ни одной пометкой: {warnings}"
     assert "85 %" in about[0] and "25 %" in about[0]
     assert "нет ни одной строки" not in about[0]
+
+
+def test_the_clamp_keeps_unphysical_rows_out_of_the_economics():
+    """В экономику не попадает ни одной строки «нефти больше жидкости».
+
+    Модель предсказывает пять целей независимо, и на почти безводной скважине
+    нефть перескакивает жидкость. Замер 05.09 на опорном расписании: 910 строк
+    из 23 175 (3,93 %), медиана превышения 2,71 %, максимум 29,2 %. Путь в
+    экономику (`clamp=True`) обязан обнулять этот класс полностью — иначе ЧДД
+    считается на данных, которых не бывает.
+
+    Проверяется на синтетическом наборе: настоящий артефакт есть не на всякой
+    машине, а свойство клампа от него не зависит.
+    """
+    frame = _dataset_frame()
+    bundle = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+    surrogate = NeuralSurrogate.create(bundle, _schedule(rate=95.0),
+                                       require_quality=False)
+
+    raw = surrogate.predict(_schedule(rate=140.0), clamp=False)
+    clamped = surrogate.predict(_schedule(rate=140.0), clamp=True)
+
+    assert raw and clamped
+    assert not [one for one in clamped
+                if one["WOMT_Diff"] > one["WLPT_Diff"] > 0], (
+        "нефизичная строка дошла до экономики"
+    )
+    assert not [one for one in clamped if one["WLPT_Diff"] < 0
+                or one["WOMT_Diff"] < 0 or one["WWIT_Diff"] < 0], (
+        "отрицательное приращение дошло до экономики"
+    )
+
+
+def test_the_diagnostics_still_see_what_the_clamp_hides():
+    """Кламп правит прогноз, но не прячет нарушение от диагностики.
+
+    `_physical_problems` смотрит прогноз **до** клампа: иначе обнуление скрыло бы
+    само нарушение, и пометки «нефти больше жидкости» исчезли бы вместе с ним.
+
+    Проверяется на **сдаваемом** артефакте: на синтетической фикстуре модель
+    физична, и тест выродился бы в пропуск. Замер 05.09 на опорном расписании:
+    910 нефизичных строк из 23 175 до клампа, 0 после, 31 пометка диагностики.
+    """
+    from pathlib import Path
+
+    from aios.deck import parse_schedule
+
+    artefact = Path(__file__).resolve().parent.parent / "artifacts" / "surrogate.joblib"
+    schedule = Path(__file__).resolve().parent.parent / "runs" / "base" / "wells_schedule.inc"
+    if not artefact.is_file() or not schedule.is_file():
+        pytest.skip("нет сдаваемого артефакта или выгрузки runs/base")
+
+    steps = [one for one in parse_schedule(schedule).steps
+             if one.date >= date_(2007, 1, 1)]
+    surrogate = NeuralSurrogate.create(joblib.load(artefact), steps,
+                                       require_quality=False)
+
+    raw = surrogate.predict(steps, clamp=False)
+    unphysical = [one for one in raw if one["WOMT_Diff"] > one["WLPT_Diff"] > 0]
+    clamped = surrogate.predict(steps, clamp=True)
+
+    assert unphysical, "у сдаваемого артефакта нарушений нет — обновить замер в docs/surrogate.md"
+    assert not [one for one in clamped if one["WOMT_Diff"] > one["WLPT_Diff"] > 0], (
+        "нефизичная строка дошла до экономики"
+    )
+    # Именно это нарушение, а не «хоть какое-то»: при клампе строки обнуляются,
+    # и диагностика всё равно найдёт другие поводы — тогда проверка ничего не
+    # стережёт. Ищем пометку про нефть больше жидкости.
+    said = [one for one in surrogate.in_training_range(steps)
+            if "нефти больше" in one]
+    assert said, (
+        "кламп спрятал от диагностики именно «нефти больше жидкости» — "
+        "она смотрит уже исправленный прогноз"
+    )
