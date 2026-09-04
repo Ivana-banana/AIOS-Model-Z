@@ -1092,3 +1092,50 @@ def test_slides_price_of_transfer_follows_the_speed_measurement():
     assert f"≈ 60 прогонов ≈ {hours} часов" in slides, "слайды не называют цену переноса замером"
     assert f"{speedup} раз" in slides, "слайды не называют измеренное ускорение"
     assert "11 часов" not in slides, "в слайдах осталась цена переноса из чужого замера"
+
+
+def test_the_spare_slide_names_the_donor_transfer_with_both_numbers():
+    """Запасной слайд про масштабируемость обязан нести перенос донорами.
+
+    Им отвечают на замечание трекера про MLP, и оба числа называются вместе:
+    85 % по нефти и 25 % по закачке. Перенос неравноценный, и подавать его без
+    второго числа — та же подача, что скорость без точности (Р-193).
+    """
+    slides = _read("docs/slides.html")
+    start = slides.index("Масштабируемость и цена переноса")
+    section = slides[start:slides.index("</section>", start)]
+
+    assert "донор" in section, "слайд не называет механизм переноса"
+    assert "85 %" in section and "25 %" in section, "названо не оба числа"
+
+
+def test_no_slide_carries_more_text_than_the_measured_maximum():
+    """Вес текста слайда не выше того, что уже мерилось браузером.
+
+    Переполнение сцены 1920×1080 меряется только в браузере, и на машине без
+    него добавлять текст вслепую нельзя. Консервативная граница: ни один слайд
+    не тяжелее самого тяжёлого из **измеренных** 02.09 — тогда все двенадцать
+    занимали 431–796 из 880 пикселей. Слайд, перешагнувший эту границу, обязан
+    быть перемерен, а не принят на веру.
+    """
+    import re
+
+    slides = _read("docs/slides.html")
+    measured = 773  # слайд «Заявляемое число»: 796 из 880 пикселей при 773 знаках
+
+    worst = []
+    for section in re.findall(r"<section[^>]*>.*?</section>", slides, re.S):
+        body = re.search(r'<div class="slide-body">(.*?)</div>\s*<div class="src"',
+                         section, re.S)
+        if body is None:
+            continue
+        text = " ".join(re.sub(r"<[^>]+>", " ", body.group(1)).split())
+        if len(text) > measured:
+            head = re.search(r"<h[12][^>]*>(.*?)</h[12]>", section, re.S)
+            name = " ".join(re.sub(r"<[^>]+>", "", head.group(1)).split()) if head else "?"
+            worst.append(f"{name}: {len(text)} знаков")
+
+    assert not worst, (
+        "слайд тяжелее измеренного максимума — перемерить в браузере: "
+        + "; ".join(worst)
+    )
