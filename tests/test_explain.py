@@ -708,3 +708,50 @@ def test_a_committed_cache_entry_is_a_real_model_answer():
         assert stored.get("fingerprint") == path.stem, (
             f"{path.name}: отпечаток не совпадает с именем файла — кэш не от этих фактов"
         )
+
+
+# --- выбор поставщика: `config.toml` называет рабочим yandex -------------------
+
+
+def test_the_configured_provider_is_the_one_that_gets_asked(monkeypatch):
+    """Слой обращается к тому поставщику, который назван в конфигурации.
+
+    `config.toml` называет рабочим `yandex`, а умолчание кода — `anthropic`.
+    Адаптер Яндекса покрыт своими тестами, но **выбор** между поставщиками через
+    `explain()` до 05.09 не проверялся: опечатка или подмена умолчания увела бы
+    запрос к другому вендору и другому счёту молча.
+    """
+    from aios import explain as explain_module
+
+    asked = []
+
+    def fake_yandex(folder_id):
+        asked.append(("yandex", folder_id))
+        return None, "проверка: клиент не создаётся"
+
+    monkeypatch.setattr("aios.yandex.from_environment", fake_yandex)
+
+    result = explain_module.explain(
+        evidence(), Settings(enabled=True, provider="yandex", folder_id="каталог"))
+
+    assert asked == [("yandex", "каталог")], (
+        f"спрошен не тот поставщик: {asked}"
+    )
+    assert result.source == "template-failed"
+    assert "проверка" in (result.failure or ""), "причина поставщика потеряна"
+
+
+def test_an_unknown_provider_is_refused_not_silently_replaced():
+    """Опечатка в имени поставщика — отказ, а не тихий откат на Anthropic.
+
+    Молчаливая подмена увела бы запрос к другому вендору: другой счёт, другая
+    политика данных, другой ответ.
+    """
+    from aios import explain as explain_module
+
+    result = explain_module.explain(
+        evidence(), Settings(enabled=True, provider="yandxe"))
+
+    assert result.source == "template-failed"
+    assert "yandxe" in (result.failure or ""), "имя опечатки не названо"
+    assert "anthropic" in (result.failure or "").lower(), "не сказано, что допустимо"
