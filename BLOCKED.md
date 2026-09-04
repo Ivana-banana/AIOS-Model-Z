@@ -40,7 +40,7 @@
 **Кому.** Машине с ключом; на этой его нет (`YANDEX_API_KEY` не задан,
 `[explain].enabled = false`).
 
-## 0.3. Два полных расчёта: симулятор на этой машине поставить нельзя (04.09)
+## 0.5. Два полных расчёта: симулятор на этой машине поставить нельзя (04.09)
 
 **Что нужно:** два прогона ГГДМ на машине, где есть OPM Flow.
 
@@ -64,6 +64,33 @@
 То есть установка симулятора отсюда невозможна не по осторожности, а по правам.
 Дек при этом на месте (`vendor/Model_Z_OPM`, 11 файлов), выгрузки `runs/base` и
 конфигурации готовы: машине с симулятором остаётся только запустить.
+
+**Команды — дословно, чтобы не выводить их заново.**
+
+Прогон 1, кандидат Р-198 (репетиционный конфиг, тот же, на котором мерилось):
+
+```bash
+python scripts/run_cycle.py --config config-rehearsal.toml --from runs/base --out runs/p198-check
+docker run --rm -v "$PWD:$PWD" -w "$PWD" aios scripts/run_flow.sh runs/p198-check/RUN.DATA 4 --parsing-strictness=low
+python scripts/export_rows.py runs/p198-check --config config-rehearsal.toml
+python scripts/run_cycle.py --confirm runs/p198-check --from runs/base --config config-rehearsal.toml --search-seed 20260817
+```
+
+Прогон 2, коридор 0.85–1.15 (`config.toml` с двумя изменёнными строками —
+`water_tolerance = 1.15`, `water_tolerance_min = 0.85`; сохранить как
+`config-corridor.toml`, чтобы команда осталась воспроизводимой):
+
+```bash
+python scripts/run_cycle.py --config config-corridor.toml --from runs/base --out runs/corridor-check
+docker run --rm -v "$PWD:$PWD" -w "$PWD" aios scripts/run_flow.sh runs/corridor-check/RUN.DATA 4 --parsing-strictness=low
+python scripts/export_rows.py runs/corridor-check --config config-corridor.toml
+python scripts/run_cycle.py --confirm runs/corridor-check --from runs/base --config config-corridor.toml --search-seed 20260817
+```
+
+**С чем сравнивать.** Прогноз обещает 1 329,8 у первого и +1,4 млн руб. у
+второго. Если полный расчёт даст меньше — это не поломка, а ровно тот разрыв
+«суррогат ↔ ГГДМ», ради измерения которого прогон и делается: записать число в
+`docs/experiments.md` и не заявлять его.
 
 **Что уже сделано вместо этого.** Всё, что считается без полного расчёта:
 перемер Р-198 на прогнозе, замер коридора по годам (в окне управления **все 19
