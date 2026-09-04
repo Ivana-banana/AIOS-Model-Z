@@ -1860,3 +1860,39 @@ def test_the_fund_limit_ranks_by_the_densities_of_the_case(norms, monkeypatch):
     assert all(one == case_fluids for one in seen), (
         f"в расчёт маржи ушли чужие плотности: {seen}"
     )
+
+
+def test_the_horizon_budget_feeds_early_years_first():
+    """Объём за горизонт раздаётся ранним годам, а не поровну (Р-147).
+
+    Решение принято числом 02.09: та же сумма даёт 4 324 619 м³ приведённых при
+    раздаче с начала против 3 302 815 при пропорции — +31 %. Дисконт отвечает
+    однозначно: кубометр лучше поднять рано. До 05.09 у функции не было ни
+    одного теста, то есть возврат к пропорции прошёл бы молча и стоил бы трети
+    приведённого отбора.
+
+    Здесь три года просят по 3 650 м³ (10 м³/сут), а предела хватает на полтора.
+    Правильная раздача: первый год берёт всё, второй — остаток, третьему ноль.
+    """
+    steps = [
+        ScheduleStep(date(year, month, 1),
+                     (ProducerControl("p", "OPEN", "LRAT", 10.0, 50.0),), ())
+        for year in (2020, 2021, 2022) for month in range(1, 13)
+    ]
+    # 2020 високосный — просит 3 660 м³ против 3 650 у соседей; сравнивать с
+    # «третью суммы» нельзя, сравниваем с тем, что просит сам год
+    wanted = planner._horizon_budget(steps, 1e12, producers=True)
+    asked = sum(wanted.values())
+
+    budget = planner._horizon_budget(steps, asked / 2, producers=True)
+
+    assert budget[2020] > budget[2021] > budget[2022], (
+        "объём раздан не по порядку лет — вернулась пропорция, а с ней −31 % "
+        "приведённого отбора (Р-147)"
+    )
+    assert budget[2020] == pytest.approx(wanted[2020]), (
+        "первый год обязан взять всё, что просит, а не долю"
+    )
+    assert budget[2022] == pytest.approx(0.0), "на третий год объёма уже нет"
+    assert sum(budget.values()) == pytest.approx(asked / 2), "предел не должен теряться"
+
