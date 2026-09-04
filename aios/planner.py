@@ -403,7 +403,9 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             forecast: list[dict[str, Any]],
             norms: Norms,
             limits: Limits,
-            fluids: Fluids | None = None) -> tuple[list[ScheduleStep], list[Allocation]]:
+            fluids: Fluids | None = None,
+            carried_water: tuple[float, float] | None = None,
+            ) -> tuple[list[ScheduleStep], list[Allocation]]:
     """Привести расписание в соответствие с ограничениями объекта.
 
     `forecast` — прогноз отклика на это же расписание (суррогат или расчёт).
@@ -608,6 +610,13 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                 # предела, который кейс объявил, — переcечь его было уже некому
                 # (С5). Передаём потолки внутрь: добор ограничен ими, а не только
                 # водой.
+                # Накопленное до горизонта — решение владельца от 04.09: коридор
+                # судится **тем же окном**, что и подтверждение, то есть по всей
+                # выгрузке с 1994. Без переноса цикл считал компенсацию с 2007, а
+                # там сама история даёт 1,291…1,401 при потолке 1,3 — бездействие
+                # нарушало наш же потолок, и fail-closed отвергал любого
+                # кандидата (С1, Р-201, Р-204).
+                carried=carried_water,
                 well_caps={**(limits.well_caps_m3_per_day or {})},
                 default_cap=limits.max_well_injection_m3_per_day,
             )
@@ -2010,6 +2019,7 @@ def _fit_injection_to_water_corridor(
     ceiling: float,
     floor: float | None,
     source_m3_per_day: float | None,
+    carried: tuple[float, float] | None = None,
     well_caps: dict[str, float] | None = None,
     default_cap: float | None = None,
 ) -> tuple[list[ScheduleStep], list[Allocation]]:
@@ -2103,8 +2113,9 @@ def _fit_injection_to_water_corridor(
 
     factors: dict[int, float] = {}
     reasons: dict[int, str] = {}
-    base_c = 0.0
-    injected_c = 0.0
+    # Накопленное до первого года горизонта: отобранное и закачанное за историю,
+    # которой в прогнозе нет. Пусто — счёт начинается с нуля, как было до 04.09.
+    base_c, injected_c = carried if carried is not None else (0.0, 0.0)
     for year in sorted(years):
         bucket = years[year]
         base_c += bucket["base"]

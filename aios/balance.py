@@ -327,7 +327,9 @@ def external_water_problems(rows: list[dict[str, Any]],
 
 def worst_cumulative_compensation(rows: list[dict[str, Any]],
                                   fluids: Fluids | None = None,
-                                  rule: str = "compensation") -> tuple[int, float] | None:
+                                  rule: str = "compensation",
+                                  carried: tuple[float, float] | None = None,
+                                  ) -> tuple[int, float] | None:
     """Худший год по накопленной компенсации: `(год, отношение)`.
 
     Тем же счётом, каким её судит `compensation_problems`: отношение накопленной
@@ -337,8 +339,10 @@ def worst_cumulative_compensation(rows: list[dict[str, Any]],
     `rule` выбирает знаменатель: `produced_water` — добытая вода, иначе вся
     отобранная жидкость. Пустая выгрузка даёт None: сравнивать нечего.
     """
-    withdrawn = 0.0
-    injected = 0.0
+    # `carried` — отобранное и закачанное **до** первого года этих строк. Нужен,
+    # чтобы одно и то же отношение считалось одним окном везде: в коридоре
+    # планировщика, в запасе под потолком и в подтверждении (Р-204).
+    withdrawn, injected = carried if carried is not None else (0.0, 0.0)
     worst: tuple[int, float] | None = None
     for year in by_year(rows, fluids):
         withdrawn += year.water_m3 if rule == "produced_water" else year.liquid_m3

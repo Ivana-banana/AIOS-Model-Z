@@ -160,7 +160,8 @@ def run_cycle(surrogate: Surrogate,
               start_multipliers: dict[tuple[str, str], float] | None = None,
               margin: trust.OptimismMargin | None = None,
               search_seed: int | None = None,
-              norms_file: Path = economics.NORMS_FILE) -> CycleResult:
+              norms_file: Path = economics.NORMS_FILE,
+              history_rows: list[dict[str, Any]] | None = None) -> CycleResult:
     """Пройти цикл один раз: спрогнозировать, продиагностировать, решить, оценить.
 
     Порядок именно такой и не иначе: диагноз ставится по прогнозу базового
@@ -240,7 +241,7 @@ def run_cycle(surrogate: Surrogate,
     # обещанием, которое планировщик тут же срежет.
     converted = plan_conversions(
         forecast, norms, control_start=control_start, lookback=lookback_months,
-        headroom=_water_headroom(forecast, limits, fluids),
+        headroom=_water_headroom(forecast, limits, fluids, history_rows),
     )
     # остановка и перевод по одной скважине — одно решение, а не два: переводим
     shut_wells = {action.well for action in converted}
@@ -251,8 +252,17 @@ def run_cycle(surrogate: Surrogate,
     # на себя, а вода и мощность по жидкости принадлежат объекту целиком
     allocations: list[planner.Allocation] = []
     if limits is not None:
+        # Коридор баланса воды судится **тем же окном**, что и подтверждение —
+        # по всей выгрузке, а не с начала управления (решение владельца 04.09,
+        # Р-204). Историю до горизонта прогноз не содержит, поэтому накопленное
+        # за неё переносится числом.
+        carried = _carried_water(
+            history_rows,
+            min((step.date.year for step in steps), default=None),
+            limits, fluids,
+        )
         steps, allocations = _enforce_to_fixed_point(
-            surrogate, steps, norms, limits, fluids
+            surrogate, steps, norms, limits, fluids, carried
         )
 
     # Скважины, которыми управлять не разрешено, возвращаются к опорному режиму.
@@ -269,7 +279,8 @@ def run_cycle(surrogate: Surrogate,
     safe_chdd = trust.safe_value(result.chdd_m, distance, margin)
 
     warnings = list(surrogate.in_training_range(steps))
-    warnings.extend(_baseline_outside_the_corridor(base_rows, limits, fluids))
+    warnings.extend(_baseline_outside_the_corridor(base_rows, limits, fluids,
+                                                   history_rows))
     # Причины, по которым кандидат обязан пойти на полный расчёт, до 03.09
     # печатал только `scripts/trust_gate.py`, то есть отдельная команда, которую
     # надо было вспомнить запустить. В самом цикле шлюз молчал (ревизия 2.2 #1).
@@ -417,11 +428,40 @@ def _restore_uncontrolled(origin: list[ScheduleStep] | tuple[ScheduleStep, ...],
 MAX_ENFORCE_PASSES = 3
 
 
+def _carried_water(history_rows: list[dict[str, Any]] | None,
+                   first_year: int | None,
+                   limits: planner.Limits | None,
+                   fluids: Fluids | None) -> tuple[float, float] | None:
+    """Отобранное и закачанное **до** первого года горизонта, м³.
+
+    Владелец решил 04.09: коридор судится тем же окном, что и подтверждение, —
+    по всей выгрузке. Прогноз истории не содержит (суррогат считает управляемую
+    часть), поэтому накопленное за неё переносится одним числом.
+
+    `None` означает «истории нет» — тогда счёт начинается с нуля, как было до
+    решения. Так работает всякий вызов без выгрузки: тесты, разбор, `web`.
+    """
+    if not history_rows or limits is None or first_year is None:
+        return None
+    withdrawn = 0.0
+    injected = 0.0
+    for year in balance.by_year(history_rows, fluids):
+        if year.year >= first_year:
+            continue
+        withdrawn += (year.water_m3 if limits.water_balance_rule == "produced_water"
+                      else year.liquid_m3)
+        injected += year.injected_m3
+    if withdrawn <= 0 and injected <= 0:
+        return None
+    return (withdrawn, injected)
+
+
 def _enforce_to_fixed_point(surrogate: Surrogate,
                             steps: list[ScheduleStep],
                             norms: Norms,
                             limits: planner.Limits,
                             fluids: Fluids | None,
+                            carried: tuple[float, float] | None = None,
                             ) -> tuple[list[ScheduleStep], list[planner.Allocation]]:
     """Приводить расписание к ограничениям, пока оно не перестанет меняться.
 
@@ -446,7 +486,8 @@ def _enforce_to_fixed_point(surrogate: Surrogate,
     current = list(steps)
     for _ in range(MAX_ENFORCE_PASSES):
         fitted, made = planner.enforce(
-            current, surrogate.predict(current), norms, limits, fluids
+            current, surrogate.predict(current), norms, limits, fluids,
+            carried_water=carried,
         )
         # Решения копятся по всем проходам, а не берутся с последнего: последний
         # проход ничего не режет (потому и последний), и брать его список значило
@@ -516,7 +557,9 @@ def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
 
 def _baseline_outside_the_corridor(base_rows: list[dict[str, Any]],
                                    limits: planner.Limits | None,
-                                   fluids: Fluids | None) -> list[str]:
+                                   fluids: Fluids | None,
+                                   history_rows: list[dict[str, Any]] | None = None,
+                                   ) -> list[str]:
     """Сказать вслух, если **бездействие** уже нарушает наш же потолок.
 
     Один и тот же потолок 1,3 живёт в трёх разных окнах (С1): в конфигурации он
@@ -533,8 +576,13 @@ def _baseline_outside_the_corridor(base_rows: list[dict[str, Any]],
     """
     if limits is None or not limits.enforce_water_balance:
         return []
+    # Тем же окном, что судит подтверждение: накопленное за историю переносится
+    # (решение владельца 04.09, Р-204). Иначе предупреждение срабатывало бы на
+    # опорном расписании там, где нарушения нет, — окно и создавало нарушение.
+    first_year = min((int(str(row["DATA"])[:4]) for row in base_rows), default=None)
+    carried = _carried_water(history_rows, first_year, limits, fluids)
     worst = balance.worst_cumulative_compensation(
-        base_rows, fluids, limits.water_balance_rule)
+        base_rows, fluids, limits.water_balance_rule, carried=carried)
     if worst is None or worst[1] <= limits.water_tolerance:
         return []
     year, ratio = worst
@@ -548,7 +596,8 @@ def _baseline_outside_the_corridor(base_rows: list[dict[str, Any]],
 
 def _water_headroom(rows: list[dict[str, Any]],
                     limits: planner.Limits | None,
-                    fluids: Fluids | None) -> bool:
+                    fluids: Fluids | None,
+                    history_rows: list[dict[str, Any]] | None = None) -> bool:
     """Есть ли у объекта запас под собственным потолком компенсации.
 
     Перевод под закачку добавляет воду в пласт, а закачка ограничена нашим же
@@ -575,8 +624,11 @@ def _water_headroom(rows: list[dict[str, Any]],
     if not years:
         return True
 
-    withdrawn = 0.0
-    injected = 0.0
+    # То же окно, что у коридора и у подтверждения: накопленное до горизонта
+    # переносится, а не начинается с нуля (решение владельца 04.09, Р-204).
+    first_year = min((int(str(row["DATA"])[:4]) for row in rows), default=None)
+    carried = _carried_water(history_rows, first_year, limits, fluids)
+    withdrawn, injected = carried if carried is not None else (0.0, 0.0)
     worst = 0.0
     for year in years:
         withdrawn += (year.water_m3 if limits.water_balance_rule == "produced_water"

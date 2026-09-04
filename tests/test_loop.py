@@ -681,3 +681,102 @@ def test_the_single_search_is_handed_the_start_scenario_itself(surrogate, norms,
     assert seen["rates"] != deck, (
         "перебору отдали дек, а не стартовый сценарий: карта старта потеряна"
     )
+
+
+def test_the_corridor_carries_the_history_before_the_horizon():
+    """Накопленное до горизонта переносится, а не начинается с нуля (Р-204).
+
+    Владелец решил 04.09: коридор судится тем же окном, что и подтверждение.
+    История в прогнозе отсутствует, поэтому переносится числом; без переноса цикл
+    считал компенсацию с начала управления, где сама история вне потолка.
+    """
+    from aios.loop import _carried_water
+    from aios.planner import Limits
+
+    limits = Limits(enforce_water_balance=True, water_balance_rule="compensation",
+                    water_tolerance=1.3)
+    history = _rows_two_years(first_injection=900.0, second_injection=900.0)
+
+    # горизонт начинается позже обоих лет истории — переносится всё
+    carried = _carried_water(history, 2016, limits, FLUIDS)
+    assert carried is not None
+    withdrawn, injected = carried
+    assert injected == pytest.approx(1800.0)
+    assert withdrawn > 0
+
+    # горизонт начинается с первого года истории — переносить нечего
+    assert _carried_water(history, 2014, limits, FLUIDS) is None
+
+
+def test_without_an_export_the_corridor_counts_as_before():
+    """Вызов без выгрузки — законный случай «истории нет», а не тихое умолчание.
+
+    Так работают тесты, разбор и веб-страница: переноса нет, счёт начинается с
+    нуля, и это не подмена решения владельца, а его отсутствие данных.
+    """
+    from aios.loop import _carried_water
+    from aios.planner import Limits
+
+    limits = Limits(enforce_water_balance=True, water_balance_rule="compensation")
+
+    assert _carried_water(None, 2016, limits, FLUIDS) is None
+    assert _carried_water([], 2016, limits, FLUIDS) is None
+
+
+def test_the_carry_follows_the_rule_too():
+    """Знаменатель переноса — тот же, что у правила: жидкость или добытая вода."""
+    from aios.loop import _carried_water
+    from aios.planner import Limits
+
+    history = _rows_two_years(first_injection=900.0, second_injection=900.0)
+    by_liquid = _carried_water(
+        history, 2016,
+        Limits(enforce_water_balance=True, water_balance_rule="compensation"), FLUIDS)
+    by_water = _carried_water(
+        history, 2016,
+        Limits(enforce_water_balance=True, water_balance_rule="produced_water"), FLUIDS)
+
+    assert by_liquid[0] > by_water[0], "жидкость обязана быть больше добытой воды"
+    assert by_liquid[1] == by_water[1] == pytest.approx(1800.0)
+
+
+def test_the_history_changes_what_the_corridor_cuts(norms):
+    """Перенос обязан доходить до планировщика, а не оставаться в помощнике.
+
+    Проверка самого `_carried_water` этого не стережёт: мутация «не передавать
+    перенос в `enforce`» её не роняет. Здесь один и тот же цикл гоняется с
+    историей и без неё — решения коридора обязаны различаться.
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.planner import Limits
+
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("P1", "OPEN", "LRAT", 100.0, 50.0),),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 100.0, 300.0),))
+             for month in range(1, 13)]
+    limits = Limits(enforce_water_balance=True, water_balance_rule="compensation",
+                    water_tolerance=1.3)
+
+    # история 2013 года: закачки много, отбора мало — накопленное сразу за потолком
+    history = [
+        make_row("2013-01-01", "P1", wlpr=10.0, womr=1.0, liquid=10.0, oil=1.0),
+        make_row("2013-01-01", "I1", wwir=500.0, injection=15000.0),
+    ]
+
+    without = loop.run_cycle(_Responsive(), steps, norms,
+                             control_start=CONTROL_START, start_date=CONTROL_START,
+                             tune_rates=False, limits=limits, fluids=FLUIDS)
+    with_history = loop.run_cycle(_Responsive(), steps, norms,
+                                  control_start=CONTROL_START, start_date=CONTROL_START,
+                                  tune_rates=False, limits=limits, fluids=FLUIDS,
+                                  history_rows=history)
+
+    def accumulated(result):
+        cuts = [one for one in result.allocations if one.resource == "закачка"]
+        assert cuts, "коридор не срезал ничего — проверка вырождена"
+        return cuts[0].reason
+
+    # Наблюдаемое — не число срезок, а **накопленные величины** в обосновании:
+    # с историей к закачке добавляются её 15 000 м³, к отбору — её же отбор.
+    assert "36,000 м³" in accumulated(without), accumulated(without)
+    assert "51,000 м³" in accumulated(with_history), accumulated(with_history)
