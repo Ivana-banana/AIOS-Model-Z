@@ -640,6 +640,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "settings": configuration,
                 "surrogate_name": cycle.surrogate_name,
                 "warning_groups": fold_warnings(cycle.result.warnings),
+                "allocation_groups": fold_allocations(cycle.result.allocations),
                 "explanation": explanation,
                 "question": asked,
                 "reply": reply,
@@ -918,6 +919,38 @@ def _as_number(value: Any) -> float | None:
 def _both(pair: dict[str, Any]) -> bool:
     """Есть ли у пары оба числа — обещанное и полученное."""
     return pair["promised"] is not None and pair["delivered"] is not None
+
+
+def fold_allocations(allocations) -> list[dict[str, Any]]:
+    """Свернуть решения планировщика по ресурсу: счётчик, скважины и пример.
+
+    Список решений — сырьё, как и пометки суррогата. С коридором по годам
+    (Р-189) одна скважина получает решение на каждый год горизонта, и страница
+    цикла печатала их все: замер 04.09 — **570 строк таблицы, 222 КБ** против
+    задокументированных 30 КБ и 4,65 с. Демо длится три минуты, и вкладка,
+    которая грузится девять секунд, съедает его.
+
+    Отвечаем на вопрос, который человек и задаёт: **что и почему резали**, а не
+    сколько строк об этом написано. Полный список остаётся в `cycle.json` и в
+    выводе `run_cycle.py` — здесь свёрнутый вид, а не усечённый: ни одно решение
+    не пропадает бесследно, у каждой группы есть счётчик.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for item in allocations or ():
+        group = groups.setdefault(item.resource, {
+            "resource": item.resource, "count": 0, "wells": set(),
+            "example": item, "worst": abs(item.before - item.after),
+        })
+        group["count"] += 1
+        group["wells"].add(item.well)
+        change = abs(item.before - item.after)
+        if change > group["worst"]:
+            group["worst"] = change
+            group["example"] = item
+    return [
+        {**one, "wells": len(one["wells"])}
+        for one in sorted(groups.values(), key=lambda one: (-one["count"], one["resource"]))
+    ]
 
 
 def _find(items: list[Run], name: str) -> Run:

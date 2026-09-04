@@ -262,19 +262,25 @@
     по жидкости экономический — первой уходит скважина, которая приносит меньше
     всех на кубометр.
   </p>
+  <p class="muted">
+    Решений {{ result.allocations|length }}, ресурсов {{ allocation_groups|length }}.
+    Свёрнуто по ресурсу с примером наибольшей срезки: коридор по годам даёт
+    решение на каждый год, и полный список — это сотни строк. Он целиком
+    сохраняется в <code>cycle.json</code> и в выводе <code>run_cycle.py</code>.
+  </p>
   <div class="scroll">
     <table>
       <thead>
-        <tr><th>Скважина</th><th>Ресурс</th><th>Было</th><th>Стало</th><th>Основание</th></tr>
+        <tr><th>Ресурс</th><th>Решений</th><th>Скважин</th><th>Наибольшая срезка</th><th>Основание (пример)</th></tr>
       </thead>
       <tbody>
-      {% for item in result.allocations %}
+      {% for group in allocation_groups %}
         <tr>
-          <td>{{ item.well }}</td>
-          <td>{{ item.resource }}</td>
-          <td>{{ '%.4g'|format(item.before) }}</td>
-          <td>{{ '%.4g'|format(item.after) }}</td>
-          <td style="text-align:left; white-space:normal">{{ item.reason }}</td>
+          <td>{{ group.resource }}</td>
+          <td>{{ group.count }}</td>
+          <td>{{ group.wells }}</td>
+          <td>скв. {{ group.example.well }}: {{ '%.4g'|format(group.example.before) }} → {{ '%.4g'|format(group.example.after) }}</td>
+          <td style="text-align:left; white-space:normal">{{ group.example.reason }}</td>
         </tr>
       {% endfor %}
       </tbody>

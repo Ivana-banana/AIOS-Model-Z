@@ -1135,3 +1135,96 @@ def test_a_number_from_a_marker_is_read_or_refused_but_never_guessed():
     assert _as_number(True) is None
     assert _as_number("nan") is None
     assert _as_number("inf") is None
+
+
+# --- страница цикла не должна распухать от решений планировщика ---------------
+# Замер 04.09: 570 строк таблицы и 222 КБ против задокументированных 30 КБ.
+# Причина — коридор по годам (Р-189): одна скважина получает решение на каждый
+# год горизонта, и страница печатала их все.
+
+
+def test_planner_decisions_are_folded_not_listed_one_by_one():
+    """Свёрнуто по ресурсу, а не усечено: ни одно решение не пропадает бесследно.
+
+    Счётчик группы показывает, сколько решений в неё вошло, и полный список
+    остаётся в `cycle.json` и в выводе `run_cycle.py`.
+    """
+    from aios.planner import Allocation
+    from aios.web.app import fold_allocations
+
+    made = [
+        Allocation(well="I1", resource="закачка", before=200.0, after=float(rate),
+                   reason=f"{2007 + n}: компенсация выше потолка")
+        for n, rate in enumerate((150.0, 40.0, 120.0))
+    ] + [
+        Allocation(well="I2", resource="закачка", before=100.0, after=90.0,
+                   reason="2009: компенсация выше потолка"),
+        Allocation(well="P1", resource="жидкость", before=50.0, after=25.0,
+                   reason="предел объекта по жидкости"),
+    ]
+    groups = fold_allocations(made)
+
+    assert [one["resource"] for one in groups] == ["закачка", "жидкость"]
+    assert groups[0]["count"] == 4, "счётчик решений потерян"
+    assert groups[0]["wells"] == 2, "скважины не посчитаны"
+    # пример — наибольшая срезка: 200 → 40 у I1, а не первая попавшаяся
+    assert groups[0]["example"].after == 40.0, "пример не самый показательный"
+
+
+def test_the_cycle_page_stays_small_enough_for_the_demo(client):
+    """Демо длится три минуты; страница на сотни килобайт его съедает.
+
+    Порог с запасом к замеру 04.09 после свёртки — 21 КБ на обученном суррогате
+    и 69 КБ на тривиальном бейзлайне, у которого решений политики больше.
+    """
+    answer = client.get("/run/base/cycle?model=decline&mode=stops&lookback=6")
+
+    assert answer.status_code == 200
+
+    # Порог сверху — от замера 04.09 после свёртки (21 КБ на обученном, 69 на
+    # тривиальном), с запасом вдвое. Порог **снизу** тоже нужен: без него тест
+    # проходит на пустой странице, а мутация «убрать свёртку из шаблона» его не
+    # роняет — на фикстуре решений мало и полный список тоже помещается.
+    assert 2_000 < len(answer.content) < 150_000, (
+        f"страница цикла {len(answer.content) // 1024} КБ — проверить, не "
+        f"печатается ли список решений целиком и не пуста ли страница"
+    )
+
+    # Таблица согласования обязана быть свёрнутой по ресурсу, а не перечислять
+    # решения по одному. Раздел появляется, только когда планировщик что-то
+    # срезал; на фикстуре без ограничений его нет вовсе — и это законно.
+    text = answer.text
+    if "Согласование планировщиком" in text:
+        assert "Наибольшая срезка" in text, (
+            "таблица согласования печатает решения по одному — свёртка снята"
+        )
+        assert "ресурсов" in text, "страница не называет число ресурсов"
+
+
+def test_the_allocation_table_is_folded_when_the_planner_actually_cuts(project):
+    """Свёрнутый вид проверяется там, где планировщик действительно режет.
+
+    Предыдущий тест сторожит вес страницы, но на фикстуре без ограничений
+    раздела согласования нет — и мутация «печатать решения по одному» его не
+    роняла. Здесь ограничения заданы конфигурацией, раздел появляется, и
+    проверяется именно его форма.
+    """
+    config = (project / "config.toml").read_text(encoding="utf-8")
+    config = config.replace("max_field_liquid_m3_per_day = 0",
+                            "max_field_liquid_m3_per_day = 10")
+    (project / "config.toml").write_text(config, encoding="utf-8")
+
+    answer = TestClient(create_app(project), raise_server_exceptions=False).get(
+        "/run/base/cycle?model=decline&mode=stops&lookback=6")
+
+    assert answer.status_code == 200
+    text = answer.text
+    if "Согласование планировщиком" not in text:
+        import pytest
+
+        pytest.skip("планировщик ничего не срезал — проверять форму не на чем")
+
+    assert "Наибольшая срезка" in text, (
+        "решения печатаются по одному: коридор по годам даст сотни строк"
+    )
+    assert "Решений" in text and "ресурсов" in text
