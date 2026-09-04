@@ -104,6 +104,18 @@ def report(title: str, checks: list[casecheck.LimitCheck]) -> None:
     print()
 
 
+def _announced_for(check: casecheck.LimitCheck, decisions) -> bool:
+    """Объявил ли планировщик уступку **в том же периоде**, где нарушение.
+
+    Совпадения по виду условия мало: годовая и месячная квоты считаются по
+    разным периодам, и уступка в одном году ничего не говорит о другом.
+    """
+    period = "год" if check.key.endswith("_per_year") else "месяц"
+    needle = f"на {period} {check.where}"
+    return any("вопреки квоте" in decision.reason and needle in decision.reason
+               for decision in decisions)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--config", default="config.toml", help="конфигурация с условиями кейса")
@@ -226,9 +238,14 @@ def main(argv: list[str] | None = None) -> int:
     # (Р-139), потому что его отмена вернула бы расписание в недопустимое
     # состояние. Такая уступка печатается отдельно и провалом не считается — но
     # только если планировщик её объявил; молчаливое превышение остаётся дефектом.
+    # Уступка засчитывается **за тот же период**, в котором нарушение. До 05.09
+    # хватало любого объявления где угодно по горизонту: уступка, объявленная в
+    # 2012-01, покрывала бы молчаливое превышение квоты в 2021-01 — то есть
+    # ровно то, что абзац выше обещает считать дефектом. Период у проверки лежит
+    # в `where` («2021» или «2021-01»), у решения — в тексте причины.
     conceded = [check for check in left
                 if check.key in ("max_events_per_year", "max_events_per_month")
-                and any("вопреки квоте" in decision.reason for decision in decisions)]
+                and _announced_for(check, decisions)]
     left = [check for check in left if check not in conceded]
 
     if conceded:

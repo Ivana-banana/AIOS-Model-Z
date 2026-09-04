@@ -1456,6 +1456,45 @@ def test_rehearsal_runs_on_the_model_and_leaves_no_violation(tmp_path):
     assert code == 0, "после срезки осталось нарушенное условие — см. вывод"
 
 
+def test_a_concession_counts_only_for_its_own_period():
+    """Уступка по квоте засчитывается за тот период, в котором нарушение.
+
+    Планировщик вправе оставить мероприятие вопреки квоте, если его породило
+    жёсткое ограничение, — и репетиция такое превышение провалом не считает. Но
+    только объявленное: молчаливое остаётся дефектом, так сказано в самом
+    скрипте. До 05.09 условие проверялось видом ключа и наличием **любого**
+    объявления по всему горизонту, поэтому уступка, объявленная в одном году,
+    покрывала бы молчаливое превышение в другом.
+    """
+    from types import SimpleNamespace
+
+    from aios import casecheck
+    from scripts import rehearse_case
+
+    year = casecheck.LimitCheck(key="max_events_per_year", limit=3.0,
+                                value=88.0, where="2021", unit="мероприятий")
+    month = casecheck.LimitCheck(key="max_events_per_month", limit=1.0,
+                                 value=88.0, where="2021-01", unit="мероприятий")
+    elsewhere = SimpleNamespace(
+        reason="остановка оставлен вопреки квоте 3 на год 2012: он порождён "
+               "ограничением объекта")
+    here = SimpleNamespace(
+        reason="остановка оставлен вопреки квоте 3 на год 2021: он порождён "
+               "ограничением объекта")
+    monthly = SimpleNamespace(
+        reason="остановка оставлен вопреки квоте 1 на месяц 2021-01: он порождён "
+               "ограничением объекта")
+
+    assert not rehearse_case._announced_for(year, [elsewhere]), (
+        "уступка 2012 года не объясняет превышение квоты 2021-го"
+    )
+    assert rehearse_case._announced_for(year, [elsewhere, here])
+    assert not rehearse_case._announced_for(month, [here]), (
+        "годовая уступка не объясняет превышение месячной квоты"
+    )
+    assert rehearse_case._announced_for(month, [monthly])
+
+
 def test_check_deck_refuses_a_directory_with_a_usable_hint(tmp_path, capsys):
     """Каталог вместо `.DATA` — отказ с подсказкой, а не трассировка.
 
