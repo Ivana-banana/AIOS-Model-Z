@@ -477,3 +477,64 @@ def test_the_readme_explains_the_skips_a_clean_clone_will_show():
     assert "-rs" in readme, "не сказано, как увидеть причины пропусков"
     for source in ("runs/base", "portability.md", "core.js"):
         assert source in readme, f"не названа причина пропусков: {source}"
+
+
+def test_dockerignore_does_not_cut_any_copy_source():
+    """Правило исключения не должно отрезать то, что образ копирует внутрь.
+
+    `COPY` и `.dockerignore` живут в разных файлах и правятся порознь: правило
+    вроде `artifacts/` или `scripts/*.exe` легко задевает источник, и сборка
+    падает не здесь, а на машине с Docker — то есть у того, кто собирает образ.
+    Существующий сторож проверяет, что источники **есть** и отслеживаются; этот —
+    что контекст сборки их донесёт.
+    """
+    import fnmatch
+    import shlex
+
+    root = Path(__file__).resolve().parent.parent
+    rules = [line.strip() for line in
+             (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
+             if line.strip() and not line.startswith(("#", "!"))]
+
+    cut = []
+    for line in (root / "docker" / "Dockerfile").read_text(encoding="utf-8").splitlines():
+        if not line.startswith("COPY "):
+            continue
+        for source in [one for one in shlex.split(line)[1:-1] if not one.startswith("--")]:
+            for rule in rules:
+                pattern = rule.rstrip("/")
+                if (fnmatch.fnmatch(source, pattern)
+                        or source.startswith(pattern + "/")
+                        or fnmatch.fnmatch(source, pattern + "/*")):
+                    cut.append(f"{source} отрезан правилом {rule}")
+
+    assert not cut, "контекст сборки не донесёт источники COPY: " + "; ".join(cut)
+
+
+def test_the_lock_covers_every_runtime_dependency_with_a_hash():
+    """`--require-hashes` требует, чтобы в lock были все зависимости и все хэши.
+
+    Пакет, попавший в `requirements.txt` мимо lock, роняет сборку образа строкой
+    «not in the hashes» — на машине с Docker, а не здесь.
+    """
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "requirements.lock").read_text(encoding="utf-8")
+    locked = {name.lower() for name, _ in re.findall(r"^([A-Za-z0-9._-]+)==(\S+)", text, re.M)}
+
+    assert locked, "lock пуст"
+    assert text.count("--hash=sha256:") >= len(locked), (
+        "в lock есть пакет без хэша — `--require-hashes` откажет"
+    )
+
+    required = set()
+    for line in (root / "requirements.txt").read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            required.add(re.split(r"[<>=!\[;]", line)[0].strip().lower())
+
+    assert not (required - locked), (
+        "в requirements.txt есть пакеты, которых нет в lock: "
+        + ", ".join(sorted(required - locked))
+    )
