@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -353,6 +354,27 @@ def create_app(root: Path | None = None) -> FastAPI:
         if key not in deck_fluids_cache:
             deck_fluids_cache[key] = pvt.fluids_by_well(settings().case.model_dir)
         return deck_fluids_cache[key]
+
+    @application.exception_handler(RequestValidationError)
+    def _bad_request(request: Request, error: RequestValidationError) -> HTMLResponse:
+        """Недостающий параметр — тоже страница, а не голый JSON.
+
+        Отказ 03.09 закрыл `HTTPException`, но 422 от проверки параметров
+        рождается другим исключением и мимо того обработчика проходил: запрос
+        `/compare` без `a` и `b` отдавал `{"detail": [...]}` — воспроизведено
+        05.09 живым сервером. На демо это тот же «сломанный сервис», ради
+        которого обработчик и заводили.
+
+        Код меняем на 400: 422 верен по букве, но заголовок «запрос не понят»
+        человеку говорит больше, а машинных потребителей у этих страниц нет.
+        """
+        missing = ", ".join(
+            str(part) for item in error.errors()
+            for part in item.get("loc", ())[1:]
+        )
+        detail = (f"в запросе не хватает параметров: {missing}" if missing
+                  else "запрос не разобран")
+        return _refusal_page(request, 400, detail)
 
     @application.get("/", response_class=HTMLResponse)
     def index(request: Request) -> HTMLResponse:

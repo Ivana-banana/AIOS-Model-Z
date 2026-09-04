@@ -121,6 +121,25 @@ def test_a_refusal_is_a_page_not_json(client):
         assert "к списку прогонов" in answer.text
 
 
+def test_a_missing_query_parameter_is_a_page_too(client):
+    """422 от проверки параметров — тот же «сломанный сервис», что и 404.
+
+    Обработчик 03.09 повешен на `HTTPException`, а недостающий параметр
+    порождает `RequestValidationError` и мимо него проходил: живой сервер
+    05.09 отдавал на `/compare` голый `{"detail": [...]}`. Тот же класс
+    дефекта, ради которого обработчик и заводили, — просто другой маршрут.
+    """
+    answer = client.get("/compare")
+
+    assert answer.status_code == 400
+    assert answer.headers["content-type"].startswith("text/html")
+    assert "запрос не понят" in answer.text
+    # недостающие параметры названы: «запрос не понят» без них не говорит,
+    # что именно поправить
+    assert "a" in answer.text and "b" in answer.text
+    assert "к списку прогонов" in answer.text
+
+
 def test_the_forecast_page_survives_a_marker_without_a_number(project):
     """Маркер в той же системе отсчёта, но без числа, не роняет страницу.
 
