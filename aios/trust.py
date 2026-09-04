@@ -248,8 +248,34 @@ class TrustRegion:
             frozen=frozen,
         )
 
+    def degenerate_features(self, tolerance: float = 1e-9) -> tuple[str, ...]:
+        """Признаки области, у которых масштаб вырожден.
+
+        Допуск `spread > 1e-9` появился 03.09 и действует **при сборке** области.
+        Артефакт, обученный раньше, несёт её как есть: у отгруженного
+        `surrogate-speed.joblib` — 72 признака с масштабом ≤ 1,6·10⁻¹⁶.
+        Стандартизация делит на почти ноль, и кандидат получает расстояние
+        порядка 10¹⁵ вместо честного `inf` с причиной «DoE это управление не
+        двигал». При загрузке артефакта не пересобирается и не проверяется ничто
+        — `joblib` восстанавливает поля, минуя `__init__` (С2).
+
+        Поэтому проверка здесь, у места использования, а не в конструкторе.
+        """
+        return tuple(
+            key for key, scale in zip(self.features, self.scale, strict=True)
+            if not scale > tolerance
+        )
+
     def distance(self, one: dict[str, float], *, tolerance: float = 1e-9) -> Distance:
-        """Насколько далёк кандидат и какие обучающие сценарии к нему ближе всех."""
+        """Насколько далёк кандидат и какие обучающие сценарии к нему ближе всех.
+
+        Вырожденная область даёт `inf`, а не число: расстояние по признаку,
+        которого DoE не двигал, не определено, и притворяться, что определено,
+        нельзя. Причина уходит в `routed_to_full_run` (С2).
+        """
+        if self.degenerate_features(tolerance):
+            return Distance(value=float("inf"), threshold=self.threshold, neighbours=())
+
         for key, value in self.frozen:
             if abs(one.get(key, value) - value) > tolerance:
                 return Distance(
@@ -399,7 +425,8 @@ def safe_value(predicted: float, distance: Distance | None, margin: OptimismMarg
 
 
 def routed_to_full_run(distance: Distance | None, margin: OptimismMargin | None,
-                       hard: list[str] | None = None) -> list[str]:
+                       hard: list[str] | None = None,
+                       region: TrustRegion | None = None) -> list[str]:
     """Причины, по которым кандидат обязан пойти на полный расчёт ГГДМ.
 
     Пустой список означает «суррогату можно доверить ранжирование» — и только
@@ -407,6 +434,21 @@ def routed_to_full_run(distance: Distance | None, margin: OptimismMargin | None,
     независимо от того, что вернула эта функция.
     """
     reasons = list(hard or [])
+    # Вырожденная область — причина отдельная от «далеко»: расстояние в ней не
+    # определено вовсе, и `inf` это следствие, а не измерение. Артефакт,
+    # обученный до допуска 03.09, несёт такую область, а при загрузке ничего не
+    # пересобирается (С2). Пересобрать её здесь нечем — нужны профили обучающих
+    # сценариев, — поэтому называем и отправляем на полный расчёт.
+    if region is not None:
+        degenerate = region.degenerate_features()
+        if degenerate:
+            listed = ", ".join(degenerate[:3])
+            reasons.append(
+                f"доверенная область собрана без допуска на размах: у "
+                f"{len(degenerate)} признаков масштаб вырожден ({listed}…). "
+                f"Расстояние по ней не определено — пересобрать область "
+                f"обучением с текущим кодом"
+            )
     if distance is None:
         reasons.append("сценарное расстояние не считалось: доверенная область не собрана")
     elif distance.outside:

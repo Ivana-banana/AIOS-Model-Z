@@ -292,7 +292,7 @@ def run_cycle(surrogate: Surrogate,
         # В начало, а не в хвост: `summary()` печатает первые десять
         # предупреждений из семидесяти трёх, и причина, по которой поиск ничего
         # не выбрал, оказывалась невидимой в отчёте цикла (Р-190).
-        warnings = trust.routed_to_full_run(distance, margin) + warnings
+        warnings = trust.routed_to_full_run(distance, margin, region=region) + warnings
     # предел дебита жидкости — из таблицы ЭЦН тех нормативов, по которым считается
     # ЧДД этого прогона, а не из литерала 500 от Модели Z (Б28)
     problems = validate(

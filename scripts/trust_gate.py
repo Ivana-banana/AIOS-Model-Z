@@ -305,7 +305,8 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
     binding = foreign_model(rows, checksum(model)) if rows else ""
     stamped = any(one.model for one in rows)
     reasons = trust.routed_to_full_run(distance, margin,
-                                       [binding] if binding and stamped else None)
+                                       [binding] if binding and stamped else None,
+                                       region=region)
 
     print(f"кандидат:  {schedule}")
     print(f"модель:    {model} ({bundle.report.kind})")

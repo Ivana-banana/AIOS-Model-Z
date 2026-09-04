@@ -769,3 +769,90 @@ def test_the_penalty_is_still_monotone_below_the_cap():
 
     assert inside == 5579.5, "внутри области штрафа быть не должно"
     assert inside > near > far, "штраф перестал расти с расстоянием"
+
+
+# --- С2: область, собранная до допуска на размах ------------------------------
+# Допуск `spread > 1e-9` действует при **сборке**. Артефакт, обученный раньше,
+# несёт вырожденную область как есть, а при загрузке `joblib` восстанавливает
+# поля, минуя `__init__`, — то есть не проверяется ничто.
+
+
+def _degenerate_region():
+    """Область с одним нормальным признаком и одним вырожденным.
+
+    Собирается напрямую, а не через `fit`: `fit` такую уже не выпустит, а речь
+    именно о том, что приезжает из старого артефакта.
+    """
+    from aios.trust import TrustRegion
+
+    return TrustRegion(
+        features=("prod:1", "prod:2"),
+        centre=(1.0, 1.0),
+        scale=(0.2, 8e-17),
+        points=((0.0, 0.0), (1.0, 0.0)),
+        scenarios=("doe-000", "doe-001"),
+        k=1,
+        threshold=1.0,
+        quantile=1.0,
+    )
+
+
+def test_a_region_built_without_the_tolerance_is_recognised():
+    region = _degenerate_region()
+
+    assert region.degenerate_features() == ("prod:2",)
+
+
+def test_a_degenerate_region_gives_infinity_not_a_huge_number():
+    """Расстояние в такой области не определено — и `inf` честнее 10¹⁵.
+
+    Деление на 8e-17 давало расстояние порядка 10¹⁵: число, которое нельзя ни
+    объяснить, ни записать в отчёт, и которое выглядит как измерение.
+    """
+    import math
+
+    region = _degenerate_region()
+
+    distance = region.distance({"prod:1": 1.5, "prod:2": 1.0})
+
+    assert math.isinf(distance.value)
+    assert distance.outside
+
+
+def test_the_reason_names_the_degenerate_region_not_just_distance():
+    """Причина отправки на полный расчёт обязана назвать саму область.
+
+    «Далеко» и «расстояние не определено» — разные вещи, и читающий отчёт должен
+    видеть, что дело в артефакте, а не в кандидате.
+    """
+    from aios.trust import routed_to_full_run
+
+    region = _degenerate_region()
+    distance = region.distance({"prod:1": 1.5, "prod:2": 1.0})
+
+    reasons = routed_to_full_run(distance, None, region=region)
+
+    assert any("масштаб вырожден" in one for one in reasons), reasons
+    assert any("пересобрать область" in one for one in reasons), reasons
+
+
+def test_a_healthy_region_says_nothing_about_degeneracy():
+    """Сторож не должен шуметь на нормальной области — в том числе на боевой."""
+    import pytest
+
+    from aios.trust import routed_to_full_run
+
+    joblib = pytest.importorskip("joblib")
+    artefact = Path(__file__).resolve().parent.parent / "artifacts" / "surrogate.joblib"
+    if not artefact.is_file():
+        pytest.skip("боевого артефакта нет на этой машине")
+
+    region = getattr(joblib.load(artefact), "trust_region", None)
+    if region is None:
+        pytest.skip("в артефакте нет доверенной области")
+
+    assert region.degenerate_features() == (), (
+        "у сдаваемого артефакта вырожденная область — его надо переобучить"
+    )
+    assert not [one for one in routed_to_full_run(None, None, region=region)
+                if "вырожден" in one]
