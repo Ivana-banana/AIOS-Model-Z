@@ -1495,6 +1495,39 @@ def test_a_concession_counts_only_for_its_own_period():
     assert rehearse_case._announced_for(month, [monthly])
 
 
+def test_the_verdict_carries_the_concession_instead_of_denying_it():
+    """Итог репетиции не говорит «соблюдено» про условие, которое превышено.
+
+    Уступка по квоте мероприятий провалом не считается: её объявляет сам
+    планировщик за свой период, и порождает её жёсткое ограничение объекта
+    (Р-216, Р-217). Но до 05.09 протокол печатал уступку строкой 101 и
+    заканчивался строкой «каждое условие, выражаемое расписанием, соблюдено» —
+    на репетиции того дня при 88 мероприятиях против объявленной квоты 3.
+    Цитировать на приёмке будут последнюю строку.
+    """
+    from scripts import rehearse_case
+
+    clean = rehearse_case.verdict([], declared=17)
+    conceded = rehearse_case.verdict(
+        ["max_events_per_year", "max_events_per_month"], declared=17)
+
+    assert "каждое условие, выражаемое расписанием, соблюдено" in clean[0], (
+        "без уступки итог обязан остаться прежним"
+    )
+    assert "соблюдено" not in conceded[0] or "С УСТУПКОЙ" in conceded[0], (
+        "итог с уступкой выдаёт превышение за соблюдение"
+    )
+    assert "С УСТУПКОЙ" in conceded[0]
+    assert "max_events_per_year" in conceded[0], "итог не называет превышенное условие"
+    assert "15" in conceded[0], "итог не называет, сколько условий действительно соблюдено"
+    assert not any("каждое условие" in line for line in conceded), (
+        "полное соблюдение объявлено рядом с уступкой"
+    )
+
+    # оговорка про отклик пласта нужна в обоих случаях: она не про уступку
+    assert clean[-1] == conceded[-1] == "а не срезать расписание."
+
+
 def test_every_script_prints_its_help_on_a_windows_console():
     """`--help` каждого скрипта выводится в cp1251 без падения — проверено запуском.
 
