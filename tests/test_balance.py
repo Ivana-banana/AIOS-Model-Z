@@ -436,3 +436,202 @@ def test_zero_capacity_does_not_divide_by_it():
 
     assert len(found) == 1
     assert "стороннего источника нет вовсе" in found[0]
+
+
+# ── что нашёл мутационный прогон 05.09 (Р-221) ───────────────────────────────
+#
+# `python scripts/mutate.py --module aios/balance.py --limit 25`: из 25 подмен
+# смысла 12 пережили даже широкий набор тестов. Ниже закрыто каждое место.
+
+
+def test_produced_water_exactly_at_the_ceiling_is_not_a_violation():
+    """Допуск Р-188 действует и в правиле `produced_water`, а не только в компенсации.
+
+    Мутации «убрать 1e-9» и «`+` вместо `-`» в строке 179 переживали всю сюиту:
+    граница проверялась только для `compensation_problems`. Между тем срезка
+    планировщика кладёт отношение **точно** на предел, и без допуска собственная
+    срезка объявлялась бы нарушением в последнем знаке — при fail-closed это
+    отбраковка любого приведённого к коридору кандидата.
+    """
+    rows = [produced("2014-01-01", "1", oil_m3=100.0, water_m3=900.0)]
+    exactly = rows + [injected("2014-01-01", "9", volume_m3=900.0)]
+
+    assert balance.problems(exactly, FLUIDS, tolerance=1.0) == []
+
+    over = rows + [injected("2014-01-01", "9", volume_m3=900.0 * (1 + 1e-6))]
+    assert balance.problems(over, FLUIDS, tolerance=1.0), "превышение сверх допуска молчит"
+
+
+def test_produced_water_exactly_at_the_floor_is_not_a_violation():
+    """Та же граница снизу: коридор задаёт обе, и нижняя тоже кладётся точно."""
+    rows = [produced("2014-01-01", "1", oil_m3=100.0, water_m3=900.0)]
+    exactly = rows + [injected("2014-01-01", "9", volume_m3=900.0 * 0.85)]
+
+    assert balance.problems(exactly, FLUIDS, tolerance=1.3, floor=0.85) == []
+
+    under = rows + [injected("2014-01-01", "9", volume_m3=900.0 * 0.85 * (1 - 1e-6))]
+    assert balance.problems(under, FLUIDS, tolerance=1.3, floor=0.85), (
+        "недобор ниже границы молчит"
+    )
+
+
+def test_the_violation_message_states_the_right_percentage():
+    """Процент в сообщении — часть решения, а не украшение.
+
+    Пять мутаций сидели прямо в текстах: множитель процента, деление вместо
+    умножения. Тесты смотрели только на факт нарушения, поэтому сообщение могло
+    называть любое число. Слой интерпретируемости обязателен по регламенту, и
+    человек, читающий «превышает на 3%» вместо 30%, примет другое решение.
+    """
+    rows = [produced("2014-01-01", "1", oil_m3=100.0, water_m3=1000.0)]
+
+    # закачали 1 300 при добытой воде 1 000 — превышение ровно на 30 %
+    over = balance.problems(rows + [injected("2014-01-01", "9", volume_m3=1300.0)],
+                            FLUIDS, tolerance=1.0)
+    assert len(over) == 1, over
+    assert "на 30%" in over[0], over[0]
+
+    # закачали 600 при границе 0,85 — это 60 % добытой воды
+    under = balance.problems(rows + [injected("2014-01-01", "9", volume_m3=600.0)],
+                             FLUIDS, tolerance=1.3, floor=0.85)
+    assert len(under) == 1, under
+    assert "60% добытой воды" in under[0], under[0]
+    assert "ниже границы 85%" in under[0], under[0]
+
+
+def test_the_compensation_message_states_the_right_percentage():
+    """То же для компенсации: обе границы называют свой процент."""
+    rows = [produced("2014-01-01", "1", oil_m3=100.0, water_m3=900.0)]
+
+    over = balance.compensation_problems(
+        rows + [injected("2014-01-01", "9", volume_m3=1500.0)], FLUIDS, ceiling=1.0)
+    assert len(over) == 1, over
+    assert "на 150%" in over[0], over[0]
+
+    under = balance.compensation_problems(
+        rows + [injected("2014-01-01", "9", volume_m3=500.0)],
+        FLUIDS, ceiling=1.3, floor=0.85)
+    assert len(under) == 1, under
+    assert "на 50%" in under[0], under[0]
+    assert "ниже границы 85%" in under[0], under[0]
+
+
+def test_a_year_without_withdrawal_is_skipped_not_divided_by():
+    """Год с нулевым отбором пропускается — иначе деление на ноль.
+
+    Мутация «`<= 0` на `< 0`» в строке 350 переживала сюиту: года без отбора в
+    фикстурах не было. На кейсе он появится сам — скважина под закачкой стоит,
+    добыча ещё не начата, и `injected / withdrawn` уронит подтверждение.
+    """
+    rows = [injected("2014-01-01", "9", volume_m3=500.0),
+            produced("2015-01-01", "1", oil_m3=100.0, water_m3=900.0),
+            injected("2015-01-01", "9", volume_m3=1000.0)]
+
+    worst = balance.worst_cumulative_compensation(rows, FLUIDS, "compensation")
+
+    assert worst is not None
+    assert worst[0] == 2015, "худшим обязан стать год, в котором отбор был"
+
+
+def test_explicit_densities_reach_the_monthly_breakdowns():
+    """Переданные плотности доходят до расчёта, а не подменяются умолчанием.
+
+    Мутация `fluids or Fluids()` на `and` в строках 377 и 451 переживала сюиту:
+    обе функции всегда звали с умолчанием. Между тем во втором PVT-регионе
+    Модели Z нефть 928,16 против 913,08 — разница 1,6 %, и она идёт прямо в
+    выручку.
+    """
+    from aios.summary import Fluids as Densities
+
+    rows = [produced("2014-01-01", "1", oil_m3=100.0, water_m3=900.0),
+            injected("2014-01-01", "9", volume_m3=2000.0)]
+
+    # объём воды получается из её массы, поэтому сторонней воды касается
+    # плотность **воды**; плотность нефти сюда не входит, и менять надо ту,
+    # которая в расчёте участвует (первая редакция теста меняла не ту и падала)
+    salty = Densities(oil_density=913.0765883224138, water_density=1050.0)
+    assert balance.external_water_by_month(rows, FLUIDS)         != balance.external_water_by_month(rows, salty), (
+        "плотность воды не дошла до расчёта сторонней воды — переданное значение потеряно"
+    )
+
+    # отношение вода/нефть переводит нефть в объём, поэтому здесь работает
+    # плотность нефти: 928,16 второго PVT-региона против 913,08 первого
+    heavy = Densities(oil_density=928.16, water_density=1172.0)
+    assert balance.well_water_oil_ratio(rows, FLUIDS)         != balance.well_water_oil_ratio(rows, heavy), (
+        "плотность нефти не дошла до отношения вода/нефть"
+    )
+
+
+def test_a_year_balance_defaults_to_a_full_year():
+    """Умолчание `days` — 365, а не ноль: иначе перевод в м³/сут делит на ноль."""
+    year = balance.YearBalance(year=2014, oil_m3=100.0, water_m3=900.0,
+                               injected_m3=800.0)
+
+    assert year.days == 365.0
+
+
+def test_the_capacity_message_states_the_right_excess():
+    """Процент превышения мощности водозабора назван верно.
+
+    Последняя из мутаций текста: деление вместо умножения в строке 323. Строка
+    попадает оператору как «превышение N%», и по ней принимают решение — цифра
+    обязана быть настоящей.
+    """
+    rows = [produced("2014-01-01", "1", oil_m3=100.0, water_m3=900.0),
+            injected("2014-01-01", "9", volume_m3=2000.0)]
+
+    months = balance.external_water_by_month(rows, FLUIDS)
+    assert len(months) == 1, months
+    need = months[0][1]
+
+    # предел вдвое ниже потребности — превышение ровно 100 %
+    over = balance.external_water_capacity_problems(rows, FLUIDS, need / 2)
+
+    assert len(over) == 1, over
+    assert "превышение 100%" in over[0], over[0]
+
+    # та же цифра в годовой формулировке: соседняя функция считает превышение
+    # своей строкой, и мутация показала, что проверялась только одна из двух
+    yearly = balance.by_year(rows, FLUIDS)
+    assert len(yearly) == 1, yearly
+    annual_need = yearly[0].external_water_m3_per_day
+    annual = balance.external_water_problems(rows, FLUIDS, annual_need / 4)
+
+    assert len(annual) == 1, annual
+    assert "превышение 300%" in annual[0], annual[0]
+
+
+def test_the_floor_tolerance_forgives_the_last_digit_and_nothing_more():
+    """Допуск нижней границы прощает последний знак — и ровно его.
+
+    Две мутации строки 185 («убрать 1e-9», «`<` на `<=`») пережили даже
+    закрытую проверку границы: тест ставил закачку **ровно** на границу, а там
+    обе редакции ведут себя одинаково. Отличает их только попадание внутрь
+    самого допуска, и оно строится явным вычислением, а не круглым числом.
+    """
+    water_m3 = 900.0
+    floor = 0.85
+    rows = [produced("2014-01-01", "1", oil_m3=100.0, water_m3=water_m3)]
+
+    # внутри допуска: ниже границы, но в последнем знаке — не нарушение
+    inside = water_m3 * floor * (1 - 5e-10)
+    assert balance.problems(rows + [injected("2014-01-01", "9", inside)],
+                            FLUIDS, tolerance=1.3, floor=floor) == [], (
+        "допуск не прощает расхождения в последнем знаке — срезка планировщика "
+        "объявляется собственным нарушением (Р-188)"
+    )
+
+    # ровно на границе допуска: строгое `<` обязано промолчать
+    edge = water_m3 * floor * (1 - 1e-9)
+    assert balance.problems(rows + [injected("2014-01-01", "9", edge)],
+                            FLUIDS, tolerance=1.3, floor=floor) == [], (
+        "сравнение стало нестрогим: значение ровно на границе допуска "
+        "объявлено нарушением"
+    )
+
+    # заметно ниже — нарушение обязано быть
+    assert balance.problems(rows + [injected("2014-01-01", "9", water_m3 * floor * 0.999)],
+                            FLUIDS, tolerance=1.3, floor=floor), (
+        "допуск стал шире последнего знака и прячет настоящий недобор"
+    )
+

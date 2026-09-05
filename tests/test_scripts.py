@@ -1495,6 +1495,39 @@ def test_a_concession_counts_only_for_its_own_period():
     assert rehearse_case._announced_for(month, [monthly])
 
 
+def test_every_script_prints_its_help_on_a_windows_console():
+    """`--help` каждого скрипта выводится в cp1251 без падения — проверено запуском.
+
+    Соседний `test_every_script_prints_in_utf8_regardless_of_locale` появился
+    раньше и проверяет **по тексту**, что скрипт зовёт `reconfigure`. Этот
+    проверяет **делом**: строка на месте, но зовётся ли она до первой печати,
+    статически не видно — `--help` печатает argparse, и он может отработать
+    раньше. Разные проверки одного требования п. 3.5 ТЗ, и обе нужны.
+
+    Организаторы работают в тНавигаторе, то есть с высокой вероятностью на
+    Windows, где консоль по умолчанию cp1251, и там проверяющий увидел бы вместо
+    инструкции трассировку.
+    """
+    import os
+
+    scripts = sorted((ROOT / "scripts").glob("*.py"))
+    assert len(scripts) > 20, "скрипты не найдены — проверка стала бы пустой"
+
+    environment = dict(os.environ, PYTHONIOENCODING="cp1251")
+    broken = []
+    for script in scripts:
+        done = subprocess.run([sys.executable, str(script), "--help"],
+                              capture_output=True, text=True, encoding="cp1251",
+                              errors="replace", cwd=ROOT, env=environment, timeout=120)
+        if "UnicodeEncodeError" in (done.stderr or ""):
+            broken.append(script.name)
+
+    assert not broken, (
+        "на консоли Windows `--help` падает у: " + ", ".join(broken)
+        + " — уберите типографику (стрелки, минус U+2212) из печатаемых строк"
+    )
+
+
 def test_check_deck_refuses_a_directory_with_a_usable_hint(tmp_path, capsys):
     """Каталог вместо `.DATA` — отказ с подсказкой, а не трассировка.
 
