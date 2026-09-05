@@ -1992,3 +1992,269 @@ def test_a_shut_record_is_not_scaled_by_the_annual_budget(norms):
         "остановленная нагнетательная получила приёмистость от годовой срезки"
     )
 
+
+def test_a_shut_record_with_a_rate_is_still_not_scaled(norms):
+    """Остановленная запись с ненулевым расходом годовой срезке не подлежит.
+
+    Прежний тест подавал остановку с нулём, и подмена `or` на `and` его
+    переживала: при нуле оба условия совпадали по знаку. Настоящий разделитель —
+    остановка, у которой поле расхода осталось заполненным (так бывает после
+    смены режима). С подменой она получает уставку от срезки объёма, то есть
+    **остановка отменяется** приведением к ограничению.
+    """
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_liquid_m3_per_year=1.0,
+                            max_field_injection_m3_per_year=1.0)
+    shut = ProducerControl("a", "SHUT", "LRAT", 30.0, 50.0)
+    quiet = InjectorControl("i", "WATER", "SHUT", "RATE", 40.0, 300.0)
+    steps = [step(producers=(shut, prod("b", 30.0)), injectors=(quiet, inj("j", 40.0)))]
+    forecast = [produced("2007-01-01", "b", oil_m3=3.0, water_m3=27.0),
+                injected("2007-01-01", "j", volume_m3=1200.0)]
+
+    result, allocations = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    kept = {one.well: one for one in result[0].producers}
+    assert kept["a"].liquid_rate == 30.0, (
+        f"остановленной добывающей срезали уставку до {kept['a'].liquid_rate} — "
+        "остановка отменена приведением к годовому объёму"
+    )
+    pumps = {one.well: one for one in result[0].injectors}
+    assert pumps["i"].rate == 40.0, (
+        f"остановленной нагнетательной срезали приёмистость до {pumps['i'].rate}"
+    )
+    # а работающие срезаны — иначе тест проходил бы и без самой срезки
+    assert kept["b"].liquid_rate < 30.0 and pumps["j"].rate < 40.0
+    assert {one.well for one in allocations} == {"b", "j"}, (
+        f"решения выписаны не тем скважинам: {[one.well for one in allocations]}"
+    )
+
+
+def test_the_daily_cut_reports_the_rate_it_started_from(norms):
+    """В решении о срезке «до» — прежняя уставка, а не ноль.
+
+    Мутация `control.liquid_rate or 0.0` на `and` переживала сюиту: поле
+    `before` никто не сверял с расписанием. С подменой объяснение сообщает
+    «было 0,0 — стало 10,0», то есть докладывает о **росте** там, где произошла
+    срезка. Объяснимость решений — требование регламента, и врущее объяснение
+    хуже отсутствующего.
+    """
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_field_liquid_m3_per_day=40.0)
+    steps = [step(producers=(prod("a", 30.0), prod("b", 30.0)))]
+    forecast = [produced("2007-01-01", "a", oil_m3=3.0, water_m3=27.0),
+                produced("2007-01-01", "b", oil_m3=3.0, water_m3=27.0)]
+
+    _result, allocations = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    cuts = [one for one in allocations if one.resource == "жидкость"]
+    assert cuts, [one.resource for one in allocations]
+    assert cuts[0].before == 30.0, (
+        f"в объяснении «до» равно {cuts[0].before} вместо уставки 30,0: "
+        "решение докладывает о росте там, где произошла срезка"
+    )
+    assert cuts[0].after < cuts[0].before
+
+
+def test_a_silent_well_is_shut_in_its_own_role():
+    """Скважина, дописанная остановкой, остаётся в своей роли.
+
+    Ветка «скважина работала, а записи на шаге нет» достижима только прямым
+    вызовом `_fit_fund`: `enforce` разворачивает дельты, и январская запись
+    продолжает действовать в феврале. Отсюда и подмена `kind == "producer"` на
+    `!=` переживала все тесты через `enforce` — проверено прогоном.
+
+    С подменой добывающая дописывается **нагнетательной**: расписание
+    собирается, фонд молча меняет состав, и дальше по цепочке она считается
+    закачкой.
+    """
+    window = planner.ShutWindow(well="a", start=date(2007, 2, 1),
+                                end=date(2007, 12, 31))
+    limits = planner.Limits(enforce_water_balance=False, forced_shut_windows=(window,))
+    steps = [
+        ScheduleStep(date(2007, 1, 1), (prod("a", 30.0), prod("b", 30.0)),
+                     (inj("i", 40.0),)),
+        ScheduleStep(date(2007, 2, 1), (prod("b", 30.0),), (inj("i", 40.0),)),
+    ]
+
+    result, decisions = planner._fit_fund(steps, [], None, limits, FLUIDS)
+
+    february = result[1]
+    producers = {one.well: one.status for one in february.producers}
+    injectors = {one.well for one in february.injectors}
+
+    assert "a" in producers, (
+        f"дописанная остановкой добывающая ушла в нагнетательные: "
+        f"добывающие {sorted(producers)}, нагнетательные {sorted(injectors)}"
+    )
+    assert producers["a"] == "SHUT"
+    assert "a" not in injectors
+    assert any(one.well == "a" for one in decisions)
+
+
+def test_a_new_well_is_started_not_returned_to_production(norms):
+    """Пуск новой скважины называется пуском, а не возвратом в добычу.
+
+    Умолчание состояния для скважины, которой до этого шага не было, — «не
+    добывала и не закачивала». Мутация меняла его на «закачивала», и событие
+    оставалось событием, но получало **чужое имя**: `_event_kind` выдавал
+    «возврат в добычу». Квота тратится так же, поэтому расписание не меняется —
+    расходится только объяснение, а его читает человек.
+
+    Ветка живая: проверено расстановкой отказа внутри неё (05.09) — умолчание
+    берётся на каждой новой скважине горизонта.
+    """
+    limits = planner.Limits(enforce_water_balance=False, max_events_per_month=1)
+    steps = [
+        ScheduleStep(date(2007, 1, 1), (prod("b", 30.0),), ()),
+        ScheduleStep(date(2007, 2, 1),
+                     (prod("b", 30.0), prod("n1", 30.0), prod("n2", 30.0)), ()),
+    ]
+    forecast = [produced("2007-01-01", "b", oil_m3=3.0, water_m3=27.0)]
+    forecast += [produced("2007-02-01", well, oil_m3=3.0, water_m3=27.0)
+                 for well in ("b", "n1", "n2")]
+
+    _result, allocations = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    quota = [one for one in allocations if "квота мероприятий" in one.resource]
+    assert quota, [one.resource for one in allocations]
+    assert "пуск" in quota[0].reason, (
+        f"событие новой скважины названо не пуском: {quota[0].reason}"
+    )
+    assert "возврат в добычу" not in quota[0].reason
+
+
+def test_a_year_inside_the_corridor_produces_no_decision(norms):
+    """Год внутри коридора не порождает ни решения, ни записи множителя.
+
+    Мутация условия записи множителя (`factor - 1.0` на `factor + 1.0`)
+    переживала сюиту, и это не случайность: `_scale_injection_by_year` **сама**
+    пропускает единичный множитель, то есть проверка стоит дважды. Здесь
+    закреплён наблюдаемый итог обеих — ни одного решения на годе, который и так
+    в коридоре.
+
+    Двойная защита названа явно: если однажды внутреннюю проверку уберут как
+    «лишнюю», этот тест останется единственным, кто заметит.
+    """
+    limits = planner.Limits(water_balance_rule="compensation",
+                            water_tolerance=1.3, water_tolerance_min=0.85)
+    steps = [step(producers=(prod("a", 30.0),), injectors=(inj("i", 1.0),))]
+    forecast = [produced("2007-01-01", "a", oil_m3=3.0, water_m3=27.0),
+                injected("2007-01-01", "i", volume_m3=30.0)]
+
+    result, allocations = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    assert result[0].injectors[0].rate == 1.0, "закачка внутри коридора изменена"
+    assert allocations == [], (
+        f"год внутри коридора породил решение: "
+        f"{[(one.well, one.before, one.after) for one in allocations]}"
+    )
+
+
+def test_a_phase_cut_never_raises_the_setpoint():
+    """Срезка по фазе не может поднять уставку — и защита от этого мертва.
+
+    Ветка «пересчитанная уставка не ниже прежней» недостижима по построению:
+    множитель равен `мощность / расход` и берётся только при `расход > мощность`,
+    то есть строго меньше единицы, а `reduced = min(уставка, факт) × множитель`.
+    Проверено перебором краёв, включая расход, больший мощности на один ulp:
+    множитель остаётся 0,999… и уставка всегда падает.
+
+    Отсюда две вещи. Первая: мутация `>=` на `>` в этой ветке эквивалентна, и
+    ни один тест её не убьёт — так и записано в `docs/decisions.md` (Р-225).
+    Вторая: сама инвариант «срезка не поднимает уставку» проверяемa, и вот она.
+    """
+    import math
+
+    capacity = 700.0
+    for rate in (capacity * 2, capacity * 1.001, math.nextafter(capacity, math.inf)):
+        factor = capacity / rate
+        assert factor < 1.0, f"множитель {factor} при расходе {rate} не меньше единицы"
+        for setpoint, achieved in ((30.0, 30.0), (45.0, 30.0), (30.0, 1e9), (1e-9, 1e-9)):
+            reduced = min(setpoint, achieved) * factor
+            assert reduced < setpoint, (
+                f"срезка подняла уставку: {setpoint} -> {reduced} "
+                f"при множителе {factor}"
+            )
+
+
+def test_a_one_day_shut_window_is_legal():
+    """Окно принудительной остановки длиной в один день законно.
+
+    Мутация `end < start` на `<=` переживала сюиту: окна из одного дня в
+    фикстурах не было. Кейс задаёт окна датами, и «с 1 по 1 марта» — обычная
+    запись; отвергая её, мы отвергали бы условие организаторов на разборе
+    конфигурации, до всякого расчёта.
+    """
+    same = planner.ShutWindow(well="a", start=date(2015, 3, 1), end=date(2015, 3, 1))
+
+    assert same.covers(date(2015, 3, 1))
+    assert not same.covers(date(2015, 2, 28))
+
+    with pytest.raises(ValueError):
+        planner.ShutWindow(well="a", start=date(2015, 3, 2), end=date(2015, 3, 1))
+
+
+def test_case_limits_cannot_be_edited_after_loading():
+    """Ограничения кейса неизменяемы: их задают организаторы, а не наш код.
+
+    Мутация `frozen=True` на `False` переживала сюиту. Изменяемые пределы
+    позволяют поправить условие кейса в середине прогона — молча и без следа в
+    конфигурации, из которой результат обязан воспроизводиться.
+    """
+    import dataclasses
+
+    limits = planner.Limits(max_field_liquid_m3_per_day=2000.0)
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        limits.max_field_liquid_m3_per_day = 1.0
+
+
+def test_the_regime_hold_reports_the_rate_it_started_from(norms):
+    """В решении о выдержке режима «до» — прежняя приёмистость, а не ноль.
+
+    Тот же класс, что и у суточной срезки, но в другом месте: `control.rate or
+    0.0` подменялось на `and`, и объяснение сообщало «было 0,0». Оба места
+    нашёл мутационный прогон, и второе — только после расширения выборки с 20
+    подмен до 30.
+    """
+    limits = planner.Limits(enforce_water_balance=False, min_regime_months=3)
+    steps = [
+        ScheduleStep(date(2007, 1, 1), (prod("a", 30.0),), (inj("i", 40.0),)),
+        ScheduleStep(date(2007, 2, 1), (prod("a", 30.0),), (inj("i", 80.0),)),
+    ]
+    forecast = [produced("2007-01-01", "a", oil_m3=3.0, water_m3=27.0),
+                injected("2007-01-01", "i", volume_m3=1200.0),
+                produced("2007-02-01", "a", oil_m3=3.0, water_m3=27.0),
+                injected("2007-02-01", "i", volume_m3=2400.0)]
+
+    _result, allocations = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    held = [one for one in allocations if "длительность режима" in one.resource]
+    assert held, [one.resource for one in allocations]
+    assert held[0].before == 80.0, (
+        f"в объяснении «до» равно {held[0].before} вместо приёмистости, "
+        "которую просили: решение докладывает не о том изменении"
+    )
+
+
+def test_a_year_exactly_at_the_corridor_ceiling_is_not_cut(norms):
+    """Накопленное ровно на потолке коридора срезке не подлежит.
+
+    Мутация `planned > room` на `>=` переживала сюиту. Разница ровно та же, что
+    в Р-188: срезка планировщика кладёт отношение **на** предел, и объявляя
+    предел нарушенным, планировщик резал бы собственный результат — а при
+    fail-closed отбраковывал бы кандидата целиком.
+    """
+    # отбор 30 м³ за месяц, потолок 1.3 -> закачка ровно 39 м³ (1,3 м³/сут)
+    limits = planner.Limits(water_balance_rule="compensation", water_tolerance=1.3)
+    steps = [step(producers=(prod("a", 30.0),), injectors=(inj("i", 1.3),))]
+    forecast = [produced("2007-01-01", "a", oil_m3=3.0, water_m3=27.0),
+                injected("2007-01-01", "i", volume_m3=39.0)]
+
+    result, allocations = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    assert result[0].injectors[0].rate == 1.3, (
+        f"закачка ровно на потолке срезана до {result[0].injectors[0].rate}"
+    )
+    assert allocations == [], [one.reason for one in allocations]
+
