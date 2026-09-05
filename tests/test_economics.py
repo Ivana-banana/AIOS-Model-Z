@@ -258,3 +258,59 @@ def _one_month_of_rows() -> list[dict[str, object]]:
           "WLPT_Diff": 900.0, "WOMT_Diff": 600.0, "WWIT_Diff": 0.0},
     ]
 
+
+
+def test_the_committed_trace_records_a_command_anyone_can_run():
+    """Команда в машинном следе заявки обязана запускаться не только у автора записи.
+
+    `runs/matched-0995/npv.json` отслеживается git и уходит в сдаваемый пакет:
+    это доказательство того, что заявленное число получено из этой выгрузки
+    эталонной точкой входа. До 05.09 поле `command` хранило `sys.executable` и
+    абсолютные пути той машины, которая считала последней, — то есть команду,
+    которую жюри повторить не может, а `claimedFrom` под Windows писался через
+    обратную косую. Побочный эффект был виден в дне отправки: пятый пункт
+    паспорта менял отслеживаемый файл, и первый пункт («`git status` чист»)
+    после него переставал держаться (Р-227).
+
+    Проверяется закоммиченный файл, а не свежий пересчёт: выгрузки на чистом
+    клоне нет, а след есть — и портится он именно в git.
+    """
+    trace = json.loads(
+        (SUBMITTED_RUN / "npv.json").read_text(encoding="utf-8"))
+    command = trace["command"]
+
+    assert command.startswith("python "), (
+        "команда следа начинается не с переносимого «python»: " + command[:60]
+    )
+    assert "vendor/CHDD_PYTHON/" in command, (
+        "команда следа не называет точку входа организаторов"
+    )
+    for marker in ("\\", ":/", ".venv", "/home/", "/Users/"):
+        assert marker not in command, (
+            f"в команде следа остался машинный путь ({marker!r}): {command[:120]}"
+        )
+    assert "\\" not in trace["claimedFrom"], (
+        "источник заявленного числа записан через обратную косую: " + trace["claimedFrom"]
+    )
+
+
+def test_paths_inside_the_repository_are_recorded_relative_to_it():
+    """`portable()` укорачивает свои пути и не трогает чужие.
+
+    Путь вне репозитория обязан остаться абсолютным: относительный увёл бы
+    записанную команду к другому файлу молча.
+    """
+    sys.path.insert(0, str(economics.VENDOR_DIR.parent.parent / "scripts"))
+    try:
+        from verify_declared import ROOT, portable
+    finally:
+        sys.path.pop(0)
+
+    assert portable(ROOT / "runs" / "matched-0995" / "rows.csv") == \
+        "runs/matched-0995/rows.csv"
+    assert portable(ROOT / "vendor" / "CHDD_PYTHON") == "vendor/CHDD_PYTHON"
+
+    outside = ROOT.parent / "чужой-каталог" / "rows.csv"
+    assert portable(outside) == str(outside), (
+        "путь вне репозитория подменён относительным — команда возьмёт другой файл"
+    )
