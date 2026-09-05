@@ -80,9 +80,34 @@ def digest(path: Path, algorithm: str = "md5") -> str:
     return accumulator.hexdigest()
 
 
+def portable(path: Path) -> str:
+    """Путь так, как его напишет любая машина: от корня репозитория, через `/`.
+
+    След `npv.json` отслеживается git и попадает в сдаваемый пакет, поэтому в нём
+    не место ни букве диска, ни домашнему каталогу того, кто запускал последним.
+    До 05.09 запись хранила `sys.executable` и абсолютные пути: файл менялся при
+    каждом пересчёте на другой машине (домашний каталог Linux против пути с
+    буквой диска в Windows), а
+    записанная команда не запускалась ни у кого, кроме автора записи, — то есть
+    поле «команда» в машинном следе заявки было невоспроизводимым (Р-227).
+
+    Путь вне репозитория остаётся абсолютным: подменять его относительным значило
+    бы записать команду, которая молча возьмёт другой файл.
+    """
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def recompute(rows_file: Path, start_year: int, norms_file: Path,
               work_dir: Path) -> tuple[float, list[str]]:
-    """Посчитать ЧДД точкой входа организаторов. Возвращает число и команду."""
+    """Посчитать ЧДД точкой входа организаторов. Возвращает число и команду.
+
+    Возвращается команда в переносимом виде — та, которую жюри сможет повторить
+    из корня репозитория. Запускается она абсолютными путями: подпроцессу не
+    важно, откуда его позвали, а записи важно, чтобы её можно было выполнить.
+    """
     json_file = work_dir / "npv-vendor.json"
     command = [
         sys.executable,
@@ -93,6 +118,15 @@ def recompute(rows_file: Path, start_year: int, norms_file: Path,
         "--output", str(work_dir / "npv-vendor.xlsx"),
         "--json", str(json_file),
     ]
+    recorded = [
+        "python",
+        portable(economics.VENDOR_DIR / "РАСЧЕТ_ЧДД.py"),
+        "--input", portable(rows_file),
+        "--norms", portable(norms_file),
+        "--start-year", str(start_year),
+        "--output", portable(work_dir / "npv-vendor.xlsx"),
+        "--json", portable(json_file),
+    ]
     completed = subprocess.run(command, capture_output=True, text=True,
                                encoding="utf-8", errors="replace")
     if completed.returncode != 0:
@@ -100,7 +134,7 @@ def recompute(rows_file: Path, start_year: int, norms_file: Path,
             f"эталонный расчётчик отказал (код {completed.returncode}):\n{completed.stderr}"
         )
     raw = json.loads(json_file.read_text(encoding="utf-8"))
-    return float(raw["summary"]["totalChddM"]), command
+    return float(raw["summary"]["totalChddM"]), recorded
 
 
 def charge_initial_pump(norms_file: Path) -> bool | None:
@@ -150,7 +184,7 @@ def main() -> int:
                       else ROOT / arguments.submission)
         claimed = parse_declared(submission.read_text(encoding="utf-8")) \
             if submission.is_file() else None
-        source = str(arguments.submission)
+        source = portable(submission)
     if claimed is None:
         print(f"заявленное число не найдено в {source}", file=sys.stderr)
         return 1
