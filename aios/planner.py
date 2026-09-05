@@ -2150,6 +2150,13 @@ def _fit_injection_to_water_corridor(
 
         # верхняя граница: накопленное на конец года не выше базы × ceiling
         room = base_c * ceiling - injected_c
+        # Строгое сравнение и нестрогое здесь неразличимы: при `planned_y == room`
+        # множитель выходит ровно `room / planned_y = 1.0`, а единичный множитель
+        # ниже не записывается. Делить на ноль тоже не на чем — год без закачки
+        # отсеян выше (`planned_y <= 0`). Мутационный прогон помечает подмену
+        # эквивалентной, и это верный вердикт (Р-226); наблюдаемый итог —
+        # «накопленное ровно на потолке не режется» — закреплён
+        # `test_a_year_exactly_at_the_corridor_ceiling_is_not_cut`.
         if planned_y > room:
             factor = max(room / planned_y, 0.0)
             reason = (
@@ -2185,6 +2192,10 @@ def _fit_injection_to_water_corridor(
                     ceiling_by_source = (
                         (bucket["produced"] + source_m3_per_day * days) / planned_y)
                     wanted = min(wanted, ceiling_by_source)
+                # При равенстве присваивание тождественно, поэтому строгое
+                # сравнение и нестрогое дают один результат при любых данных —
+                # мутация здесь эквивалентна по определению, а не по замеру
+                # (Р-226).
                 if wanted > factor:
                     factor = wanted
                     reason = (
