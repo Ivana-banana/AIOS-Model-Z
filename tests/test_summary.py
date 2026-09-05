@@ -461,3 +461,33 @@ def test_an_export_with_only_part_of_the_well_vectors_is_refused(tmp_path):
 
     with pytest.raises(ValueError, match="WWPT"):
         summary.monthly_rows(case)
+
+
+def test_reading_a_case_does_not_flood_the_run_with_warnings():
+    """Чтение выгрузки молчит: 371 предупреждение на прогон — это шум, а не сигнал.
+
+    `report_index_list` внутри resdata гасит `DeprecationWarning` на создании
+    `IntVector`, но не на `append` в цикле сразу под ним, и печатает по
+    предупреждению на отчётный шаг. Замер 05.09 на единственной документированной
+    команде прогона: 742 строки шума на три строки собственного вывода — на демо
+    это читается как сломанный запуск.
+
+    Сторож считает предупреждения, а не ищет строку: любое новое место, где
+    библиотека начнёт шуметь, он поймает так же.
+    """
+    import warnings
+
+    case = Path(__file__).resolve().parent.parent / "runs" / "base" / "RUN"
+    if not case.with_suffix(".UNSMRY").is_file():
+        pytest.skip("нет выгрузки runs/base — читать нечего")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rows = summary.monthly_rows(case)
+
+    noisy = [one for one in caught if issubclass(one.category, DeprecationWarning)]
+    assert not noisy, (
+        f"чтение выгрузки печатает {len(noisy)} предупреждений, первое: {noisy[0].message}"
+    )
+    assert rows, "молчание не должно достигаться тем, что читать перестали"
+

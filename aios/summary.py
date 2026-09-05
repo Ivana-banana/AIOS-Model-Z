@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -122,7 +123,15 @@ def monthly_rows(case: str | Path,
 
     fluids = fluids or Fluids()
     summary = Summary(str(_case_path(case)))
-    steps = list(summary.report_index_list())
+    # `report_index_list` внутри resdata гасит `DeprecationWarning` на создании
+    # `IntVector`, но не на `append` в цикле сразу под ним — и печатает по
+    # предупреждению на отчётный шаг. На Модели Z это 371 предупреждение по две
+    # строки каждое: единственная команда прогона выдаёт 742 строки шума на три
+    # строки собственного вывода (замер 05.09). Гасим здесь, у своего вызова, а
+    # не глобально: остальные предупреждения библиотек нам нужны.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        steps = list(summary.report_index_list())
     report_dates = _report_dates(summary, steps)
     if len(report_dates) < 2:
         raise ValueError(f"В {case} меньше двух отчётных шагов — считать нечего.")
