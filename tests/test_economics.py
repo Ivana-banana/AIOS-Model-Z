@@ -177,3 +177,84 @@ def test_start_date_has_no_default_because_forgetting_it_changes_the_declared_nu
 
     with pytest.raises(TypeError):
         economics.compute_npv([], headers=economics.REQUIRED_COLUMNS)
+
+
+# ── что нашёл мутационный прогон 05.09 (Р-221) ───────────────────────────────
+
+
+def test_a_computed_npv_cannot_be_edited_afterwards():
+    """Итог расчёта неизменяем: число заявки не правится после получения.
+
+    Мутация `frozen=True -> False` переживала сюиту. Между тем главное правило
+    проекта — заявляемое число приходит из эталонного расчёта и ниоткуда больше;
+    изменяемый результат позволяет поправить его в коде между расчётом и
+    записью, и сделать это молча.
+    """
+    import dataclasses
+
+    assert dataclasses.is_dataclass(economics.NpvResult)
+    fields = {one.name for one in dataclasses.fields(economics.NpvResult)}
+    assert "chdd_m" in fields, fields
+
+    result = economics.NpvResult(**dict.fromkeys(fields))
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        result.chdd_m = 999.9
+
+
+def test_half_given_norms_are_completed_before_the_vendor_is_called(monkeypatch):
+    """Передан один норматив из двух — второй дочитывается, а не уходит `None`.
+
+    Мутация `or -> and` в условии дочитывания переживала сюиту и **числом её не
+    отличить**: эталон при `None` подставляет свои `DEFAULT_PUMPS` и
+    `DEFAULT_ASSUMPTIONS`, а они сегодня совпадают с `Нормативы_ЧДД.xlsx`.
+    Сегодня — да; в валидационном кейсе нормативы придут свои
+    (`docs/task.md`), и тогда частичная передача молча посчитает объект по
+    умолчаниям эталона вместо нормативов кейса. Разницы в числе не будет видно
+    ни здесь, ни там — увидят её организаторы на своём расчёте.
+
+    Поэтому проверяется контракт, а не число: в эталон обязаны уходить оба
+    набора явно, при любой комбинации переданного.
+    """
+    # экономика импортирует вендора как модуль верхнего уровня (правит sys.path),
+    # поэтому подменять надо ровно тот объект, который она и зовёт
+    import chdd_model
+
+    assumptions, pumps = economics.load_norms(economics.NORMS_FILE)
+    seen: dict[str, object] = {}
+
+    def spy(records, **keywords):
+        seen.update(keywords)
+        return {"chddM": 0.0, "years": [], "rows": []}
+
+    monkeypatch.setattr(chdd_model, "compute_calculation", spy)
+    monkeypatch.setattr(economics, "_to_result", lambda raw: raw)
+
+    for given in ({}, {"assumptions": assumptions}, {"pumps": pumps},
+                  {"assumptions": assumptions, "pumps": pumps}):
+        seen.clear()
+        economics.compute_npv(_one_month_of_rows(),
+                              headers=economics.REQUIRED_COLUMNS,
+                              start_date="2014-01-01",
+                              norms_file=economics.NORMS_FILE, **given)
+        assert seen.get("assumptions"), (
+            f"при {sorted(given)} в эталон ушли пустые нормативы — он молча "
+            "возьмёт свои умолчания вместо нормативов кейса"
+        )
+        assert seen.get("pumps"), (
+            f"при {sorted(given)} в эталон ушли пустые типоразмеры ЭЦН"
+        )
+
+
+def _one_month_of_rows() -> list[dict[str, object]]:
+    """Минимальная выгрузка: одна скважина, один месяц, все 14 колонок."""
+    return [
+        {"DATA": "2014-01-01", "well": "1", "WLPT": 0.0, "WLPR": 30.0,
+          "WOMT": 0.0, "WOMR": 20.0, "WWIR": 0.0, "WWIT": 0.0,
+          "THP": 20.0, "BHP": 90.0, "WEFF": 1.0,
+          "WLPT_Diff": 900.0, "WOMT_Diff": 600.0, "WWIT_Diff": 0.0},
+        {"DATA": "2014-02-01", "well": "1", "WLPT": 900.0, "WLPR": 30.0,
+          "WOMT": 600.0, "WOMR": 20.0, "WWIR": 0.0, "WWIT": 0.0,
+          "THP": 20.0, "BHP": 90.0, "WEFF": 1.0,
+          "WLPT_Diff": 900.0, "WOMT_Diff": 600.0, "WWIT_Diff": 0.0},
+    ]
+

@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import inspect
+import math
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -899,3 +902,178 @@ def test_the_submitted_schedule_is_outside_the_trust_region_and_that_is_said():
     assert "не выбиралось суррогатом" in answers, (
         "не сказано, почему «вне области» здесь правильный исход"
     )
+
+
+# ── что нашёл мутационный прогон 05.09 (Р-221) ───────────────────────────────
+
+
+def test_a_missing_control_counts_as_the_neutral_multiplier():
+    """Отсутствующее у сценария управление — это «как есть», а не «закрыто».
+
+    Мутация «умолчание 1.0 -> 0» в сборке области переживала сюиту. Разница не
+    косметическая: 1.0 означает режим без изменения, 0 — закрытую скважину. Со
+    вторым сценарий, где скважины просто нет, притворяется сценарием, где её
+    заглушили, и расстояние до него считается не от того режима.
+    """
+    region = trust.TrustRegion.fit({
+        "a": {"w1": 1.0, "w2": 1.0},
+        "b": {"w1": 1.5, "w2": 1.0},
+        "c": {"w1": 1.0},            # w2 не назван — значит «как есть»
+        "d": {"w1": 1.25, "w2": 1.0},
+    }, k=1)
+
+    # у всех четырёх w2 фактически равен 1.0 — DoE его не двигал, и признак
+    # уезжает в `frozen` со своим значением, а не в подвижные `features`
+    assert dict(region.frozen).get("w2") == 1.0, (
+        f"неназванное управление подставлено не нейтральным множителем: "
+        f"features={region.features}, frozen={region.frozen}. С нулём сценарий, "
+        f"где скважина просто не названа, притворяется сценарием, где её заглушили"
+    )
+    assert "w2" not in region.features
+
+
+def test_the_region_refuses_a_meaningless_neighbour_count():
+    """`k = 0` — не «ближайший сосед», а бессмыслица, и отвергается сразу."""
+    profiles = {"a": {"w": 1.0}, "b": {"w": 1.5}, "c": {"w": 0.5}}
+
+    with pytest.raises(ValueError, match="k"):
+        trust.TrustRegion.fit(profiles, k=0)
+
+    trust.TrustRegion.fit(profiles, k=1)  # единица законна
+
+
+def test_a_scale_exactly_at_the_tolerance_is_degenerate():
+    """Граница вырожденности строгая: масштаб ровно с допуск — уже вырожден.
+
+    Две мутации строки 265–266 переживали сюиту, а это ровно та проверка, из-за
+    которой заведён Р-205: артефакт с масштабом 1,6·10⁻¹⁶ отдавал расстояние
+    порядка 10¹⁵ вместо честного отказа.
+    """
+    region = trust.TrustRegion.fit({"a": {"w": 1.0}, "b": {"w": 1.5},
+                                   "c": {"w": 0.5}}, k=1)
+    edge = replace(region, scale=(1e-9,))
+    below = replace(region, scale=(1e-10,))
+    above = replace(region, scale=(1e-8,))
+
+    assert edge.degenerate_features() == ("w",), "ровно на допуске — вырожден"
+    assert below.degenerate_features() == ("w",)
+    assert above.degenerate_features() == ()
+
+
+def test_the_margin_refuses_a_confidence_outside_the_open_interval():
+    """`alpha` строго внутри (0, 1): на границах квантиль не определён."""
+    pairs = [(100.0, 90.0), (110.0, 95.0), (120.0, 118.0)]
+
+    for bad in (0.0, 1.0):
+        with pytest.raises(ValueError, match="alpha"):
+            trust.OptimismMargin.fit(pairs, alpha=bad)
+
+    assert trust.OptimismMargin.fit(pairs, alpha=0.5).calibrated
+
+
+def test_pairs_without_a_family_column_are_not_taken_for_the_asked_one(tmp_path):
+    """Строка без колонки семейства не считается строкой нужного семейства.
+
+    Мутация `len(row) > 3` на `> 0` переживала сюиту: в фикстурах у всех строк
+    четыре колонки. На настоящем файле, собранном до появления семейств, запас
+    посчитался бы по чужим парам — и подписался бы именем семейства, которого в
+    них нет.
+    """
+    short = tmp_path / "pairs.csv"
+    short.write_text("100,90\n110,95\n120,118\n", encoding="utf-8")
+
+    margin = trust.margin_from_pairs(short, family="search")
+
+    assert not margin.calibrated, (
+        "пары без колонки семейства зачтены за семейство «search»"
+    )
+
+
+def test_the_penalty_is_charged_by_default():
+    """Умолчание штрафа за удаление — единица, а не ноль.
+
+    Мутация «`penalty = 1.0` -> 0» переживала сюиту: вызывающие передают штраф
+    явно. Умолчание, равное нулю, означало бы «вне области ничего не стоит», и
+    любой вызов, забывший параметр, тихо снимал бы второй контур шлюза.
+    """
+    signature = inspect.signature(trust.safe_value)
+    assert signature.parameters["penalty"].default == 1.0
+    assert signature.parameters["weight"].default == 1.0
+
+    region = trust.TrustRegion.fit({"a": {"w": 1.0}, "b": {"w": 1.5},
+                                   "c": {"w": 0.5}}, k=1)
+    far = region.distance({"w": 50.0})
+    assert far.outside
+
+    assert trust.safe_value(100.0, far, None) < 100.0, (
+        "штраф по умолчанию не взимается — вне области число не отличается от сырого"
+    )
+
+
+def test_a_region_with_mismatched_arrays_is_refused_not_zipped_short():
+    """Повреждённый артефакт отвергается, а не молча укорачивается.
+
+    Мутация `strict=True -> False` переживала сюиту. Без строгости `zip` тихо
+    обрежется по короткому массиву: часть признаков выпадет из проверки на
+    вырожденность, и артефакт с испорченной областью пройдёт как исправный —
+    ровно тот класс, ради которого заведён Р-205.
+    """
+    region = trust.TrustRegion.fit({"a": {"w1": 1.0, "w2": 2.0},
+                                   "b": {"w1": 1.5, "w2": 1.0},
+                                   "c": {"w1": 0.5, "w2": 3.0}}, k=1)
+    broken = replace(region, scale=region.scale[:-1])
+
+    with pytest.raises(ValueError):
+        broken.degenerate_features()
+
+
+def test_an_uncalibrated_margin_reports_the_index_it_would_need():
+    """Индекс некалиброванного запаса считается по alpha, а не «примерно».
+
+    Мутация `1 - alpha` на `1 + alpha` переживала сюиту: поле `index` при
+    отсутствии файла пар никто не смотрел. Оно говорит, сколько пар нужно, чтобы
+    запас появился, — то есть отвечает на вопрос «чего не хватает».
+    """
+    margin = trust.margin_from_pairs(Path("нет-такого-файла.csv"), family="search", alpha=0.1)
+
+    assert not margin.calibrated
+    assert margin.index == math.ceil(1 - 0.1) == 1, margin.index
+
+    strict = trust.margin_from_pairs(Path("нет-такого-файла.csv"), family="search", alpha=0.01)
+    assert strict.index == 1, strict.index
+
+
+def test_the_degenerate_reason_names_the_features_it_found():
+    """Причина отказа перечисляет вырожденные признаки, а не только их число.
+
+    Мутация `degenerate[:3]` на `[:0]` переживала сюиту: текст причины не
+    проверялся. «У 72 признаков масштаб вырожден (…)» без единого имени не
+    говорит, что именно пересобирать.
+    """
+    region = trust.TrustRegion.fit({"a": {"w1": 1.0, "w2": 1.0},
+                                   "b": {"w1": 1.5, "w2": 1.0},
+                                   "c": {"w1": 0.5, "w2": 1.0}}, k=1)
+    degenerate = replace(region, features=("w1", "w2"), scale=(1e-20, 1e-20))
+
+    reasons = trust.routed_to_full_run(None, None, region=degenerate)
+    about = [one for one in reasons if "вырожден" in one]
+
+    assert about, reasons
+    assert "w1" in about[0], about[0]
+    assert "w2" in about[0], about[0]
+
+
+def test_the_contract_charges_the_penalty_by_default():
+    """Умолчание штрафа в контракте артефакта — единица, а не ноль.
+
+    Тот же класс, что и у `safe_value`, но в другой функции: `contract` пишет
+    веса поиска в `artifacts/trust-gate.json`, и ноль по умолчанию означал бы,
+    что артефакт объявляет «удаление от обучающих сценариев ничего не стоит».
+    """
+    signature = inspect.signature(trust.contract)
+    assert signature.parameters["penalty"].default == 1.0
+    assert signature.parameters["weight"].default == 1.0
+
+    written = trust.contract(None, None)
+    assert written["search_weights"] == {"lambda": 1.0, "rho": 1.0}, written
+
