@@ -1269,3 +1269,38 @@ def test_the_form_default_does_not_lead_straight_into_a_refusal(client):
         f"по умолчанию выбран {modes[0]!r} — на обученной модели это сразу 409"
     )
     assert "full" in modes, "вариант с подбором режимов пропал вовсе"
+
+
+def test_the_comparison_page_shows_the_declared_triple(tmp_path):
+    """Шаг 3 показа выводит ту же тройку, что заявлена в документах.
+
+    Заявляемое число живёт в `docs/submission.md` и в машинном следе
+    `runs/matched-0995/npv.json`. Страница сравнения считает его заново из
+    выгрузки — и до 05.09 никто не проверял, что она показывает **то же**: на
+    машинах, где замеряли показ, каталога заявляемого прогона не было и шаг
+    отдавал 404. На машине с обеими выгрузками шаг проходит, и совпадение
+    троек — это то, что жюри увидит в интерфейсе.
+
+    Пропуск без выгрузок: обе под `.gitignore`, на чистом клоне сверять нечего.
+    """
+    import json
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    base_rows = root / "runs" / "base" / "rows.csv"
+    claim_rows = root / "runs" / "matched-0995" / "rows.csv"
+    trace_file = root / "runs" / "matched-0995" / "npv.json"
+    if not (base_rows.is_file() and claim_rows.is_file() and trace_file.is_file()):
+        pytest.skip("нет обеих выгрузок — сравнивать нечего")
+
+    declared = json.loads(trace_file.read_text(encoding="utf-8"))["claimedM"]
+
+    client = TestClient(create_app(root))
+    response = client.get("/compare?a=base&b=matched-0995")
+
+    assert response.status_code == 200, "шаг 3 показа не открывается"
+    page = re.sub(r"<[^>]+>", " ", response.text.split("</style>", 1)[-1])
+    assert f"{declared:.1f}" in page, (
+        f"страница сравнения не показывает заявленное число {declared:.1f}"
+    )
