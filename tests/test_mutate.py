@@ -95,3 +95,28 @@ def test_generated_code_stays_valid_python(source: str):
 
     for index in range(len(plan(source))):
         ast.parse(apply_one(source, index))
+
+
+def test_two_mutations_on_one_line_are_told_apart():
+    """Две подмены в одной строке различимы в отчёте.
+
+    `if a < b or c < d:` даёт два сравнения с одинаковым описанием. Пока в
+    описании не было номера, отчёт называл выжившей мутацию, которую тест на
+    самом деле ловил, — выживала её тёзка, и найти её было нельзя. Поймано
+    05.09 на `aios/policy.py`.
+    """
+    source = "def f(a, b, c, d):" + chr(10) + "    return a < b or c < d" + chr(10)
+
+    planned = [one for one in plan(source) if one.kind == "сравнение"]
+
+    assert len(planned) == 2, [str(one) for one in planned]
+    assert planned[0].line == planned[1].line, "обе в одной строке — иначе пример не тот"
+    assert str(planned[0]) != str(planned[1]), (
+        f"описания совпали, выжившую не опознать: {planned[0]}"
+    )
+    assert planned[0].number != planned[1].number
+
+    # и номер действительно адресует свою подмену
+    assert "a <= b" in apply_one(source, planned[0].number)
+    assert "c <= d" in apply_one(source, planned[1].number)
+

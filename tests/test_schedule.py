@@ -258,3 +258,169 @@ def test_a_rendered_schedule_carries_no_non_ascii_of_its_own():
     )])
 
     assert text.isascii(), [line for line in text.splitlines() if not line.isascii()]
+
+
+# ── что нашёл мутационный прогон 05.09 (Р-221) ───────────────────────────────
+
+
+def test_a_repeated_date_is_a_problem_not_a_step():
+    """Два шага с одной датой — нарушение: календарь обязан возрастать строго.
+
+    Мутация `<=` на `<` переживала сюиту: проверялось только убывание. Дубликат
+    `DATES` — обычная ошибка сборки дека, и симулятор примет её молча, посчитав
+    два месяца за один.
+    """
+    same = date(2014, 3, 1)
+    steps = [
+        ScheduleStep(same, (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),), ()),
+        ScheduleStep(same, (ProducerControl("1", "OPEN", "LRAT", 35.0, 50.0),), ()),
+    ]
+
+    problems = schedule.validate(steps)
+
+    assert problems, "повтор даты не замечен — два месяца слились в один"
+    assert any("дат" in one.message.lower() or "поряд" in one.message.lower()
+               for one in problems), [one.message for one in problems]
+
+
+def test_exactly_the_liquid_limit_is_allowed():
+    """Ровно 500 м3/сут законно: верхний типоразмер ЭЦН закрывает 320-500.
+
+    Мутация `>` на `>=` переживала сюиту. Методика запрещает **превышение**
+    500, а не саму границу; отбрасывая её, мы теряли бы верхний интервал ЭЦН
+    целиком — и делали бы это молча, при fail-closed отбраковывая кандидата.
+    """
+    limit = schedule.MAX_LIQUID_RATE_M3_PER_DAY
+    at_limit = [ScheduleStep(date(2014, 1, 1),
+                             (ProducerControl("1", "OPEN", "LRAT", limit, 50.0),), ())]
+    above = [ScheduleStep(date(2014, 1, 1),
+                          (ProducerControl("1", "OPEN", "LRAT", limit * 1.0001, 50.0),), ())]
+
+    assert schedule.validate(at_limit) == [], schedule.validate(at_limit)
+    assert schedule.validate(above), "превышение предела пропущено"
+
+
+def test_an_open_injector_at_zero_or_below_is_refused():
+    """Открытая нагнетательная не закачивает ноль, и приёмистость не бывает отрицательной.
+
+    Четыре мутации строк 295-304 переживали сюиту: проверялись только
+    добывающие. Нагнетательная с нулём — это остановка, записанная как работа;
+    отрицательная приёмистость — отбор, записанный как закачка.
+    """
+    def one(rate, *, status="OPEN", mode="RATE", bhp=300.0):
+        return [ScheduleStep(date(2014, 1, 1), (),
+                             (InjectorControl("9", "WATER", status, mode, rate, bhp),))]
+
+    assert schedule.validate(one(0.0)), "открытая нагнетательная с нулём принята"
+    assert schedule.validate(one(None)), "режим RATE без приёмистости принят"
+    assert schedule.validate(one(-5.0, status="SHUT", mode="BHP")), "отрицательная приёмистость принята"
+    assert schedule.validate(one(-1.0, bhp=-1.0, status="SHUT", mode="BHP")), "отрицательное давление принято"
+    assert schedule.validate(one(400.0)) == [], schedule.validate(one(400.0))
+
+
+def test_a_shut_producer_without_a_rate_is_written_as_an_explicit_zero():
+    """Остановка пишется явным нулём, а открытая скважина без уставки — не пишется.
+
+    Мутация `and` на `or` в `_rate_value` переживала сюиту. С `or` открытая
+    скважина без уставки тоже получила бы «0.0», то есть остановку вместо
+    отказа: расписание собралось бы, а скважина молча встала.
+    """
+    from aios.schedule import _rate_value
+
+    assert _rate_value(None, "SHUT") == "0.0"
+    assert _rate_value(None, "OPEN") != "0.0", (
+        "открытая скважина без уставки записана нулём — это молчаливая остановка"
+    )
+    assert _rate_value(30.0, "OPEN").startswith("30")
+
+
+def test_a_long_list_of_problems_says_how_many_were_hidden():
+    """При длинном списке нарушений сообщение честно говорит, сколько не показано.
+
+    Две мутации строки 166 переживали сюиту: текст ошибки никто не читал. Он —
+    единственное, что видит собирающий расписание, и «... ещё N» отличает
+    «пятьдесят нарушений» от «пятисот».
+    """
+    steps = [
+        ScheduleStep(date(2014, month, 1),
+                     (ProducerControl("1", "OPEN", "LRAT", 9999.0, 50.0),), ())
+        for month in range(1, 13)
+    ] + [
+        ScheduleStep(date(2015, month, 1),
+                     (ProducerControl(str(well), "OPEN", "LRAT", 9999.0, 50.0),), ())
+        for month in range(1, 13) for well in range(1, 6)
+    ]
+
+    with pytest.raises(schedule.ScheduleError) as raised:
+        schedule.assert_valid(steps)
+
+    text = str(raised.value)
+    assert "ещё" in text, text[:400]
+    hidden = len(schedule.validate(steps)) - 50
+    assert f"ещё {hidden}" in text, text[-200:]
+
+
+def test_only_an_open_rate_injector_is_checked_for_zero():
+    """Условие проверки нуля — «открыта И режим RATE», а не «или».
+
+    Мутация `and` на `or` переживала прежний тест: он не подавал остановленную
+    скважину с нулём. С `or` остановка, записанная нулём (а дек организаторов
+    пишет её именно так), объявлялась бы нарушением — то есть законная запись
+    отвергалась бы валидатором.
+    """
+    shut_at_zero = [ScheduleStep(date(2014, 1, 1), (),
+                                 (InjectorControl("9", "WATER", "SHUT", "RATE", 0.0, 300.0),))]
+    open_on_pressure = [ScheduleStep(date(2014, 1, 1), (),
+                                     (InjectorControl("9", "WATER", "OPEN", "BHP", 0.0, 300.0),))]
+
+    assert schedule.validate(shut_at_zero) == [], (
+        "остановка, записанная нулём, объявлена нарушением: так пишет дек организаторов"
+    )
+    assert schedule.validate(open_on_pressure) == [], (
+        "под BHP поле расхода — не уставка, и ноль в нём законен"
+    )
+
+
+def test_a_missing_rate_outside_rate_mode_is_not_compared_to_zero():
+    """Пустая приёмистость вне режима RATE не сравнивается с нулём.
+
+    Мутация `and` на `or` в строке 300 переживала сюиту: с ней `None < 0`
+    роняет валидатор `TypeError` — то есть проверка расписания падает вместо
+    того, чтобы выдать список нарушений.
+    """
+    steps = [ScheduleStep(date(2014, 1, 1), (),
+                          (InjectorControl("9", "WATER", "SHUT", "BHP", None, 300.0),))]
+
+    assert schedule.validate(steps) == [], schedule.validate(steps)
+
+
+def test_zero_injection_pressure_is_refused():
+    """Давление нагнетания ровно ноль — нарушение: граница включающая."""
+    def one(bhp):
+        return [ScheduleStep(date(2014, 1, 1), (),
+                             (InjectorControl("9", "WATER", "OPEN", "RATE", 30.0, bhp),))]
+
+    assert schedule.validate(one(0.0)), "нулевое давление нагнетания принято"
+    assert schedule.validate(one(300.0)) == [], schedule.validate(one(300.0))
+
+
+def test_exactly_fifty_problems_are_listed_without_a_tail():
+    """Ровно пятьдесят нарушений показываются целиком, без «... ещё 0».
+
+    Мутация `<=` на `<` в строке 166 переживала сюиту: список длиной ровно в
+    порог не проверялся, и хвост печатал бы «ещё 0» — строку, которая говорит
+    неправду о том, что что-то скрыто.
+    """
+    # один шаг с пятьюдесятью нарушающими скважинами
+    steps = [ScheduleStep(date(2014, 1, 1),
+                          tuple(ProducerControl(str(index), "OPEN", "LRAT", 9999.0, 50.0)
+                                for index in range(50)), ())]
+    assert len(schedule.validate(steps)) == 50, len(schedule.validate(steps))
+
+    with pytest.raises(schedule.ScheduleError) as raised:
+        schedule.assert_valid(steps)
+
+    assert "ещё" not in str(raised.value), (
+        "при ровно пятидесяти нарушениях напечатан хвост «... ещё 0»"
+    )
+

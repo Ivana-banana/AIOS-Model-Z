@@ -309,3 +309,237 @@ def test_after_conversion_the_well_leaves_the_producing_fund(norms):
     # а добыча остаётся закрытой и дальше: дек переоткрывает её на каждом шаге
     assert all(control.status == "SHUT"
                for step in result[2:] for control in step.producers)
+
+
+# ── что нашёл мутационный прогон 05.09 (Р-221) ───────────────────────────────
+
+
+def test_the_streak_needs_exactly_the_lookback_months(norms):
+    """Остановка приходит ровно на `lookback`-м убыточном месяце, не раньше.
+
+    Мутации границы серии (`<` на `<=`) и умолчания `lookback = 6` переживали
+    сюиту: проверялись «мало» и «много», но не сама граница. Между тем это цена
+    решения — каждая остановка стоит 1,0 млн руб., и лишний месяц ожидания или
+    лишняя ранняя остановка меняют ЧДД напрямую.
+    """
+    # убыток крупный намеренно: у `losing` порог окупаемости (1,0 млн руб.)
+    # набирается позже шестого месяца, и граница серии измерялась бы вместе с
+    # ним. Замер 05.09: на `losing` остановка приходит с восьмого месяца, на
+    # крупном убытке — с седьмого, то есть шесть месяцев серии плюс месяц
+    # вступления решения в силу
+    def big(data: str):
+        return make_row(data, "bad", wlpr=300, womr=0.1, liquid=9000, oil=3)
+
+    six = [big(data) for data in months(2014, 6)]
+    seven = [big(data) for data in months(2014, 7)]
+
+    assert policy.plan_shutdowns(six, norms, control_start=CONTROL_START) == [], (
+        "остановка раньше шестого месяца серии — порог не соблюдается"
+    )
+    assert policy.plan_shutdowns(seven, norms, control_start=CONTROL_START), (
+        "шести месяцев серии и месяца на вступление не хватило для остановки"
+    )
+
+
+def test_the_default_lookback_is_six_months(norms):
+    """Умолчание окна — шесть месяцев, а не ноль.
+
+    Мутация `6 -> 0` переживала сюиту: вызовы всегда передавали `lookback`
+    явно. Ноль означал бы остановку по первому же убыточному месяцу — то есть
+    реакцию на шум вместо устойчивого убытка.
+    """
+    import inspect
+
+    for name in ("plan_shutdowns", "plan_conversions"):
+        default = inspect.signature(getattr(policy, name)).parameters["lookback"].default
+        assert default == 6, f"{name}: окно по умолчанию {default}"
+
+    one_month = [losing(data) for data in months(2014, 1)]
+    assert policy.plan_shutdowns(one_month, norms, control_start=CONTROL_START) == []
+
+
+def test_a_profitable_month_breaks_the_streak(norms):
+    """Серия убытков прерывается прибыльным месяцем, а не только простоем.
+
+    Мутация `and` на `or` в условии накопления переживала сюиту: с ней серия
+    росла бы и на прибыльных месяцах, если скважина просто действующая, — и
+    остановка приходила бы к работающей в плюс скважине.
+    """
+    stamps = months(2014, 12)
+    big = [make_row(data, "bad", wlpr=300, womr=0.1, liquid=9000, oil=3)
+           for data in stamps]
+    mixed = (big[:5] + [earning(stamps[5], well="bad")] + big[6:11])
+
+    assert policy.plan_shutdowns(mixed, norms, control_start=CONTROL_START) == [], (
+        "прибыльный месяц не прервал серию убытков"
+    )
+
+
+def wet_and_losing(data: str, well: str = "wet"):
+    """Сильно обводнённая и крупно убыточная: 0,99 воды, −1,07 млн руб. в месяц.
+
+    Числа подобраны замером 05.09 так, чтобы **оба** порога перевода набирались
+    к одному сроку: шесть месяцев серии и 5,0 млн руб. накопленного убытка.
+    Иначе граница серии измеряется вместе с порогом окупаемости, и мутация в
+    одной из них переживает тест.
+    """
+    return make_row(data, well, wlpr=500, womr=0.2, liquid=60000, oil=600)
+
+
+def test_a_conversion_needs_the_watercut_as_well_as_the_loss(norms):
+    """Перевод под закачку требует и убытка, и обводнённости — обоих сразу.
+
+    Мутация `and` на `or` переживала сюиту. Перевод стоит 5,0 млн руб. в OPEX;
+    с `or` его получала бы убыточная, но не обводнённая скважина — то есть та,
+    которую надо чинить, а не переводить.
+    """
+    # тот же убыток, но обводнённость 0,90 против порога 0,98
+    dry = [make_row(data, "dry", wlpr=500, womr=0.2, liquid=60000, oil=6000)
+           for data in months(2014, 12)]
+    assert policy._watercut(dry[0]) < policy.CONVERSION_WATERCUT
+
+    actions = policy.plan_conversions(dry, norms, control_start=CONTROL_START)
+
+    assert actions == [], (
+        f"перевод назначен недостаточно обводнённой скважине: "
+        f"{[one.reason for one in actions]}"
+    )
+
+
+def test_a_conversion_needs_exactly_the_streak(norms):
+    """Перевод приходит на седьмом месяце: шесть в серии плюс месяц вступления.
+
+    Мутация границы серии (`<` на `<=`) переживала прежний тест — он проверял
+    «много месяцев», а не саму границу.
+    """
+    six = [wet_and_losing(data) for data in months(2014, 6)]
+    seven = [wet_and_losing(data) for data in months(2014, 7)]
+
+    assert policy.plan_conversions(six, norms, control_start=CONTROL_START) == []
+    assert policy.plan_conversions(seven, norms, control_start=CONTROL_START)
+
+
+def test_a_month_below_the_watercut_breaks_the_conversion_streak(norms):
+    """Один месяц ниже порога обводнённости обнуляет серию перевода.
+
+    Мутации `margin < 0` на `<= 0` и `and` на `or` жили ровно здесь: серия
+    должна расти только когда выполнены все три условия сразу.
+    """
+    stamps = months(2014, 12)
+    mixed = ([wet_and_losing(data) for data in stamps[:5]]
+             + [make_row(stamps[5], "wet", wlpr=500, womr=0.2, liquid=60000, oil=6000)]
+             + [wet_and_losing(data) for data in stamps[6:11]])
+
+    assert policy.plan_conversions(mixed, norms, control_start=CONTROL_START) == [], (
+        "месяц ниже порога обводнённости не прервал серию"
+    )
+
+
+def test_an_injector_row_resets_the_conversion_streak(norms):
+    """Скважина, уже работающая на закачку, из перевода выпадает — и обнуляет серию.
+
+    Две мутации строк 206–207 переживали сюиту: нагнетательной строки в
+    фикстурах не было. Переводить под закачку то, что уже закачивает, — двойной
+    расход 5,0 млн руб. на несделанное мероприятие.
+    """
+    stamps = months(2014, 12)
+    with_injection = ([wet_and_losing(data) for data in stamps[:5]]
+                      + [make_row(stamps[5], "wet", wlpr=0.0, wwir=100.0, injection=3000.0)]
+                      + [wet_and_losing(data) for data in stamps[6:11]])
+
+    assert policy.plan_conversions(with_injection, norms,
+                                   control_start=CONTROL_START) == [], (
+        "месяц работы на закачку не прервал серию перевода"
+    )
+
+
+def test_watercut_of_a_well_without_liquid_is_zero_not_a_crash():
+    """Обводнённость при нулевой жидкости — ноль, а не деление на ноль.
+
+    Мутация `> 0` на `>= 0` переживала сюиту: строки с нулевой жидкостью в
+    фикстурах не было. На выгрузке она появится сама — остановленная скважина
+    даёт ровно такую строку.
+    """
+    dry = make_row("2014-01-01", "1", wlpr=0, womr=0, liquid=0.0, oil=0.0)
+
+    assert policy._watercut(dry) == 0.0
+
+
+def test_the_explanation_counts_every_action():
+    """Сводка решений считает все действия, а не на одно меньше.
+
+    Две мутации счётчика в `explain` переживали сюиту: текст объяснения никто
+    не сверял с числом действий. Слой интерпретируемости обязателен по
+    регламенту, и «остановка × 2» вместо трёх — это неверный отчёт о том, что
+    система сделала.
+    """
+    actions = [
+        policy.Action(well=str(index), kind="shut", date=date(2014, 1, 1),
+                      reason="убыток", cost_m=1.0)
+        for index in range(3)
+    ]
+
+    text = policy.explain(actions)
+
+    assert "shut × 3" in text, text
+    assert "Действий: 3" in text, text
+
+
+def test_an_idle_well_is_not_converted_however_watered_out(norms):
+    """Простаивающая скважина под закачку не переводится, даже если обводнена.
+
+    Строка с `WLPR = 0` и `WWIR = 0` — простой, но приращения за месяц в ней
+    есть, обводнённость 0,99 и маржа −0,98 млн руб. То есть два условия из трёх
+    выполнены, а третье — нет. Мутация `and` на `or` в строке 213 переживала
+    все прежние тесты именно потому, что такой строки в них не было: везде
+    условия совпадали по знаку.
+
+    Смысл прямой: переводить под закачку то, что и так стоит, — 5,0 млн руб. за
+    мероприятие, которого никто не делал.
+    """
+    idle = [make_row(data, "idle", wlpr=0.0, womr=0.0, liquid=60000, oil=600)
+            for data in months(2014, 12)]
+    assert not policy.is_active(idle[0])
+    assert policy._watercut(idle[0]) >= policy.CONVERSION_WATERCUT
+
+    assert policy.plan_conversions(idle, norms, control_start=CONTROL_START) == [], (
+        "простаивающая скважина отправлена под закачку"
+    )
+
+
+def test_a_zero_margin_month_does_not_feed_the_conversion_streak(norms):
+    """Ноль маржи — не убыток: серия перевода растёт строго на отрицательной.
+
+    Мутация `margin < 0` на `<= 0` переживала сюиту: месяца с ровно нулевой
+    маржой в фикстурах не было. Разница смысловая — «не заработала» и «принесла
+    убыток» разные основания для мероприятия за 5,0 млн руб.
+    """
+    stamps = months(2014, 12)
+    zero = make_row(stamps[5], "wet", wlpr=500, womr=0.2, liquid=0.0, oil=0.0)
+    mixed = ([wet_and_losing(data) for data in stamps[:5]] + [zero]
+             + [wet_and_losing(data) for data in stamps[6:11]])
+
+    assert policy.plan_conversions(mixed, norms, control_start=CONTROL_START) == [], (
+        "месяц с нулевой маржой зачтён в серию убытков"
+    )
+
+
+def test_the_conversion_takes_effect_the_month_after_the_decision(norms):
+    """Решение вступает в силу **следующим** месяцем, а не тем же.
+
+    Две мутации строки 225 (`index + 1` на `index + 0` и на `index - 1`)
+    переживали сюиту: дату мероприятия никто не сверял с датой последнего
+    убыточного месяца. Причинность здесь не формальность — решение, принятое по
+    данным месяца, не может действовать в том же месяце.
+    """
+    stamps = months(2014, 7)
+    rows = [wet_and_losing(data) for data in stamps]
+
+    actions = policy.plan_conversions(rows, norms, control_start=CONTROL_START)
+
+    assert len(actions) == 1, [one.reason for one in actions]
+    assert actions[0].date == date(2014, 7, 1), (
+        f"мероприятие назначено на {actions[0].date}, а шесть убыточных месяцев "
+        f"кончились 2014-06: решение обязано действовать со следующего месяца"
+    )
+

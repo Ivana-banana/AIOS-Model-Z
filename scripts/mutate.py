@@ -75,14 +75,23 @@ BOOLEAN: dict[type[ast.boolop], type[ast.boolop]] = {
 
 @dataclass(frozen=True)
 class Mutation:
-    """Одна подмена смысла: где и что заменено."""
+    """Одна подмена смысла: где и что заменено.
 
+    `number` — порядковый номер в плане, и без него описание не опознаёт
+    мутацию однозначно: в строке `if a < b or c < d:` два разных сравнения
+    выглядят одинаково («строка 221: сравнение Lt -> LtE»). Поймано 05.09 на
+    `aios/policy.py`: отчёт назвал выжившей мутацию, которую тест на самом деле
+    ловил, — выжила её тёзка из той же строки, и найти её по описанию было
+    нельзя. Номер даёт и воспроизведение: `--only N` повторяет ровно её.
+    """
+
+    number: int
     line: int
     kind: str
     detail: str
 
     def __str__(self) -> str:
-        return f"строка {self.line}: {self.kind} — {self.detail}"
+        return f"#{self.number} строка {self.line}: {self.kind} — {self.detail}"
 
 
 class _Planner(ast.NodeVisitor):
@@ -91,40 +100,38 @@ class _Planner(ast.NodeVisitor):
     def __init__(self) -> None:
         self.found: list[Mutation] = []
 
+    def _add(self, line: int, kind: str, detail: str) -> None:
+        self.found.append(Mutation(len(self.found), line, kind, detail))
+
     def visit_Compare(self, node: ast.Compare) -> None:
         for index, operator in enumerate(node.ops):
             replacement = COMPARISONS.get(type(operator))
             if replacement is not None:
-                self.found.append(Mutation(
-                    node.lineno, "сравнение",
-                    f"{type(operator).__name__} -> {replacement.__name__} (#{index})"))
+                self._add(node.lineno, "сравнение",
+                          f"{type(operator).__name__} -> {replacement.__name__} (#{index})")
         self.generic_visit(node)
 
     def visit_BinOp(self, node: ast.BinOp) -> None:
         replacement = BINARY.get(type(node.op))
         if replacement is not None:
-            self.found.append(Mutation(
-                node.lineno, "арифметика",
-                f"{type(node.op).__name__} -> {replacement.__name__}"))
+            self._add(node.lineno, "арифметика",
+                      f"{type(node.op).__name__} -> {replacement.__name__}")
         self.generic_visit(node)
 
     def visit_BoolOp(self, node: ast.BoolOp) -> None:
         replacement = BOOLEAN.get(type(node.op))
         if replacement is not None:
-            self.found.append(Mutation(
-                node.lineno, "булева связка",
-                f"{type(node.op).__name__} -> {replacement.__name__}"))
+            self._add(node.lineno, "булева связка",
+                      f"{type(node.op).__name__} -> {replacement.__name__}")
         self.generic_visit(node)
 
     def visit_Constant(self, node: ast.Constant) -> None:
         # `True`/`False` — сначала, иначе они попадут в ветку чисел: в Python
         # `isinstance(True, int)` истинно, и булева константа мутировала бы в 0.
         if isinstance(node.value, bool):
-            self.found.append(Mutation(
-                node.lineno, "булева константа", f"{node.value} -> {not node.value}"))
+            self._add(node.lineno, "булева константа", f"{node.value} -> {not node.value}")
         elif isinstance(node.value, (int, float)) and node.value not in (0, 0.0):
-            self.found.append(Mutation(
-                node.lineno, "число", f"{node.value} -> 0"))
+            self._add(node.lineno, "число", f"{node.value} -> 0")
         self.generic_visit(node)
 
 
@@ -221,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="сколько мутаций проверить (0 — все)")
     parser.add_argument("--seed", type=int, default=20260817,
                         help="seed отбора мутаций; тот же seed даёт тот же набор")
+    parser.add_argument("--only", type=int, action="append", default=None,
+                        help="проверить только эти номера мутаций (из прошлого отчёта)")
     parser.add_argument("--timeout", type=float, default=900.0,
                         help="секунд на один прогон тестов")
     arguments = parser.parse_args(argv)
@@ -242,9 +251,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"в {module.name} нечего мутировать")
         return 0
 
-    order = list(range(len(every)))
-    random.Random(arguments.seed).shuffle(order)
-    chosen = order if arguments.limit == 0 else order[:arguments.limit]
+    if arguments.only:
+        chosen = [one for one in arguments.only if 0 <= one < len(every)]
+        if not chosen:
+            print(f"номера вне плана: в {module.name} мутаций {len(every)}", file=sys.stderr)
+            return 1
+    else:
+        order = list(range(len(every)))
+        random.Random(arguments.seed).shuffle(order)
+        chosen = order if arguments.limit == 0 else order[:arguments.limit]
 
     print(f"модуль:  {module.relative_to(ROOT)}")
     print(f"тесты:   {' '.join(tests)}")
