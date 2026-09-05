@@ -1896,3 +1896,99 @@ def test_the_horizon_budget_feeds_early_years_first():
     assert budget[2022] == pytest.approx(0.0), "на третий год объёма уже нет"
     assert sum(budget.values()) == pytest.approx(asked / 2), "предел не должен теряться"
 
+
+# ── что нашёл мутационный прогон 05.09 (Р-221) ───────────────────────────────
+
+
+def test_a_cap_exactly_at_the_rate_changes_nothing(norms):
+    """Скважина ровно на групповом пределе не трогается.
+
+    Мутация `rate <= cap` на `<` переживала сюиту. Разница не в числе, а в
+    **мероприятии**: перезапись уставки тем же значением проходит как решение
+    планировщика, попадает в объяснение и расходует квоту мероприятий, ничего
+    не изменив.
+    """
+    limits = planner.Limits(enforce_water_balance=False,
+                            max_well_liquid_m3_per_day=30.0)
+    steps = [step(producers=(prod("a", 30.0), prod("b", 30.0)))]
+    forecast = [produced("2007-01-01", "a", oil_m3=3.0, water_m3=27.0),
+                produced("2007-01-01", "b", oil_m3=3.0, water_m3=27.0)]
+
+    result, allocations = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    assert [one.liquid_rate for one in result[0].producers] == [30.0, 30.0]
+    assert allocations == [], (
+        f"уставка ровно на пределе объявлена превышением: "
+        f"{[one.reason for one in allocations]}"
+    )
+
+
+def test_a_phase_cut_that_would_not_reduce_leaves_the_record_alone(norms):
+    """Срезка, не уменьшающая уставку, записи не переписывает.
+
+    Мутация `reduced >= rate` на `>` переживала сюиту: при равенстве
+    планировщик создавал бы новую запись с тем же числом. Для расписания это
+    неотличимо, для квоты мероприятий — расход, для объяснения — строка о
+    решении, которого не было.
+    """
+    limits = planner.Limits(enforce_water_balance=False, max_field_oil_t_per_day=1e9)
+    steps = [step(producers=(prod("a", 30.0),))]
+    forecast = [produced("2007-01-01", "a", oil_m3=3.0, water_m3=27.0)]
+
+    result, allocations = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    assert result[0].producers[0].liquid_rate == 30.0
+    assert allocations == [], [one.reason for one in allocations]
+
+
+def test_a_forced_shut_producer_keeps_its_role(norms):
+    """Принудительно остановленная добывающая остаётся добывающей.
+
+    Мутация `kind == "producer"` на `!=` переживала сюиту: обе роли
+    проверялись, но не то, что запись уходит в **свой** список. С подменой
+    добывающая записалась бы нагнетательной — расписание собралось бы, а фонд
+    поменял состав молча.
+    """
+    limits = planner.Limits(enforce_water_balance=False, forced_shut_wells=frozenset({"a"}))
+    steps = [step(producers=(prod("a", 30.0),), injectors=(inj("i", 40.0),))]
+    forecast = [produced("2007-01-01", "a", oil_m3=3.0, water_m3=27.0),
+                injected("2007-01-01", "i", volume_m3=1200.0)]
+
+    result, _ = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    wells = {one.well for one in result[0].producers}
+    assert "a" in wells, (
+        f"остановленная добывающая ушла из своего списка: "
+        f"добывающие {wells}, нагнетательные "
+        f"{{one.well for one in result[0].injectors}}"
+    )
+    assert result[0].producers[0].status == "SHUT"
+
+
+def test_a_shut_record_is_not_scaled_by_the_annual_budget(norms):
+    """Остановленная и нулевая записи в годовую срезку не входят.
+
+    Две мутации (`or` на `and` в отборе управляемых записей) переживали сюиту.
+    С `and` остановленная скважина попадала бы под масштабирование, то есть
+    получала бы ненулевую уставку — остановка отменялась бы срезкой объёма.
+    """
+    limits = planner.Limits(enforce_water_balance=False,
+                    max_field_liquid_m3_per_year=1.0,
+                    max_field_injection_m3_per_year=1.0)
+    shut = ProducerControl("a", "SHUT", "LRAT", 0.0, 50.0)
+    quiet = InjectorControl("i", "WATER", "SHUT", "RATE", 0.0, 300.0)
+    steps = [step(producers=(shut, prod("b", 30.0)), injectors=(quiet, inj("j", 40.0)))]
+    forecast = [produced("2007-01-01", "b", oil_m3=3.0, water_m3=27.0),
+                injected("2007-01-01", "j", volume_m3=1200.0)]
+
+    result, _ = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    kept = {one.well: one for one in result[0].producers}
+    assert kept["a"].status == "SHUT" and not kept["a"].liquid_rate, (
+        "остановленная добывающая получила уставку от годовой срезки"
+    )
+    injectors = {one.well: one for one in result[0].injectors}
+    assert injectors["i"].status == "SHUT" and not injectors["i"].rate, (
+        "остановленная нагнетательная получила приёмистость от годовой срезки"
+    )
+
