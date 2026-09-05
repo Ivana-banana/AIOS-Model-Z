@@ -1411,3 +1411,51 @@ def test_jury_documents_do_not_discount_the_claim_from_the_retracted_base():
                 f"{name}: сохранилось отозванное утверждение «{wrong}», "
                 f"заявка считается от {year}"
             )
+
+
+def test_the_declared_uplift_is_the_difference_of_two_machine_traces():
+    """Заявка — тройка, и машиной проверялась только её верхняя строка.
+
+    `scripts/verify_declared.py` пересчитывает заявленное число из выгрузки
+    заявки и оставляет след; `check_package.py` этот след читает. А базовое
+    число и **прирост** — то, по чему нас ранжируют, — до 05.09 не проверял
+    никто: они были вписаны в документы руками, ровно как заявленное число до
+    Р-172.
+
+    Теперь след есть у обоих прогонов, и прирост обязан быть их разностью. Оба
+    следа несут одну версию расчётчика, один стартовый год и один `sha256`
+    нормативов — без этого разность считалась бы между числами из разных систем
+    отсчёта (Р-234).
+    """
+    import json
+    import re
+
+    claim = json.loads(
+        (ROOT / "runs" / "matched-0995" / "npv.json").read_text(encoding="utf-8"))
+    base = json.loads(
+        (ROOT / "runs" / "base" / "npv.json").read_text(encoding="utf-8"))
+
+    for field in ("startYear", "vendorVersion", "normsSha256"):
+        assert claim[field] == base[field], (
+            f"следы посчитаны в разных системах отсчёта: {field} "
+            f"{base[field]!r} против {claim[field]!r} — разность не имеет смысла"
+        )
+
+    uplift = claim["chddM"] - base["chddM"]
+    submission = _read("docs/submission.md")
+    # Разделитель тысяч в документе — пробел, обычный или неразрывный.
+    # Сверяются одни цифры: иначе сторож ловил бы вёрстку, а не число.
+    plain = re.sub(r"\s", "", submission)
+
+    assert f"{claim['chddM']:.3f}".replace(".", ",") in plain, (
+        "docs/submission.md не называет пересчитанное заявленное число"
+    )
+    assert f"{base['chddM']:.3f}".replace(".", ",") in plain, (
+        "docs/submission.md не называет пересчитанное базовое число"
+    )
+    stated = re.search(r"прирост \| \*\*\+([\d\u00a0 ]+,\d) млн руб\.", submission)
+    assert stated, "в docs/submission.md не найдена строка прироста"
+    written = float(stated.group(1).replace("\u00a0", "").replace(" ", "").replace(",", "."))
+    assert abs(written - uplift) <= 0.05, (
+        f"заявленный прирост {written} не равен разности следов {uplift:.3f}"
+    )
