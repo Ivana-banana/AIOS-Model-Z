@@ -780,3 +780,68 @@ def test_the_history_changes_what_the_corridor_cuts(norms):
     # с историей к закачке добавляются её 15 000 м³, к отбору — её же отбор.
     assert "36,000 м³" in accumulated(without), accumulated(without)
     assert "51,000 м³" in accumulated(with_history), accumulated(with_history)
+
+
+def test_the_cycle_reports_its_stages_as_it_goes(surrogate, norms):
+    """Цикл подаёт признаки жизни: этапы, а не тишина на десятки минут.
+
+    Замер 05.09: на обученном суррогате цикл идёт свыше сорока минут при полном
+    наборе множителей и до этой правки не печатал между «конформный запас» и
+    концом ни строки. Отличить работу от зависания было нечем — ни на демо, ни
+    оператору.
+
+    Печатает по-прежнему вызывающий: модуль зовёт колбэк, а не `print`. Без
+    колбэка поведение прежнее, и это тоже проверяется — иначе прогресс стал бы
+    обязательным для всех, кто зовёт цикл из кода.
+    """
+    seen: list[str] = []
+
+    result = loop.run_cycle(surrogate, plan(), norms,
+                            control_start=CONTROL_START, start_date=CONTROL_START,
+                            progress=seen.append)
+
+    assert len(seen) >= 4, f"этапов слишком мало, чтобы понять, где стоим: {seen}"
+    assert seen[0] == "прогноз базы", f"первым обязан идти прогноз базы: {seen}"
+    assert any("подбор режимов" in one for one in seen), seen
+    assert any("остановок" in one for one in seen), seen
+    assert result.gain_m is not None, "отметки не должны менять сам результат"
+
+    quiet = loop.run_cycle(surrogate, plan(), norms,
+                           control_start=CONTROL_START, start_date=CONTROL_START)
+    assert quiet.gain_m == result.gain_m, "без колбэка цикл обязан считать то же самое"
+
+
+def test_the_summary_names_the_penalty_that_dwarfs_the_margin():
+    """Число «после запаса» разбирается на слагаемые, когда штраф их подавляет.
+
+    Замер 05.09 на настоящем прогоне: сырой прогноз 2 647,2, запас 927,8, а
+    «после запаса» -214 989,8. Разница -216 709,2 — это штраф за удаление от
+    обучающих сценариев, и подпись, называющая только запас, превращала сигнал
+    «безнадёжно вне области» в бессмыслицу.
+
+    Заодно проверяется, что строка выводима в cp1251: первая редакция несла
+    типографский минус U+2212 и роняла вывод на консоли Windows
+    `UnicodeEncodeError` — наступил на это сам при проверке.
+    """
+    margin = trust.OptimismMargin(value=927.8, samples=9, reason="",
+                                  alpha=0.1, index=8)
+    result = loop.CycleResult(
+        base_chdd_m=0.0, chdd_m=2647.2, actions=(), rate_choices=(),
+        allocations=(), steps=(), warnings=(), problems=(),
+        raw_chdd_m=2647.2, safe_chdd_m=-214989.8, margin=margin)
+
+    text = result.summary()
+
+    assert "штраф за удаление" in text, "штраф не назван — число читается как бессмыслица"
+    assert "216,709.2" in text, f"штраф посчитан неверно:{chr(10)}{text}"
+    assert "вне доверенной области" in text, "не сказано, что число означает"
+    text.encode("cp1251")  # падение здесь = вывод сломается на консоли Windows
+
+    # без штрафа лишней строки быть не должно: она объясняет расхождение,
+    # которого в этом случае нет
+    calm = loop.CycleResult(
+        base_chdd_m=0.0, chdd_m=2647.2, actions=(), rate_choices=(),
+        allocations=(), steps=(), warnings=(), problems=(),
+        raw_chdd_m=2647.2, safe_chdd_m=2647.2 - 927.8, margin=margin)
+    assert "штраф за удаление" not in calm.summary()
+

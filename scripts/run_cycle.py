@@ -22,6 +22,7 @@ import hashlib
 import json
 import shlex
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -325,10 +326,19 @@ def main(argv: list[str] | None = None) -> int:
               f"({margin.samples} пар семейства {config.trust.pairs_family})")
     else:
         print(f"конформный запас: НЕ КАЛИБРОВАН — {margin.reason}")
+    started = time.monotonic()
+
+    def note(stage: str) -> None:
+        # Отметки этапов с отсчётом от начала: цикл на обученном суррогате идёт
+        # десятки минут (замер 05.09 — свыше сорока на этой машине при полном
+        # наборе множителей), и без них оператор не отличит работу от зависания.
+        print(f"  [{time.monotonic() - started:6.1f} с] {stage}", flush=True)
+
     result = loop.run_cycle(
         selected.model,
         base_steps,
         norms,
+        progress=note,
         control_start=config.case.control_start,
         start_date=config.economics.start_date,
         lookback_months=config.policy.lookback_months,

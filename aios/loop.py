@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -117,8 +118,20 @@ class CycleResult:
                 f"Конформный запас: {self.margin.value:+,.1f} млн руб. ({self.margin.samples} пар).",
                 f"Прогноз после запаса: {self.safe_chdd_m:,.1f} млн руб. "
                 f"(сырой {self.raw_chdd_m:,.1f} млн руб.)",
-                "",
             ]
+            # Кроме запаса из величины вычитается штраф за удаление от обучающих
+            # сценариев, и вне области он бывает на два порядка больше самого
+            # запаса: замер 05.09 дал «после запаса −214 989,8» при сыром 2 647,2
+            # и запасе 927,8. Подпись, называющая только запас, превращала сигнал
+            # «безнадёжно вне области» в бессмыслицу на глазах у читателя.
+            penalty = self.raw_chdd_m - self.margin.value - self.safe_chdd_m
+            if penalty > 1e-9:
+                lines.append(
+                    f"  из них штраф за удаление от обучающих сценариев: "
+                    f"-{penalty:,.1f} млн руб. — это не оценка денег, а признак "
+                    f"«режим вне доверенной области»"
+                )
+            lines.append("")
         if self.excluded_rows:
             lines[-1:] = [
                 f"ВНИМАНИЕ: исключено строк прогноза {self.excluded_rows} — "
@@ -161,7 +174,8 @@ def run_cycle(surrogate: Surrogate,
               margin: trust.OptimismMargin | None = None,
               search_seed: int | None = None,
               norms_file: Path = economics.NORMS_FILE,
-              history_rows: list[dict[str, Any]] | None = None) -> CycleResult:
+              history_rows: list[dict[str, Any]] | None = None,
+              progress: Callable[[str], None] | None = None) -> CycleResult:
     """Пройти цикл один раз: спрогнозировать, продиагностировать, решить, оценить.
 
     Порядок именно такой и не иначе: диагноз ставится по прогнозу базового
@@ -182,14 +196,23 @@ def run_cycle(surrogate: Surrogate,
     # Точка отсчёта — то расписание, с которого цикл стартует. Если задан старт
     # из готового сценария, сравнивать надо с ним, а не с опорным: иначе
     # «прирост» смешает эффект самого сценария с тем, что добавил цикл (Б34).
+    def step(note: str) -> None:
+        # Цикл на обученном суррогате идёт десятки минут и до 05.09 не подавал
+        # признаков жизни между «конформный запас» и концом: отличить работу от
+        # зависания было нечем. Печатает по-прежнему вызывающий, а не модуль.
+        if progress is not None:
+            progress(note)
+
     origin = (base_steps if start_multipliers is None
               else optimise.apply_start(base_steps, start_multipliers))
+    step("прогноз базы")
     base_rows = surrogate.predict(origin)
     base = _npv(base_rows, start_date, norms_file)
 
     choices: list[optimise.RateChoice] | list[optimise.JointRateChoice] = []
     tuned = list(origin)
     if tune_rates:
+        step("подбор режимов: совместный поиск по ЧДД фонда")
         if joint_rate_search:
             choices = optimise.choose_joint_rates(
                 surrogate, base_steps, start_date=start_date,
@@ -232,6 +255,7 @@ def run_cycle(surrogate: Surrogate,
         tuned = optimise.apply_choices(frame, choices) if choices else list(origin)
 
     forecast = surrogate.predict(tuned)
+    step("политика остановок")
     actions = plan_shutdowns(
         forecast, norms, control_start=control_start, lookback=lookback_months
     )
@@ -261,6 +285,7 @@ def run_cycle(surrogate: Surrogate,
             min((step.date.year for step in steps), default=None),
             limits, fluids,
         )
+        step("приведение к ограничениям объекта")
         steps, allocations = _enforce_to_fixed_point(
             surrogate, steps, norms, limits, fluids, carried
         )
@@ -272,6 +297,7 @@ def run_cycle(surrogate: Surrogate,
     if limits is not None and limits.controllable_wells is not None:
         steps = _restore_uncontrolled(origin, steps, limits.controllable_wells)
 
+    step("прогноз получившегося сценария")
     rows = surrogate.predict(steps)
     result = _npv(rows, start_date, norms_file)
     region = getattr(getattr(surrogate, "bundle", None), "trust_region", None)
