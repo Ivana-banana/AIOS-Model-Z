@@ -1382,3 +1382,32 @@ def test_the_deck_cites_the_tag_that_is_actually_current():
     assert named <= {tag}, (
         f"слайды называют не действующий тег: {sorted(named - {tag})}, действует {tag}"
     )
+
+
+def test_jury_documents_do_not_discount_the_claim_from_the_retracted_base():
+    """Документы жюри не говорят, что заявка считается от 2007.
+
+    База дисконтирования заявки — **1991** с 02.09 (Р-158, Р-159, ответ трекера);
+    машинный след `runs/matched-0995/npv.json` несёт `startYear: 1991`, и слайд
+    «Заявляемое число» так и говорит. А слайд 9 и сценарий доклада сохранили
+    фразу «заявка считается от 2007» — остаток отозванного Р-123 от 31.08.
+
+    То есть колода противоречила сама себе на двух слайдах подряд, и вторая
+    половина противоречия — это последний слайд доклада, который читают вслух.
+    Проверяется по следу, а не по памяти: сменится база — сменится и запрет.
+    """
+    import json
+
+    trace = json.loads(
+        (ROOT / "runs" / "matched-0995" / "npv.json").read_text(encoding="utf-8"))
+    year = trace["startYear"]
+    assert year == 1991, f"база заявки изменилась на {year} — обновить документы и этот тест"
+
+    for name in ("docs/slides.html", "docs/presentation.md", "docs/defence-final.md",
+                 "docs/team-brief.md"):
+        document = _read(name)
+        for wrong in ("заявка считается от 2007", "заявка считается от 2007 года"):
+            assert wrong not in document, (
+                f"{name}: сохранилось отозванное утверждение «{wrong}», "
+                f"заявка считается от {year}"
+            )
