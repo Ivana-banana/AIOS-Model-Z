@@ -37,7 +37,7 @@ from aios import config as config_module  # noqa: E402
 from aios import doe  # noqa: E402
 from aios import surrogate as surrogate_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout  # noqa: E402
+from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
 from aios.neural import NeuralBundle, NeuralSurrogate  # noqa: E402
 
 
@@ -61,7 +61,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"это не обученный суррогат: {type(bundle).__name__}", file=sys.stderr)
         return 1
 
-    reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    try:
+        reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    except ValueError as error:
+        print(missing_deck_refusal(config.case.model_dir, error), file=sys.stderr)
+        return 1
     controlled = [step for step in reference.steps if step.date >= config.case.control_start]
     # порог качества здесь намеренно не применяется: мерить пометки надо и у
     # модели, которая в цикл не попадёт, — иначе про неё нечего сказать

@@ -40,7 +40,7 @@ from aios import economics, optimise, shapley  # noqa: E402
 from aios import groups as groups_module  # noqa: E402
 from aios import schedule as schedule_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout  # noqa: E402
+from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
 from aios.run import build_case  # noqa: E402
 from aios.schedule import assert_valid  # noqa: E402
 
@@ -68,7 +68,11 @@ def active_groups(groups: list[groups_module.Group]) -> list[groups_module.Group
 def build(arguments) -> int:
     config = config_module.load(arguments.config)
     model_dir = config.case.model_dir
-    schedule = parse_schedule(layout(model_dir).one("SCHEDULE"))
+    try:
+        schedule = parse_schedule(layout(model_dir).one("SCHEDULE"))
+    except ValueError as error:
+        print(missing_deck_refusal(model_dir, error), file=sys.stderr)
+        return 1
     steps = [step for step in schedule.steps if step.date >= config.case.control_start]
     if not steps:
         print(f"в деке нет шагов с {config.case.control_start}", file=sys.stderr)

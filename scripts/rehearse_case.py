@@ -37,7 +37,7 @@ import pandas as pd  # noqa: E402
 from aios import balance, casecheck, planner, summary  # noqa: E402
 from aios import config as config_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout  # noqa: E402
+from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
 from aios.economics import load_norms  # noqa: E402
 from aios.margin import Norms  # noqa: E402
 
@@ -159,8 +159,12 @@ def main(argv: list[str] | None = None) -> int:
     assumptions, _ = load_norms(config.economics.norms_file)
     norms = Norms.from_assumptions(assumptions)
 
-    schedule_file = Path(args.schedule) if args.schedule \
-        else layout(config.case.model_dir).one("SCHEDULE")
+    try:
+        schedule_file = (Path(args.schedule) if args.schedule
+                         else layout(config.case.model_dir).one("SCHEDULE"))
+    except ValueError as error:
+        print(missing_deck_refusal(config.case.model_dir, error), file=sys.stderr)
+        return 1
     steps = [step for step in parse_schedule(schedule_file).steps
              if step.date >= config.case.control_start]
     forecast = pd.read_csv(args.rows).to_dict("records")

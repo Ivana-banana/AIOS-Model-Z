@@ -59,7 +59,18 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     config = config_module.load(arguments.config)
-    schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    try:
+        schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    except ValueError as error:
+        # дек в git не ведётся: промах мимо него на чистом клоне — обычный
+        # первый запуск, а не поломка. Трассировка читалась бы как второе
+        # (Р-248)
+        print(f"Дек не читается: {error}", file=sys.stderr)
+        print(f"Ожидается каталог поставки с корневым .DATA: "
+              f"{config.case.model_dir}", file=sys.stderr)
+        print("Как распаковать поставку — README.md, раздел «Установка».",
+              file=sys.stderr)
+        return 1
     control_steps = [step for step in schedule.steps if step.date >= config.case.control_start]
     if not control_steps:
         print(f"в расписании нет шагов с {config.case.control_start}", file=sys.stderr)

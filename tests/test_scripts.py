@@ -1616,3 +1616,131 @@ def test_check_deck_reads_the_real_deck(capsys):
     printed = capsys.readouterr().out
     assert code == 0, "настоящий дек отвергнут входным контролем"
     assert "отказов нет" in printed
+
+
+# ── ни одна точка входа не отвечает трассировкой на отсутствующий дек (Р-248) ──
+
+#: Точки входа, читающие дек, и минимальные аргументы, доводящие до чтения.
+#: Подстановки: {rows} — крошечная выгрузка, {run} — каталог прогона,
+#: {model} — сдаваемый суррогат, {schedule} — сдаваемое расписание, {out} — куда
+#: писать. Таблица открытая: новый скрипт обязан попасть либо сюда, либо в
+#: DECK_READERS_NOT_SWEPT с причиной — это стережёт отдельная проверка ниже.
+DECK_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
+    "benchmark_scale.py": (),
+    "build_case.py": ("{out}",),
+    "build_doe.py": (),
+    "build_matched_case.py": ("{out}", "--rows", "{rows}"),
+    "build_scaled_case.py": ("{out}",),
+    "check_submission.py": ("{schedule}",),
+    "forecast_speed.py": ("--rows", "{rows}"),
+    "pressure_check.py": ("{run}", "--model", "{model}"),
+    "pressure_share.py": ("--rows", "{rows}"),
+    "rehearse_case.py": ("--rows", "{rows}"),
+    "shapley_plan.py": ("build", "{out}", "--rows", "{rows}"),
+    "surrogate_warnings.py": ("--model", "{model}"),
+    "trust_gate.py": ("--model", "{model}", "--schedule", "{schedule}"),
+}
+
+#: Тоже читают дек, но до него не доходят — и это проверено, а не предположено.
+DECK_READERS_NOT_SWEPT = {
+    "build_dataset.py": "останавливается раньше: нет манифеста runs/doe/doe.json",
+    "check_package.py": "не принимает --config; дек читает через обвязку, и та "
+                        "отвечает «сверка записей не выполнена» (Р-236)",
+    "collect_pairs.py": "падает раньше на чтении .UNSMRY прогона — отдельный "
+                        "класс, дека не касается",
+    "run_cycle.py": "отвечает «плотности из дека недоступны» и продолжает",
+}
+
+
+def _config_without_a_deck(tmp_path: Path) -> Path:
+    """Конфиг, в котором сломан **только** дек.
+
+    Наивная подмена `model_dir` в копии, лежащей в другом каталоге, ломает
+    заодно все остальные относительные пути — и скрипт падает на нормативах, а
+    не на деке. Поэтому существующие пути разворачиваются в абсолютные.
+    """
+    import re
+
+    def absolute(match: re.Match[str]) -> str:
+        key, value = match.group(1), match.group(2)
+        if key.strip() == "model_dir":
+            return f'{key}= "{(tmp_path / "deck-that-is-not-here").as_posix()}"'
+        target = ROOT / value
+        return f'{key}= "{target.as_posix()}"' if target.exists() else match.group(0)
+
+    text = re.sub(r'^(\w+ *)= *"([^"]+)"', absolute,
+                  (ROOT / "config.toml").read_text(encoding="utf-8"), flags=re.M)
+    broken = tmp_path / "config.toml"
+    broken.write_text(text, encoding="utf-8")
+    return broken
+
+
+@pytest.mark.parametrize("name", sorted(DECK_ENTRY_POINTS))
+def test_no_entry_point_answers_a_missing_deck_with_a_traceback(name: str, tmp_path: Path):
+    """Дек не распакован — отказ словами, а не трассировкой.
+
+    Дек в git не ведётся (74 МБ россыпью), распаковка — отдельный шаг
+    инструкции, значит промах мимо него это **обычный первый запуск на чистом
+    клоне**. Замер 06.09 нашёл десять точек входа, отвечавших трассировкой, и
+    среди них `check_submission.py` — команда из самой инструкции запуска.
+    Проверяющий читает трассировку как «проект не работает» и дальше не идёт.
+
+    Проверяется делом, а не по тексту: скрипт запускается подпроцессом с
+    конфигом, в котором сломан только дек.
+    """
+    import subprocess
+
+    model = ROOT / "artifacts" / "surrogate.joblib"
+    schedule = ROOT / "runs" / "matched-0995" / "wells_schedule.inc"
+
+    run = tmp_path / "run"
+    run.mkdir()
+    rows = run / "rows.csv"
+    rows.write_text(
+        "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
+        "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
+        "2007-01-01,P1,0,10,0,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+
+    places = {"rows": str(rows), "run": str(run), "out": str(tmp_path / "out"),
+              "model": str(model), "schedule": str(schedule)}
+    arguments = [one.format(**places) for one in DECK_ENTRY_POINTS[name]]
+    if "{model}" in DECK_ENTRY_POINTS[name] and not model.is_file():
+        pytest.skip("нет сдаваемого суррогата")
+    if "{schedule}" in DECK_ENTRY_POINTS[name] and not schedule.is_file():
+        pytest.skip("нет сдаваемого расписания")
+    if name == "pressure_check.py":
+        (run / "wells_schedule.inc").write_bytes(schedule.read_bytes())
+
+    done = subprocess.run(
+        [sys.executable, str(SCRIPTS / name), *arguments,
+         "--config", str(_config_without_a_deck(tmp_path))],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT, timeout=600)
+
+    assert "Traceback" not in done.stderr, (
+        f"scripts/{name} отвечает трассировкой на отсутствующий дек — "
+        f"проверяющий прочтёт это как поломку:\n{done.stderr[-800:]}")
+    assert done.returncode != 0, (
+        f"scripts/{name} без дека вернул 0 — это тихий успех без объекта")
+    assert "Дек не читается" in done.stderr, (
+        f"scripts/{name} отказывает, но не говорит, чего не хватает:"
+        f"\n{done.stderr[-800:]}")
+
+
+def test_every_deck_reading_script_is_either_swept_or_named():
+    """Новый скрипт не проскочит мимо обхода молча.
+
+    Таблица выше перечисляет то, что доводится до чтения дека; остальные
+    названы поимённо с причиной. Третьего не дано: скрипт, читающий дек и не
+    попавший ни в один список, — это дыра, которую видно только на машине
+    проверяющего.
+    """
+    reading = {path.name for path in sorted(SCRIPTS.glob("*.py"))
+               if "layout(" in path.read_text(encoding="utf-8")
+               or "find_data_file(" in path.read_text(encoding="utf-8")}
+
+    unaccounted = reading - set(DECK_ENTRY_POINTS) - set(DECK_READERS_NOT_SWEPT)
+
+    assert not unaccounted, (
+        "скрипты читают дек, но не попали ни в обход, ни в список названных: "
+        + ", ".join(sorted(unaccounted)))

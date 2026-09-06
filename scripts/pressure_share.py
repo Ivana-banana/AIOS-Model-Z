@@ -38,7 +38,7 @@ if str(ROOT) not in sys.path:
 from aios import config as config_module  # noqa: E402
 from aios import deliverable  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout  # noqa: E402
+from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
 
 #: Чем меряется режим и чем объём, по типу скважины.
 RATE = {"injector": ("WWIR", "WWIT_Diff"), "producer": ("WLPR", "WLPT_Diff")}
@@ -87,7 +87,11 @@ def main(argv: list[str] | None = None) -> int:
 
     config = config_module.load(arguments.config)
     since = arguments.since or config.case.control_start.isoformat()
-    schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    try:
+        schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    except ValueError as error:
+        print(missing_deck_refusal(config.case.model_dir, error), file=sys.stderr)
+        return 1
     assessed = deliverable.bhp_limits(schedule)
     by_kind = {
         kind: {str(well): limit for well, (own, limit) in assessed.items() if own == kind}

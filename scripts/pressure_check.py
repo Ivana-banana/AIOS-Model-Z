@@ -32,7 +32,7 @@ if str(ROOT) not in sys.path:
 
 from aios import config as config_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout  # noqa: E402
+from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
 from aios.model import SurrogateLoadError, for_cycle  # noqa: E402
 from aios.web.app import read_rows_csv  # noqa: E402
 
@@ -109,7 +109,12 @@ def main(argv: list[str] | None = None) -> int:
     config = config_module.load(arguments.config)
     fact = [row for row in read_rows_csv(rows_path)
             if row["DATA"] >= config.case.control_start.isoformat()]
-    deck_steps = [step for step in parse_schedule(layout(config.case.model_dir).one("SCHEDULE")).steps
+    try:
+        deck_schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    except ValueError as error:
+        print(missing_deck_refusal(config.case.model_dir, error), file=sys.stderr)
+        return 1
+    deck_steps = [step for step in deck_schedule.steps
                   if step.date >= config.case.control_start]
     candidate = [step for step in parse_schedule(schedule_path).steps
                  if step.date >= config.case.control_start]

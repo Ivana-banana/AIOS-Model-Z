@@ -41,7 +41,7 @@ from aios import deck as deck_module  # noqa: E402
 from aios import economics  # noqa: E402
 from aios import run as run_module  # noqa: E402
 from aios import schedule as schedule_module  # noqa: E402
-from aios.deckfiles import layout  # noqa: E402
+from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
 
 
 def check(text: str, deck_text: str, control_start: date,
@@ -289,9 +289,13 @@ def main(argv: list[str] | None = None) -> int:
 
     config = config_module.load(arguments.config)
     text = arguments.path.read_text(encoding="utf-8", errors="replace")
-    deck_text = layout(config.case.model_dir).one("SCHEDULE").read_text(
-        encoding="utf-8", errors="replace"
-    )
+    try:
+        deck_text = layout(config.case.model_dir).one("SCHEDULE").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except ValueError as error:
+        print(missing_deck_refusal(config.case.model_dir, error), file=sys.stderr)
+        return 1
 
     # предел дебита жидкости берётся из таблицы ЭЦН нормативов кейса: на
     # валидационном кейсе (ТЗ п. 4.3) старший насос может быть другим (Б28)

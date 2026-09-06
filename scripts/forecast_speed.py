@@ -40,7 +40,7 @@ if str(ROOT) not in sys.path:
 
 from aios import config as config_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout  # noqa: E402
+from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
 from aios.model import SurrogateLoadError, for_cycle  # noqa: E402
 from aios.web.app import read_rows_csv  # noqa: E402
 
@@ -104,7 +104,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     history = read_rows_csv(rows_path)
-    schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    try:
+        schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    except ValueError as error:
+        print(missing_deck_refusal(config.case.model_dir, error), file=sys.stderr)
+        return 1
     steps = [step for step in schedule.steps if step.date >= config.case.control_start]
     if not steps:
         print(f"в расписании дека нет шагов с {config.case.control_start}", file=sys.stderr)
