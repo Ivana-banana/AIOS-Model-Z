@@ -689,13 +689,25 @@ def test_a_committed_cache_entry_is_a_real_model_answer():
 
     Пока кэша нет — пропуск: сгенерировать его может только машина с ключом, и
     это записано открытым пунктом Е4.
+
+    **Смотрим то, что в git, а не то, что на диске.** До 06.09 брались файлы из
+    рабочего дерева, и на машине разработки тест проходил по **неотслеживаемому**
+    файлу: там лежал живой ответ модели от 23.08, который решением Р-226
+    запрещено коммитить (он мёртв по адресу). То есть сторож «закоммиченного
+    кэша» судил о том, чего в репозитории нет, и его вердикт зависел от
+    локального мусора — ровно болезнь, которую Р-161 лечил в другом месте.
     """
     import json
+    import subprocess
 
     import pytest
 
     root = Path(__file__).resolve().parent.parent
-    cached = sorted((root / "artifacts" / "explanations").glob("*.json"))         if (root / "artifacts" / "explanations").is_dir() else []
+    listed = subprocess.run(
+        ["git", "ls-files", "artifacts/explanations"],
+        cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    cached = [root / name for name in listed.stdout.split()
+              if name.endswith(".json")] if listed.returncode == 0 else []
     if not cached:
         pytest.skip("кэша демо-объяснений в репозитории нет — Е4 остаётся открытым")
 
