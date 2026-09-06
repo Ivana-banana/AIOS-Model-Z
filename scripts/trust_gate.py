@@ -283,7 +283,18 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
         print(f"нет расписания кандидата: {schedule}", file=sys.stderr)
         return 1
 
-    reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    try:
+        reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
+    except ValueError as error:
+        # опорное расписание берётся из дека, а дек в git не ведётся: на чистом
+        # клоне это обычный первый запуск. Трассировка здесь читалась бы как
+        # поломка шлюза, хотя шлюз исправен и просто не получил объект (Р-236)
+        print(f"Дек не читается: {error}\n"
+              f"Ожидается каталог поставки с корневым .DATA: "
+              f"{config.case.model_dir}\n"
+              f"Как распаковать поставку — README.md, раздел «Установка».",
+              file=sys.stderr)
+        return 1
     controlled = [step for step in reference.steps
                   if step.date >= config.case.control_start]
     surrogate = NeuralSurrogate.create(bundle, controlled, config.fluids,

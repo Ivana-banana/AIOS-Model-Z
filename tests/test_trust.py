@@ -1081,3 +1081,45 @@ def test_the_contract_charges_the_penalty_by_default():
     written = trust.contract(None, None)
     assert written["search_weights"] == {"lambda": 1.0, "rho": 1.0}, written
 
+
+
+def test_the_gate_refuses_without_the_deck_instead_of_falling_over(tmp_path):
+    """Без дека шлюз обязан отказать словами, а не трассировкой (Р-236).
+
+    Опорное расписание берётся из дека, а дек в git не ведётся: на чистом клоне
+    промах мимо него — обычный первый запуск. До 06.09 `trust_gate.py` в этом
+    случае падал `ValueError` наружу, и проверяющий видел трассировку — то есть
+    читал исправный шлюз как поломанный. Соседние точки входа (`build_case.py`)
+    давно отвечают строкой и кодом 1; здесь было исключение из правила.
+
+    Дек на этой машине есть, поэтому его отсутствие подделывается конфигом:
+    `model_dir` уводится в несуществующий каталог. Так проверка работает и там,
+    где дек распакован, — а не пропускается ровно на той машине, где её пишут.
+    """
+    root = Path(__file__).resolve().parent.parent
+    model = root / "artifacts" / "surrogate.joblib"
+    schedule = root / "runs" / "matched-0995" / "wells_schedule.inc"
+    if not model.is_file() or not schedule.is_file():
+        pytest.skip("нет артефакта суррогата или сдаваемого расписания")
+
+    config = (root / "config.toml").read_text(encoding="utf-8")
+    config = config.replace('model_dir = "vendor/Model_Z_OPM"',
+                            'model_dir = "vendor/deck-that-is-not-here"')
+    broken = tmp_path / "config.toml"
+    broken.write_text(config, encoding="utf-8")
+
+    done = subprocess.run(
+        [sys.executable, str(root / "scripts" / "trust_gate.py"),
+         "--model", str(model), "--schedule", str(schedule),
+         "--config", str(broken)],
+        capture_output=True, text=True, encoding="utf-8", cwd=root, timeout=600,
+    )
+
+    assert done.returncode == 1, (
+        f"ожидался отказ кодом 1, получено {done.returncode}:"
+        f"\n{done.stdout}\n{done.stderr}")
+    assert "Traceback" not in done.stderr, (
+        "шлюз отвечает трассировкой — проверяющий прочтёт это как поломку:"
+        f"\n{done.stderr}")
+    assert "Дек не читается" in done.stderr and "README.md" in done.stderr, (
+        f"отказ не говорит, чего не хватает и где взять:\n{done.stderr}")
