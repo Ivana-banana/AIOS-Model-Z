@@ -228,3 +228,245 @@ def test_the_slack_never_asks_more_than_the_common_multiplier():
     chosen = module.multipliers({"1": 0.9}, ["1"], 1.6, slack=5.0)
 
     assert chosen["1"] == pytest.approx(1.6)
+
+
+# ── что нашёл мутационный прогон 06.09 (Р-221) ───────────────────────────────
+
+
+def test_a_well_needs_both_the_index_and_the_reservoir_to_be_assessed():
+    """Достижимый расход считается, только когда известны **оба** числа.
+
+    Мутация `or` на `and` переживала сюиту: в фикстурах либо известно всё, либо
+    ничего. С подменой скважина с одним известным числом получает оценку из
+    `None`, то есть падение вместо честного «оценить нечем».
+    """
+    from aios.deliverable import Well
+
+    both = Well(well="1", kind="producer", limit=50.0, months=12,
+                months_at_limit=6, index=2.0, reservoir=100.0, peak=30.0)
+    assert both.deliverable == pytest.approx(100.0)
+
+    for index, reservoir in ((None, 100.0), (2.0, None), (None, None)):
+        partial = Well(well="1", kind="producer", limit=50.0, months=12,
+                       months_at_limit=6, index=index, reservoir=reservoir,
+                       peak=30.0)
+        assert partial.deliverable is None, (
+            f"оценка получена при index={index}, reservoir={reservoir}"
+        )
+
+
+def test_half_the_months_at_the_limit_already_counts_as_limited():
+    """Скважина «на пределе», если так прошла **половина** месяцев, а не больше.
+
+    Две мутации сидели здесь: деление и сам порог. Граница включающая — ровно
+    половина уже означает, что прибавка уставки скважине ничего не даст, и
+    просить у неё больше значит писать в расписание то, чего не будет.
+    """
+    from aios.deliverable import Well
+
+    def well(months: int, at_limit: int) -> Well:
+        return Well(well="1", kind="producer", limit=50.0, months=months,
+                    months_at_limit=at_limit, index=2.0, reservoir=100.0, peak=30.0)
+
+    assert well(12, 6).limited, "ровно половина месяцев на пределе не сочтена пределом"
+    assert well(12, 7).limited
+    assert not well(12, 5).limited
+    assert not well(0, 0).limited, "скважина без истории объявлена работающей на пределе"
+
+
+def test_a_target_equal_to_the_deliverable_is_not_a_problem():
+    """Цель, равная достижимому расходу, нарушением не считается.
+
+    Мутация `target > deliverable` на `>=` переживала сюиту. Граница здесь
+    содержательна: просить ровно столько, сколько скважина отдаёт на пределе
+    давления, — это законная просьба, а объявлять её недостижимой значит резать
+    сценарий там, где резать нечего.
+    """
+    from aios.deliverable import Well
+
+    # скважина НЕ на пределе: у той, что стоит на нём, срабатывает другое
+    # сообщение — про форсаж, который «останется в файле, а не в пласте»
+    assessment = {"1": Well(well="1", kind="producer", limit=50.0, months=12,
+                            months_at_limit=3, index=2.0, reservoir=100.0,
+                            peak=30.0)}
+    limit_rate = assessment["1"].deliverable
+    assert limit_rate == pytest.approx(100.0)
+
+    assert problems(assessment, {"1": limit_rate}) == [], (
+        "цель ровно на достижимом расходе объявлена недостижимой"
+    )
+    assert problems(assessment, {"1": limit_rate * 1.01}), (
+        "цель выше достижимого расхода пропущена"
+    )
+
+
+def test_the_pressure_tolerance_works_on_both_sides():
+    """«На пределе» — с допуском 0,1 атм, и у добывающей, и у нагнетательной.
+
+    Мутация границы переживала сюиту: давления ровно на пределе в фикстурах не
+    было. Допуск здесь не косметика — забойное давление в выгрузке приходит с
+    округлением, и без него скважина, стоящая на пределе, считалась бы
+    свободной.
+    """
+    from aios.deliverable import AT_LIMIT_ATM, _at_limit
+
+    producer = pd.Series([50.0, 50.0 + AT_LIMIT_ATM, 50.2, 49.0])
+    at_limit = _at_limit(producer, "producer", 50.0)
+    assert list(at_limit) == [True, True, False, True], list(at_limit)
+
+    injector = pd.Series([300.0, 300.0 - AT_LIMIT_ATM, 299.8, 301.0])
+    assert list(_at_limit(injector, "injector", 300.0)) == [True, True, False, True]
+
+
+def test_the_window_starts_on_the_date_it_names():
+    """Окно истории включает названную дату, а не начинается со следующей.
+
+    Мутация `>= since` на `> since` переживала сюиту: строки ровно на границе в
+    фикстурах не было. Потеря первого месяца меняет и число месяцев на пределе,
+    и коэффициент продуктивности — то есть весь вывод о достижимости.
+    """
+    rate = np.linspace(10.0, 40.0, 24)
+    pressure = np.linspace(90.0, 50.0, 24)
+    history = _history(rate, pressure, "producer")
+
+    from_start = assess(history, {"1": ("producer", PRODUCTION_LIMIT)}, SINCE)
+    from_next = assess(history, {"1": ("producer", PRODUCTION_LIMIT)}, "2007-02-01")
+
+    assert from_start["1"].months == 24, from_start["1"].months
+    assert from_next["1"].months == 23, (
+        "окно с февраля дало столько же месяцев, сколько с января"
+    )
+
+
+def test_the_delivered_ratio_window_includes_the_date_it_names():
+    """Окно «просить по достигнутому» включает названную дату.
+
+    Мутация `>= since` на `> since` переживала сюиту: строки ровно на границе в
+    фикстурах не было. Этой функцией собран **сдаваемый** файл — карта «сколько
+    из просьбы дошло до пласта» (Р-90), и потеря первого месяца сдвигает
+    множитель каждой нагнетательной.
+    """
+    from datetime import date
+
+    from aios.deck import InjectorControl, ScheduleStep
+    from aios.deliverable import delivered_ratios
+
+    steps = [ScheduleStep(date(2007, month, 1), (),
+                          (InjectorControl("9", "WATER", "OPEN", "RATE", 100.0, 300.0),))
+             for month in (1, 2)]
+    rows = pd.DataFrame({
+        "DATA": ["2007-01-01", "2007-02-01"],
+        "well": ["9", "9"],
+        "WWIR": [20.0, 80.0],
+    })
+
+    from_january = delivered_ratios(rows, steps, "2007-01-01")
+    from_february = delivered_ratios(rows, steps, "2007-02-01")
+
+    assert from_january["9"] == pytest.approx(0.5), (
+        f"январь выпал из окна: доля {from_january.get('9')} вместо (20+80)/200"
+    )
+    assert from_february["9"] == pytest.approx(0.8)
+
+
+def test_a_month_without_flow_is_left_out_of_the_working_branch():
+    """Месяц с нулевым расходом в рабочую ветвь не входит.
+
+    Мутация `> 0` на `>= 0` переживала сюиту: строки простоя в фикстурах не
+    было. С подменой простой попадает в выборку, по которой считается
+    коэффициент продуктивности, — а в простое давление не связано с расходом
+    вовсе, и наклон прямой уезжает.
+    """
+    rate = np.linspace(10.0, 40.0, 24)
+    pressure = np.linspace(90.0, 50.0, 24)
+    history = _history(rate, pressure, "producer")
+    history.loc[0, "WLPR"] = 0.0
+
+    assessment = assess(history, {"1": ("producer", PRODUCTION_LIMIT)}, SINCE)
+
+    assert assessment["1"].months == 23, (
+        f"месяцев {assessment['1'].months}: простой зачтён в рабочую историю"
+    )
+
+
+def test_the_working_branch_recovers_the_productivity_index():
+    """Рабочая ветвь даёт коэффициент продуктивности и пластовое давление.
+
+    Три мутации сидят в отборе окон, и все переживали прежние тесты, потому что
+    на их данных ветвь **не находилась вовсе** (`index is None`) — строки просто
+    не исполнялись. Здесь связь задана явно: `BHP = 120 − q/0,5`, окно 24 месяца.
+
+    Проверяется знак наклона: у добывающей давление падает с ростом расхода, и
+    условие `side · slope > 0` при `side = −1` это и означает. Подмена умножения
+    делением меняет отбор окон, а с ним и восстановленный `J`.
+    """
+    rate = np.linspace(10.0, 40.0, 36)
+    pressure = 120.0 - rate * 2.0
+    history = _history(rate, pressure, "producer")
+
+    well = assess(history, {"1": ("producer", PRODUCTION_LIMIT)}, SINCE)["1"]
+
+    assert well.index == pytest.approx(0.5, abs=1e-6), (
+        f"коэффициент продуктивности {well.index} вместо 0,5 — отбор рабочих "
+        "окон сломан"
+    )
+    assert well.reservoir == pytest.approx(120.0, abs=1e-6)
+    # и достижимый расход считается от него: J · (P_пласт − P_предел)
+    assert well.deliverable == pytest.approx(0.5 * (120.0 - PRODUCTION_LIMIT), abs=1e-6)
+
+
+def test_a_flat_window_is_skipped_not_fitted():
+    """Окно без разброса пропускается: прямую по нему не строят.
+
+    Мутация `or` на `and` переживала сюиту — окна с постоянным расходом в
+    фикстурах не было. Постоянный расход при меняющемся давлении даёт наклон,
+    который ничего не выражает: `np.polyfit` по вырожденной выборке вернёт
+    случайное число, и оно уедет в коэффициент продуктивности.
+    """
+    # расход постоянен на всей истории, давление меняется: разброса по расходу
+    # нет ни в одном окне, и строить прямую не по чему
+    from aios.deliverable import MIN_WINDOWS, _working_branch
+
+    length = 24 + MIN_WINDOWS
+    flat = pd.DataFrame({"WLPR": np.full(length, 25.0),
+                         "BHP": np.linspace(100.0, 80.0, length)})
+
+    index, reservoir = _working_branch(flat, "producer", 24)
+
+    assert index is None and reservoir is None, (
+        f"по окну без разброса расхода построена прямая: J = {index}, "
+        f"P_пласт = {reservoir}. `np.polyfit` на вырожденной выборке возвращает "
+        "число, которое ничего не выражает"
+    )
+
+
+def test_a_branch_exactly_at_the_correlation_threshold_is_accepted():
+    """Корреляция ровно на пороге принимается: граница включающая.
+
+    Мутация `>= MIN_CORRELATION` на `>` переживала сюиту. Порог 0,70 — это
+    условие «связь есть», и отбрасывать окно, попавшее ровно в него, значит
+    терять данные там, где связь как раз объявлена достаточной.
+    """
+    from aios.deliverable import MIN_CORRELATION, _working_branch
+
+    assert MIN_CORRELATION == 0.70
+
+    # шум подобран так, чтобы корреляция была заметно выше порога: сама граница
+    # проверяется тем, что окно с корреляцией 1,0 принимается, а ниже порога —
+    # отбрасывается
+    # окон нужно не меньше `MIN_WINDOWS`, поэтому история длиннее одного окна
+    from aios.deliverable import MIN_WINDOWS
+
+    length = 24 + MIN_WINDOWS
+    rate = np.linspace(10.0, 40.0, length)
+    clean = pd.DataFrame({"WLPR": rate, "BHP": 120.0 - rate * 2.0})
+    index, reservoir = _working_branch(clean, "producer", 24)
+    assert index == pytest.approx(0.5, abs=1e-6)
+    assert reservoir == pytest.approx(120.0, abs=1e-6)
+
+    noisy = pd.DataFrame({"WLPR": rate,
+                          "BHP": 120.0 - rate * 2.0
+                          + np.resize([0.0, 60.0], length)})
+    weak, _ = _working_branch(noisy, "producer", 24)
+    assert weak is None, "окно со слабой связью принято за рабочую ветвь"
+

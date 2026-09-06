@@ -120,3 +120,45 @@ def test_two_mutations_on_one_line_are_told_apart():
     assert "a <= b" in apply_one(source, planned[0].number)
     assert "c <= d" in apply_one(source, planned[1].number)
 
+
+def test_an_interrupted_run_restores_the_module_on_the_next_start(tmp_path):
+    """Прогон, убитый снаружи, не оставляет модуль мутированным навсегда.
+
+    `finally` восстанавливает файл при обычном выходе, но при убийстве процесса
+    (таймаут команды, Ctrl-C) до него дело не доходит. 06.09 так и вышло:
+    `aios/run.py` десять минут лежал переписанным `ast.unparse`, то есть без
+    единого комментария, и заметил это `ruff`, а не человек.
+
+    Поэтому восстановление стоит и на входе: увидев рядом бэкап прерванного
+    прогона, инструмент возвращает файл прежде, чем что-либо мерить.
+    """
+    import subprocess
+    import sys as system
+
+    module = tmp_path / "жертва.py"
+    module.write_text("# важный комментарий" + chr(10) + "def f(a):" + chr(10)
+                      + "    return a < 10" + chr(10), encoding="utf-8")
+    original = module.read_text(encoding="utf-8")
+
+    # так выглядит дерево после убитого прогона: рядом лежит бэкап, а сам
+    # модуль мутирован
+    backup = module.with_suffix(".py.mutation-backup")
+    backup.write_text(original, encoding="utf-8")
+    module.write_text("def f(a):" + chr(10) + "    return a <= 10" + chr(10),
+                      encoding="utf-8")
+
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [system.executable, str(root / "scripts" / "mutate.py"),
+         "--module", str(module), "--tests", "tests/test_mutate.py", "--limit", "0"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=root, timeout=600,
+    )
+
+    assert module.read_text(encoding="utf-8") == original, (
+        "модуль не восстановлен из бэкапа прерванного прогона: "
+        + module.read_text(encoding="utf-8")
+    )
+    assert not backup.exists(), "бэкап остался лежать рядом"
+    assert "восстановлен" in (done.stderr or ""), done.stderr[:300]
+

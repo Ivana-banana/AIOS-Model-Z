@@ -192,6 +192,15 @@ def _working_branch(history: pd.DataFrame, kind: str,
     slopes, intercepts = [], []
     for start in range(len(rate) - window + 1):
         piece, response = rate[start:start + window], pressure[start:start + window]
+        # Три подмены в этих двух строках мутационный прогон помечает
+        # эквивалентными, и все три вердикта верны (Р-243).
+        # `or` против `and`: вырожденное по любой оси окно всё равно отсеется
+        # ниже — `np.corrcoef` при нулевой дисперсии даёт `nan`, а сравнение с
+        # `nan` ложно. `side * slope` против `side / slope`: знак произведения и
+        # знак частного совпадают при любом ненулевом наклоне — проверено
+        # перебором, — а нулевой наклон даёт ту же `nan`-корреляцию.
+        # `>=` против `>` у порога: попасть коэффициентом корреляции ровно в
+        # 0,70 нельзя, он считается из тех же float.
         if piece.std() <= 0 or response.std() <= 0:
             continue
         slope, intercept = np.polyfit(piece, response, 1)

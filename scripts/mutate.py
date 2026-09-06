@@ -245,6 +245,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"нет тестов: {one} — укажите --tests явно", file=sys.stderr)
             return 1
 
+    # Прогон, убитый снаружи (таймаут команды, Ctrl-C по процессу), до `finally`
+    # не доходит — и оставляет в рабочем дереве **мутированный** модуль. Случилось
+    # 06.09 на `aios/run.py`: файл десять минут лежал переписанным `ast.unparse`,
+    # то есть без единого комментария, и заметил это `ruff`, а не человек.
+    # Поэтому восстановление стоит и на входе, а не только на выходе.
+    backup = module.with_suffix(module.suffix + ".mutation-backup")
+    if backup.is_file():
+        shutil.copy2(backup, module)
+        backup.unlink()
+        print(f"восстановлен {module.name} из бэкапа прерванного прогона",
+              file=sys.stderr)
+
     source = module.read_text(encoding="utf-8")
     every = plan(source)
     if not every:
@@ -266,7 +278,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"мутаций: {len(chosen)} из {len(every)} возможных, seed {arguments.seed}")
     print()
 
-    backup = module.with_suffix(module.suffix + ".mutation-backup")
     shutil.copy2(module, backup)
     survived: list[Mutation] = []
     broken = killed = 0
