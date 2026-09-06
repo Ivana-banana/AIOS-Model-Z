@@ -881,6 +881,10 @@ def test_the_submitted_schedule_is_outside_the_trust_region_and_that_is_said():
     schedule = root / "runs" / "matched-0995" / "wells_schedule.inc"
     if not model.is_file() or not schedule.is_file():
         pytest.skip("нет артефакта суррогата или сдаваемого расписания")
+    if not (root / "vendor" / "Model_Z_OPM" / "Model_Z.data").is_file():
+        # Шлюз берёт опорное расписание из дека; без дека он падает на
+        # чтении, а не выносит вердикт (Р-236).
+        pytest.skip("дек Модели Z не распакован")
 
     done = subprocess.run(
         [sys.executable, str(root / "scripts" / "trust_gate.py"),

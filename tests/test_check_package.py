@@ -566,6 +566,11 @@ def test_the_gate_refuses_a_schedule_whose_records_lost_their_rate(monkeypatch):
     schedule = root / "runs" / "matched-0995" / "wells_schedule.inc"
     if not schedule.is_file():
         pytest.skip("нет сдаваемого расписания")
+    if not (root / "vendor" / "Model_Z_OPM" / "Model_Z.data").is_file():
+        # Сверка записей идёт через опорное расписание дека: без него
+        # `_audit_without_report` честно отвечает «сверка не выполнена», и
+        # подменённый аудит до дела не доходит (Р-236).
+        pytest.skip("дек Модели Z не распакован")
 
     dirty = optimise.RecordAudit(records=3, zeroed=(("2014-01-01", "p"),),
                                  off_mode={}, ratios={})

@@ -435,6 +435,12 @@ def test_the_preflight_refuses_a_label_that_does_not_describe_the_file(tmp_path:
     sys.path.insert(0, str(ROOT / "scripts"))
     from check_package import _scaling_problem
 
+    if not (ROOT / "vendor" / "Model_Z_OPM" / "Model_Z.data").is_file():
+        # Без дека сверять записи не с чем по другой причине, и проверка
+        # говорит это другими словами — «сверка записей не выполнена»
+        # (Р-236).
+        pytest.skip("дек Модели Z не распакован")
+
     schedule = tmp_path / "wells_schedule.inc"
     schedule.write_text("-- пусто\n", encoding="utf-8")
 
