@@ -347,6 +347,10 @@ def _forced_shut(steps: list[ScheduleStep], wells: frozenset[str]) -> LimitCheck
     работать, и до 02.09 это считалось соблюдением.
     """
     breaches, where = 0, "—"
+    # `strict=True` во всех трёх обходах защитный: `fund_states` отдаёт ровно
+    # по состоянию на шаг, поэтому расхождение недостижимо — мутационный прогон
+    # помечает подмену эквивалентной, и это верный вердикт (Р-240). Оставлено
+    # как страховка на случай, если разметка фонда начнёт пропускать шаги.
     for step, state in zip(steps, fund_states(steps), strict=True):
         left = sorted(wells & _open_wells(state))
         if left:

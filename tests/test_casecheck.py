@@ -388,3 +388,210 @@ def test_minimum_rate_sees_an_open_well_with_zero_rate():
 
     assert not check.satisfied
     assert "скв. нуль" in check.where and check.value == pytest.approx(5.0)
+
+
+# ── что нашёл мутационный прогон 06.09 (Р-221) ───────────────────────────────
+
+
+def test_each_limit_measures_the_role_it_names():
+    """Предел для добывающих меряет добычу, для нагнетательных — закачку.
+
+    Четыре мутации подменяли `producers=True` на `False` и обратно, и все
+    переживали сюиту: в фикстурах добыча и закачка редко расходятся так, чтобы
+    подмена дала другое число. Между тем это молчаливая подмена смысла — предел
+    «на скважину по жидкости» начинал бы мерить приёмистость, и условие кейса
+    проверялось бы не то, которое объявлено.
+
+    Здесь роли расходятся намеренно: добывающая на 100, нагнетательная на 400.
+    """
+    steps = [step(2014, 1, producers=(prod("p", 100.0),), injectors=(inj("i", 400.0),))]
+
+    liquid = casecheck.check(steps, [], planner.Limits(
+        enforce_water_balance=False, max_well_liquid_m3_per_day=1000.0))
+    injection = casecheck.check(steps, [], planner.Limits(
+        enforce_water_balance=False, max_well_injection_m3_per_day=1000.0))
+
+    by_key = {one.key: one.value for one in liquid + injection}
+    assert by_key["max_well_liquid_m3_per_day"] == 100.0, (
+        f"предел по жидкости померил {by_key['max_well_liquid_m3_per_day']} — "
+        "это приёмистость, а не отбор"
+    )
+    assert by_key["max_well_injection_m3_per_day"] == 400.0, (
+        f"предел по закачке померил {by_key['max_well_injection_m3_per_day']}"
+    )
+
+    yearly_liquid = casecheck.check(steps, [], planner.Limits(
+        enforce_water_balance=False, max_field_liquid_m3_per_year=1e9))
+    yearly_injection = casecheck.check(steps, [], planner.Limits(
+        enforce_water_balance=False, max_field_injection_m3_per_year=1e9))
+
+    assert yearly_liquid[0].value < yearly_injection[0].value, (
+        f"годовые объёмы совпали ({yearly_liquid[0].value}): роли перепутаны"
+    )
+
+
+def test_a_group_cap_measures_its_own_resource():
+    """Групповой предел по закачке считает закачку, а не отбор.
+
+    Та же подмена роли, но в групповых пределах — там она стоит отдельным
+    аргументом и потому проверялась отдельной мутацией.
+    """
+    steps = [step(2014, 1, producers=(prod("p", 100.0),), injectors=(inj("i", 400.0),))]
+    limits = planner.Limits(
+        enforce_water_balance=False,
+        well_groups={"куст": ("p", "i")},
+        group_liquid_caps_m3_per_day={"куст": 1000.0},
+        group_injection_caps_m3_per_day={"куст": 1000.0},
+    )
+
+    found = {one.key: one.value for one in casecheck.check(steps, [], limits)}
+
+    assert found["group_liquid_caps_m3_per_day[куст]"] == 100.0
+    assert found["group_injection_caps_m3_per_day[куст]"] == 400.0, (
+        "групповой предел по закачке померил отбор"
+    )
+
+
+def test_a_well_without_a_reference_rate_does_not_divide_by_zero():
+    """Скважина с нулевым `WLPR` в прогнозе доли не даёт — и не роняет проверку.
+
+    Мутация `reference > 0` на `>=` переживала сюиту: строки с нулевым дебитом
+    в прогнозе не встречалось. На выгрузке она обычна — остановленная скважина
+    даёт ровно её, и деление на ноль уронило бы проверку условий кейса вместо
+    списка нарушений.
+    """
+    steps = [step(2014, 1, producers=(prod("p", 100.0),))]
+    forecast = [make_row("2014-01-01", "p", wlpr=0.0, womr=0.0,
+                         liquid=0.0, oil=0.0)]
+
+    checks = casecheck.check(steps, forecast, planner.Limits(
+        enforce_water_balance=False, max_field_oil_t_per_day=1000.0))
+
+    assert checks, "проверка по фазе не выполнена"
+    assert checks[0].value == 0.0, (
+        f"скважина без дебита дала вклад {checks[0].value} в добычу нефти"
+    )
+
+
+def test_the_worst_case_names_the_first_month_it_happened():
+    """При равных пиках называется **первый** месяц, а не последний.
+
+    Три мутации меняли `>` на `>=` в поиске максимума. Значение от этого не
+    меняется — меняется `where`, то есть строка, по которой человек идёт
+    разбираться. «Пик в декабре» вместо «пик в январе» отправляет искать причину
+    не туда, а на ровной полке пики совпадают часто.
+    """
+    steps = [step(2014, month, producers=(prod("p", 100.0),)) for month in (1, 2, 3)]
+
+    daily = casecheck.check(steps, [], planner.Limits(
+        enforce_water_balance=False, max_field_liquid_m3_per_day=1000.0))[0]
+
+    assert daily.value == 100.0
+    assert daily.where.startswith("2014-01"), (
+        f"назван месяц {daily.where} — при равных пиках берётся последний, а не первый"
+    )
+
+
+def test_the_shortfall_names_the_first_well_that_hit_it():
+    """То же для недобора: при равных провалах называется первый по порядку."""
+    steps = [step(2014, 1, producers=(prod("a", 1.0), prod("b", 1.0)))]
+
+    checks = casecheck.check(steps, [], planner.Limits(
+        enforce_water_balance=False, min_producer_rate_m3_per_day=5.0))
+    shortfall = [one for one in checks
+                 if one.key == "min_producer_rate_m3_per_day"][0]
+
+    assert shortfall.value == 4.0
+    assert "скв. a" in shortfall.where, (
+        f"назван {shortfall.where} — при равном недоборе берётся не первая скважина"
+    )
+
+
+def test_a_zero_cap_forbids_any_work_of_either_role():
+    """Нулевой потолок скважины запрещает работу — и добычу, и закачку.
+
+    Три мутации сидели в этой ветке: роль в объединении ставок и оба условия
+    абсолютного потолка. Ноль означает «не давать работать», и пропустить такую
+    скважину значит не проверить единственный случай, когда потолок абсолютен.
+    """
+    limits = planner.Limits(enforce_water_balance=False,
+                            well_caps_m3_per_day={"i": 0.0})
+    working = [step(2014, 1, injectors=(inj("i", 400.0),))]
+    idle = [step(2014, 1, injectors=(inj("i", 0.0, status="SHUT"),))]
+
+    breach = [one for one in casecheck.check(working, [], limits)
+              if one.key == "well_caps_m3_per_day"]
+    assert breach and not breach[0].satisfied, (
+        f"работа при нулевом потолке не объявлена нарушением: {breach}"
+    )
+    assert "скв. i" in breach[0].where
+
+    quiet = [one for one in casecheck.check(idle, [], limits)
+             if one.key == "well_caps_m3_per_day"]
+    assert not quiet or quiet[0].satisfied, (
+        "остановленная скважина объявлена нарушившей нулевой потолок"
+    )
+
+
+def test_the_annual_average_names_the_first_year_of_equal_peaks():
+    """Среднегодовой предел при равных годах называет первый.
+
+    Отдельная мутация от суточной: средние за год и пик месяца считаются разными
+    ветками, и закрыта была одна. Год в отчёте — то, с чего начинают разбор.
+    """
+    steps = [step(year, month, producers=(prod("p", 100.0),))
+             for year in (2014, 2015) for month in range(1, 13)]
+
+    # среднегодовая ветка включается отдельным ключом кейса: без него тот же
+    # предел считается пиком месяца, и проверка ушла бы в другую функцию
+    yearly = casecheck.check(steps, [], planner.Limits(
+        enforce_water_balance=False, max_field_liquid_m3_per_day=1000.0,
+        field_limits_are_annual_average=True))[0]
+
+    assert "среднее за год" in yearly.where, yearly.where
+    assert yearly.where.startswith("2014"), (
+        f"назван {yearly.where} — при равных годах берётся последний, а не первый"
+    )
+
+
+def test_a_zero_cap_ignores_a_well_that_does_not_work():
+    """Открытая запись с нулевым расходом нулевой потолок не нарушает.
+
+    Мутация `and` на `or` переживала прежний тест: остановленная запись в
+    ставки вообще не попадает, поэтому до условия дело не доходило. Разделяет
+    их **открытая** запись с нулём — состояние, которое создаёт объёмная срезка.
+    """
+    limits = planner.Limits(enforce_water_balance=False,
+                            well_caps_m3_per_day={"i": 0.0})
+    open_at_zero = [step(2014, 1, injectors=(inj("i", 0.0),))]
+
+    checks = [one for one in casecheck.check(open_at_zero, [], limits)
+              if one.key == "well_caps_m3_per_day"]
+
+    assert not checks or checks[0].value == 0.0, (
+        f"открытая запись с нулевым расходом объявлена нарушившей нулевой потолок: "
+        f"{[(one.value, one.where) for one in checks]}"
+    )
+
+
+def test_a_zero_cap_reports_the_first_offender():
+    """При нескольких нарушителях нулевого потолка называется первый.
+
+    Мутация `worst_ratio < inf` на `<=` переживала сюиту: нарушитель в фикстурах
+    был один. Со второй записью подмена перезаписывает `where` — и разбираться
+    отправляют к последней скважине вместо первой.
+    """
+    limits = planner.Limits(enforce_water_balance=False,
+                            well_caps_m3_per_day={"a": 0.0, "b": 0.0})
+    steps = [step(2014, 1, injectors=(inj("a", 100.0), inj("b", 400.0)))]
+
+    breach = [one for one in casecheck.check(steps, [], limits)
+              if one.key == "well_caps_m3_per_day"][0]
+
+    assert not breach.satisfied
+    assert "скв. a" in breach.where, (
+        f"назван {breach.where} — при равных (бесконечных) отношениях берётся "
+        "последний нарушитель, а не первый"
+    )
+    assert breach.value == 100.0, f"в отчёт попал расход не первой скважины: {breach.value}"
+
