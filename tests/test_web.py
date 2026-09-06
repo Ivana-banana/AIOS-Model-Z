@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -1468,3 +1469,100 @@ def test_the_run_page_shows_at_most_twenty_five_wells(project):
         f"скважина {first} есть в таблице, но не на графике: срез графика обнулён"
     )
 
+
+def test_the_forecast_page_measures_the_gain_as_a_difference(two_runs):
+    """Полученный прирост — **разность** фактов двух прогонов, а не их сумма.
+
+    Три подмены сидели в этой строке и все переживали сюиту, потому что фикстура
+    интерфейса давала один прогон: знак разности, поиск прогона-источника по
+    имени и порог осмысленности отношения. Первая меняет знак показываемого
+    числа — страница докладывала бы о приросте 24,2 там, где он 0,6.
+
+    Числа замерены на этой фикстуре 06.09: база даёт 11,8 млн руб., настроенный
+    прогон 12,4, разность +0,6 при обещанных +50,0.
+    """
+    (two_runs / "runs" / "tuned" / "cycle.json").write_text(
+        json.dumps({"forecast_chdd_m": 100.0, "forecast_gain_m": 50.0,
+                     "start_date": "2014-01-01", "source_run": "base"}),
+        encoding="utf-8")
+
+    page = TestClient(create_app(two_runs)).get("/forecast")
+    assert page.status_code == 200
+
+    plain = " ".join(re.sub("<[^>]+>", " ", page.text).split())
+    row = re.search(r"tuned.{0,120}", plain)
+    assert row, plain[:300]
+
+    assert "+0.6" in row.group(0), (
+        f"полученный прирост показан не как разность фактов: {row.group(0)}"
+    )
+    assert "+50.0" in row.group(0), "обещанное значение потеряно"
+    assert "источник — он сам" not in page.text, (
+        "источник найден неверно: прогон назван базой самого себя"
+    )
+
+
+def test_a_ratio_is_not_shown_for_a_gain_below_a_million(two_runs):
+    """Отношение «обещано / получено» не считается от прироста ≤ 1 млн руб.
+
+    Порог — цена одного мероприятия по методике, наименьшая величина, о которой
+    стоит говорить (Р-186). Полученный прирост здесь 0,6 млн, и отношение
+    ×83 сообщало бы только то, что делить было почти не на что.
+    """
+    (two_runs / "runs" / "tuned" / "cycle.json").write_text(
+        json.dumps({"forecast_chdd_m": 100.0, "forecast_gain_m": 50.0,
+                     "start_date": "2014-01-01", "source_run": "base"}),
+        encoding="utf-8")
+
+    page = TestClient(create_app(two_runs)).get("/forecast")
+    plain = " ".join(re.sub("<[^>]+>", " ", page.text).split())
+
+    assert "×83" not in plain and "83.3" not in plain, (
+        f"отношение посчитано от прироста меньше миллиона: {plain[:400]}"
+    )
+
+
+def test_the_compare_page_charts_the_change_not_the_sum(two_runs):
+    """Столбик изменения — «стало минус было», а не сумма.
+
+    Мутация знака переживала сюиту: график проверялся на наличие, а не на числа.
+    У «настроенного» прогона обводнённая скважина остановлена, то есть её отбор
+    падает с 30 до 0 — столбик обязан быть −30, а сумма дала бы +30.
+    """
+    page = TestClient(create_app(two_runs)).get("/compare", params={"a": "base",
+                                                                   "b": "tuned"})
+    assert page.status_code == 200
+
+    # столбики строятся по дисконтированной марже скважины, а не по уставке.
+    # Замер 06.09 на этой фикстуре: у остановленной «bad» маржа идёт с −2,065 в
+    # ноль, то есть столбик +2,065; сумма дала бы −2,065, то есть другой знак
+    from aios.margin import Norms
+    from aios.web.app import margin_deltas, read_rows_csv
+
+    assumptions, _ = economics.load_norms()
+    deltas = margin_deltas(read_rows_csv(two_runs / "runs" / "base" / "rows.csv"),
+                           read_rows_csv(two_runs / "runs" / "tuned" / "rows.csv"),
+                           Norms.from_assumptions(assumptions))
+    bars = {well: after - before for well, before, after in deltas}
+
+    assert bars["bad"] == pytest.approx(2.0648, abs=1e-3), (
+        f"столбик остановленной скважины {bars['bad']}: изменение показано "
+        "суммой, а не разностью «стало минус было»"
+    )
+    assert bars["good"] == pytest.approx(0.0, abs=1e-9), (
+        "у нетронутой скважины столбик ненулевой"
+    )
+    # график строит ту же разность **своей** строкой, поэтому её проверяем
+    # отдельно: на всей странице «-2.06» встречается законно — это колонка
+    # «было» в таблице дельт
+    from aios.web.charts import bar_chart
+
+    drawn = bar_chart([well for well, _, _ in deltas],
+                      [after - before for _, before, after in deltas])
+    summed = bar_chart([well for well, _, _ in deltas],
+                       [after + before for _, before, after in deltas])
+
+    assert drawn in page.text, (
+        "график на странице собран не тем выражением, что «стало минус было»"
+    )
+    assert summed not in page.text, "график собран суммой"
