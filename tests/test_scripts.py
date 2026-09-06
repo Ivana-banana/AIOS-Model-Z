@@ -1626,7 +1626,7 @@ def test_check_deck_reads_the_real_deck(capsys):
 #: писать. Таблица открытая: новый скрипт обязан попасть либо сюда, либо в
 #: DECK_READERS_NOT_SWEPT с причиной — это стережёт отдельная проверка ниже.
 DECK_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
-    "benchmark_scale.py": (),
+    "benchmark_scale.py": ("--rows", "{rows}"),
     "build_case.py": ("{out}",),
     "build_doe.py": (),
     "build_matched_case.py": ("{out}", "--rows", "{rows}"),
@@ -1687,6 +1687,13 @@ def test_no_entry_point_answers_a_missing_deck_with_a_traceback(name: str, tmp_p
 
     Проверяется делом, а не по тексту: скрипт запускается подпроцессом с
     конфигом, в котором сломан только дек.
+
+    **Аргументы подобраны так, чтобы скрипт дошёл до дека на любой машине.**
+    Первая редакция звала `benchmark_scale.py` без `--rows`, и он брал выгрузку
+    из умолчания — `runs/matched-0995/rows.csv`, которой на чистом клоне нет.
+    На машине разработки тест проходил, на клоне падал: ровно та болезнь, что
+    здесь и проверяется, только в самой проверке (замер 06.09 поймал это
+    командой `clean_clone_check.py`).
     """
     import subprocess
 
