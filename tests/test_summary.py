@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import ctypes
 import os
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
+from conftest import make_row
 
 from aios import economics, summary
 
@@ -490,4 +491,246 @@ def test_reading_a_case_does_not_flood_the_run_with_warnings():
         f"чтение выгрузки печатает {len(noisy)} предупреждений, первое: {noisy[0].message}"
     )
     assert rows, "молчание не должно достигаться тем, что читать перестали"
+
+
+# ── что нашёл мутационный прогон 06.09 (Р-221) ───────────────────────────────
+
+
+def test_a_date_is_read_with_a_half_day_shift():
+    """Дата берётся со сдвигом на полсуток — иначе она уезжает на день.
+
+    Три мутации сидели здесь: `timedelta(hours=12)` обнулялось, знак менялся на
+    минус. Выгрузка симулятора несёт время конца шага, и оно бывает
+    `2014-01-31 23:59:59` или `2014-02-01 00:00:01`; полсуток сдвига кладут обе
+    формы в тот месяц, к которому они относятся. Без сдвига месяц уезжает — а по
+    месяцу считается вся экономика.
+    """
+    from aios.summary import _as_date
+
+    assert _as_date(datetime(2014, 1, 31, 23, 59, 59)) == date(2014, 2, 1)
+    assert _as_date(datetime(2014, 2, 1, 0, 0, 1)) == date(2014, 2, 1)
+    # строка на границе месяца — тот случай, ради которого сдвиг и стоит:
+    # без него `2014-01-31 23:59:59` попал бы в январь
+    assert _as_date("2014-01-31T23:59:59") == date(2014, 2, 1)
+    assert _as_date("2014-02-01T00:00:01") == date(2014, 2, 1)
+    assert _as_date(date(2014, 2, 1)) == date(2014, 2, 1), (
+        "готовая дата сдвигаться не должна"
+    )
+
+
+def test_a_month_without_liquid_is_skipped_by_the_watercut_check():
+    """Месяц с нулевой жидкостью в проверку обводнённости не входит.
+
+    Мутация `<= 0` на `< 0` переживала сюиту: строки с ровно нулевым приростом
+    в фикстурах не было. С подменой `1 - 0/0` даёт деление на ноль — проверка
+    условия кейса роняет прогон вместо того, чтобы выдать список нарушений.
+    """
+    rows = [make_row("2014-01-01", "1", wlpr=0.0, womr=0.0, liquid=0.0, oil=0.0),
+            make_row("2014-02-01", "1", wlpr=30.0, womr=1.0, liquid=900.0, oil=30.0)]
+
+    problems = summary.case_problems(rows, max_watercut=0.9)
+
+    assert not any("2014-01-01" in one for one in problems), problems
+
+
+def test_a_negative_pressure_is_reported_for_either_gauge():
+    """Отрицательное давление ловится и по забойному, и по устьевому.
+
+    Мутация `or` на `and` переживала сюиту: обе величины в фикстурах были
+    отрицательны разом. С подменой строка с одним отрицательным давлением
+    проходит как исправная — а это либо ошибка выгрузки, либо нефизичный
+    прогноз, и оба случая обязаны быть названы.
+    """
+    only_bhp = [make_row("2014-01-01", "1", wlpr=30.0, womr=1.0,
+                         liquid=900.0, oil=30.0, bhp=-1.0, thp=20.0)]
+    only_thp = [make_row("2014-01-01", "1", wlpr=30.0, womr=1.0,
+                         liquid=900.0, oil=30.0, bhp=90.0, thp=-1.0)]
+
+    assert any("отрицательное давление" in one
+               for one in summary.sanity_problems(only_bhp)), "минус в BHP пропущен"
+    assert any("отрицательное давление" in one
+               for one in summary.sanity_problems(only_thp)), "минус в THP пропущен"
+
+
+def test_a_drop_explained_by_a_negative_increment_is_not_reported_twice():
+    """Падение накопленной, объяснённое отрицательным приростом, — одна находка.
+
+    Четыре мутации сидели в этом условии: знак прироста, множитель допуска,
+    обе границы. На опорном расписании такие пары дают четверть всех нарушений,
+    и удвоение списка прячет остальные три четверти за шумом.
+
+    Проверяется и обратное: падение, которое приростом **не** объясняется,
+    остаётся нарушением — иначе «не сообщать дважды» превратилось бы в «не
+    сообщать вовсе».
+    """
+    def with_total(row, total):
+        """Накопленную задаём вручную: `make_row` держит её нулевой."""
+        row["WLPT"] = total
+        return row
+
+    # прирост объясняет падение **не в точности**, а в пределах допуска
+    # `1e-6 × max(1, drop)`: на ровном нуле подмены множителя и самого допуска
+    # неразличимы, поэтому расхождение задаётся явно
+    explained = [
+        with_total(make_row("2014-01-01", "1", wlpr=30.0, womr=1.0,
+                            liquid=900.0, oil=30.0), 1000.0),
+        with_total(make_row("2014-02-01", "1", wlpr=30.0, womr=1.0,
+                            liquid=-100.00005, oil=30.0), 900.0),
+    ]
+    about_drop = [one for one in summary.sanity_problems(explained)
+                  if "уменьшилось" in one]
+    assert about_drop == [], (
+        f"падение, объяснённое отрицательным приростом, названо дважды: {about_drop}"
+    )
+
+    unexplained = [
+        with_total(make_row("2014-01-01", "1", wlpr=30.0, womr=1.0,
+                            liquid=900.0, oil=30.0), 1000.0),
+        with_total(make_row("2014-02-01", "1", wlpr=30.0, womr=1.0,
+                            liquid=900.0, oil=30.0), 500.0),
+    ]
+    assert any("уменьшилось" in one for one in summary.sanity_problems(unexplained)), (
+        "падение накопленной без объяснения приростом пропущено"
+    )
+
+
+def test_the_reservoir_pressure_check_asks_the_right_role():
+    """Верхний предел пластового давления спрашивают с нагнетательной.
+
+    Мутация `WWIR > 0` на `>=` переживала сюиту: с ней предел проверялся бы и у
+    добывающих, у которых закачки нет по определению. Условие кейса про
+    нагнетание превратилось бы в условие про весь фонд, и «нарушения» посыпались
+    бы там, где нарушать нечего.
+    """
+    producer = [make_row("2014-01-01", "1", wlpr=30.0, womr=1.0,
+                         liquid=900.0, oil=30.0, thp=290.0)]
+    injector = [make_row("2014-01-01", "9", wwir=100.0,
+                         injection=3000.0, thp=290.0)]
+    at_limit = [make_row("2014-01-01", "9", wwir=100.0,
+                         injection=3000.0, thp=270.0)]
+
+    assert summary.sanity_problems(at_limit, max_reservoir_pressure=270.0) == [], (
+        "давление ровно на пределе объявлено превышением: методика запрещает "
+        "выход за границу, а не саму границу"
+    )
+
+    assert summary.sanity_problems(producer, max_reservoir_pressure=270.0) == [], (
+        "верхний предел спрошен с добывающей — закачки у неё нет"
+    )
+    assert any("у нагнетательной" in one for one in
+               summary.sanity_problems(injector, max_reservoir_pressure=270.0))
+
+
+def test_a_calendar_gap_across_a_year_is_found():
+    """Разрыв календаря через границу года находится, а не прячется.
+
+    Мутация в переходе `декабрь → январь` переживала сюиту: разрывов через
+    границу года в фикстурах не было. Ошибка здесь тихая и дорогая: экономика
+    считает строку за скважино-месяц, и незамеченный квартальный шаг занижает
+    объём втрое (246 суток вместо 730).
+    """
+    rows = [make_row("2014-12-01", "1", wlpr=30.0, womr=1.0, liquid=900.0, oil=30.0),
+            make_row("2015-01-01", "1", wlpr=30.0, womr=1.0, liquid=900.0, oil=30.0)]
+
+    assert summary.sanity_problems(rows) == [], (
+        "переход через границу года объявлен разрывом календаря"
+    )
+
+    skipped = [make_row("2014-12-01", "1", wlpr=30.0, womr=1.0,
+                        liquid=900.0, oil=30.0),
+               make_row("2015-02-01", "1", wlpr=30.0, womr=1.0,
+                        liquid=900.0, oil=30.0)]
+    assert any("шаг выгрузки не месячный" in one
+               for one in summary.sanity_problems(skipped)), (
+        "пропуск месяца через границу года не найден"
+    )
+
+
+def test_a_long_list_of_gaps_says_how_many_are_hidden():
+    """При длинном списке разрывов сообщение честно считает скрытые.
+
+    Мутация `len(gaps) - 5` на `+ 5` переживала сюиту: списка длиннее пяти в
+    фикстурах не было. Число говорит оператору, насколько выгрузка не месячная,
+    и «и ещё 11» вместо одного меняет решение — приводить её к месяцам или нет.
+    """
+    stamps = [f"{2014 + index // 6}-{(index % 6) * 2 + 1:02d}-01"
+              for index in range(8)]
+    rows = [make_row(stamp, "1", wlpr=30.0, womr=1.0, liquid=900.0, oil=30.0)
+            for stamp in stamps]
+
+    problems = [one for one in summary.sanity_problems(rows)
+                if "шаг выгрузки не месячный" in one]
+
+    assert problems, summary.sanity_problems(rows)
+    text = problems[0]
+    assert "и ещё 2" in text, text
+    assert "разрывов календаря 7" in text, text
+    assert text.count("→") == 5, f"показано не пять разрывов: {text}"
+
+    # короткий список хвоста не получает: «и ещё −4» было бы неправдой
+    short = [make_row(stamp, "1", wlpr=30.0, womr=1.0, liquid=900.0, oil=30.0)
+             for stamp in ("2014-01-01", "2014-03-01", "2014-05-01")]
+    brief = [one for one in summary.sanity_problems(short)
+             if "шаг выгрузки не месячный" in one]
+    assert brief and "и ещё" not in brief[0], brief
+
+
+def test_writing_a_csv_creates_the_directory_it_needs(tmp_path):
+    """Запись выгрузки создаёт каталог, а не падает на его отсутствии.
+
+    Мутация `parents=True` на `False` переживала сюиту: в фикстурах каталог
+    всегда существовал. На чистой машине каталог прогона создаётся впервые
+    именно здесь, и отказ пришёл бы после расчёта — то есть после того, как
+    работа уже сделана.
+    """
+    rows = [make_row("2014-01-01", "1", wlpr=30.0, womr=1.0, liquid=900.0, oil=30.0)]
+    target = tmp_path / "нет" / "такого" / "rows.csv"
+
+    written = summary.write_csv(rows, target)
+
+    assert written.is_file()
+    assert written.read_text(encoding="utf-8").startswith("DATA,")
+
+    # и повторная запись в уже существующий каталог не падает: на перезапуске
+    # прогона каталог всегда есть
+    again = summary.write_csv(rows, target)
+    assert again.is_file()
+
+
+def test_a_drop_exactly_at_the_tolerance_is_not_reported():
+    """Падение накопленной ровно на допуск нарушением не считается.
+
+    Мутация `drop <= 1e-6` на `<` переживала сюиту: падения ровно на границу в
+    фикстурах не было, а построить его можно — `1e-6 − 0` даёт её точно. Смысл
+    допуска здесь тот же, что у Р-188: расхождение в последнем знаке приходит от
+    арифметики выгрузки, а не от физики, и объявлять его уменьшением накопленной
+    значит топить настоящие находки в шуме.
+    """
+    def with_total(row, total):
+        row["WLPT"] = total
+        return row
+
+    on_the_edge = [
+        with_total(make_row("2014-01-01", "1", wlpr=30.0, womr=1.0,
+                            liquid=900.0, oil=30.0), 1e-6),
+        with_total(make_row("2014-02-01", "1", wlpr=30.0, womr=1.0,
+                            liquid=900.0, oil=30.0), 0.0),
+    ]
+    assert 1e-6 - 0.0 == 1e-6, "проверка вырождена: падение не равно допуску"
+
+    about_drop = [one for one in summary.sanity_problems(on_the_edge)
+                  if "уменьшилось" in one]
+
+    assert about_drop == [], (
+        f"падение ровно на допуск объявлено уменьшением накопленной: {about_drop}"
+    )
+
+    # заметно большее падение по-прежнему находится
+    bigger = [
+        with_total(make_row("2014-01-01", "1", wlpr=30.0, womr=1.0,
+                            liquid=900.0, oil=30.0), 1.0),
+        with_total(make_row("2014-02-01", "1", wlpr=30.0, womr=1.0,
+                            liquid=900.0, oil=30.0), 0.0),
+    ]
+    assert any("уменьшилось" in one for one in summary.sanity_problems(bigger))
 
