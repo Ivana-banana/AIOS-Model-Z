@@ -237,3 +237,141 @@ def test_a_correlation_needs_at_least_three_months():
     three = np.array([[1.0], [2.0], [3.0]])
     assert np.allclose(_correlate(three, three), 1.0)
 
+
+def _month(index: int) -> str:
+    return f"20{7 + index // 12:02d}-{index % 12 + 1:02d}-01"
+
+
+def _field(months: int = 36) -> pd.DataFrame:
+    """Фонд из восьми скважин: четыре добывающих и четыре нагнетательных.
+
+    Первый месяц намеренно выделен — у добывающих в нём вся жидкость чистая
+    нефть. Так граница окна (`>= since` против `>`) меняет и обводнённость, и
+    разбиение, и доли групп: без этого месяца скважины меняются местами.
+    """
+    records = []
+    for index in range(months):
+        clean = index == 0
+        for number, watercut_share in enumerate(("0.1", "0.3", "0.7", "0.9"), start=1):
+            liquid = 900.0
+            oil = liquid if clean else liquid * (1 - float(watercut_share))
+            records.append({"DATA": _month(index), "well": str(number),
+                            "WLPR": 30.0 + number, "WLPT_Diff": liquid,
+                            "WOMT_Diff": oil})
+        for number in range(5, 9):
+            records.append({"DATA": _month(index), "well": str(number),
+                            "WWIR": 40.0 + number * (index % 3),
+                            "WWIT_Diff": 1200.0 + number * 100})
+    return _rows(records)
+
+
+def test_the_grouping_window_includes_the_date_it_names():
+    """Разбиение считается от названной даты включительно.
+
+    Мутации `>= since` на `>` сидят в четырёх разных функциях модуля, и каждая
+    молча выбрасывает первый месяц. Здесь он выделен: у добывающих в нём вся
+    жидкость — нефть, поэтому его потеря меняет обводнённость, а с ней и то, в
+    какую группу попадёт скважина.
+    """
+    rows = _field()
+
+    from_start = watercut(rows, _month(0))
+    without_first = watercut(rows, _month(1))
+
+    assert from_start["1"] != pytest.approx(without_first["1"]), (
+        "первый месяц выпал из окна: обводнённость не изменилась"
+    )
+    assert from_start["1"] < without_first["1"], (
+        "чистый по нефти месяц не снизил обводнённость — окно считается не оттуда"
+    )
+
+
+def test_the_groups_split_the_fund_by_the_median():
+    """Порог деления — медиана по фонду, и она считается по тому же окну.
+
+    Мутация `<= median` на `<` переживала сюиту: скважины, стоящей ровно на
+    медиане, в фикстурах не было. Медиана делит фонд пополам — на чётном числе
+    скважин она проходит между ними, и включающая граница отправляет
+    «серединную» скважину в сухую группу, а не в обводнённую.
+    """
+    rows = _field()
+
+    groups = build_groups(rows, _month(0))
+    by_name = {group.name: group for group in groups}
+
+    dry = by_name["добывающие сухие"].wells
+    wet = by_name["добывающие обводнённые"].wells
+
+    assert set(dry) | set(wet) == {"1", "2", "3", "4"}, (dry, wet)
+    assert not set(dry) & set(wet), "скважина попала в обе группы"
+    assert "1" in dry and "4" in wet, (dry, wet)
+
+
+def test_a_thin_group_is_reported_by_share_and_by_count():
+    """Группа, которая почти ничего не двигает, названа — по обеим причинам.
+
+    Две мутации сидели в порогах: четыре скважины и десятая часть объёма.
+    Смысл один — групповой множитель обязан двигать заметную величину, иначе
+    поиск тратит вызов на переменную, которая ни на что не влияет.
+    """
+    rows = _field()
+    groups = build_groups(rows, _month(0))
+
+    found = problems(groups, rows, _month(0))
+
+    # в фикстуре по две скважины на группу — обе меньше четырёх
+    assert sum("меньше четырёх" in one for one in found) >= 2, found
+
+    # а группа с ничтожным объёмом называется отдельно: у «крошки» сотая доля
+    # объёма фонда, у остальных — всё прочее
+    scaled = _rows([
+        {"DATA": _month(index), "well": well, "WLPR": 30.0,
+         "WLPT_Diff": 9.0 if well == "1" else 900.0, "WOMT_Diff": 1.0}
+        for index in range(12) for well in ("1", "2", "3", "4")
+    ])
+    tiny = Group(name="крошка", kind="producer", weights={"1": 1.0})
+    big = Group(name="остальные", kind="producer",
+                weights={"2": 0.5, "3": 0.3, "4": 0.2})
+
+    about = problems([tiny, big], scaled, _month(0))
+
+    assert any("базового объёма" in one and "крошка" in one for one in about), about
+    assert not any("базового объёма" in one and "остальные" in one for one in about), (
+        "группа с почти всем объёмом объявлена ничтожной"
+    )
+
+
+def test_group_weights_are_shares_of_the_group_total():
+    """Веса внутри группы — доли, и они считаются по тому же окну.
+
+    Мутация границы окна в `_group` переживала сюиту: веса берутся медианой
+    режима, и без первого месяца медиана сдвигается. Доли обязаны давать
+    единицу — иначе групповой множитель означает не то, что написано.
+    """
+    rows = _field()
+
+    group = build_groups(rows, _month(0))[0]
+
+    assert group.weights, "группа пуста"
+    assert sum(group.weights.values()) == pytest.approx(1.0), group.weights
+    assert all(value >= 0.0 for value in group.weights.values())
+
+
+def test_links_are_taken_at_their_strongest_lag():
+    """Связь берётся по сильнейшему запаздыванию, а не по последнему.
+
+    Мутация `np.maximum` на вычитание переживала сюиту. Отклик добычи на закачку
+    приходит с задержкой в месяцы, и брать связь без выбора максимума значит
+    объявлять несвязанными как раз те пары, ради которых запаздывание и
+    перебирается.
+    """
+    rows = _field()
+
+    matrix = link_matrix(rows, _month(0), min_link=0.0)
+
+    assert not matrix.empty
+    assert (matrix.to_numpy() >= 0.0).all(), (
+        "в матрице связей есть отрицательные значения: максимум по модулю не взят"
+    )
+    assert (matrix.to_numpy() <= 1.0 + 1e-9).all(), "связь больше единицы"
+
