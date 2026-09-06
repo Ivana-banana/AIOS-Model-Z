@@ -580,3 +580,123 @@ def test_the_lock_covers_every_runtime_dependency_with_a_hash():
         "в requirements.txt есть пакеты, которых нет в lock: "
         + ", ".join(sorted(required - locked))
     )
+
+
+# ── замер чистого клона стал командой, а не привычкой (Р-236) ─────────────────
+
+def _clean_clone_check():
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import clean_clone_check
+
+    return clean_clone_check
+
+
+def test_the_clean_clone_check_reads_its_expectations_out_of_the_readme():
+    """Скрипт берёт числа из README, а не из константы рядом с собой.
+
+    Иначе появилось бы третье место, где живёт «21 пропуск», и расходиться оно
+    начало бы молча — ровно так 04.09 разошлась разбивка 9/5/2/1/1.
+    """
+    check = _clean_clone_check()
+
+    expected = check.readme_expectations(
+        (ROOT / "README.md").read_text(encoding="utf-8"))
+
+    assert expected["tests"] > 0, "число тестов из README не прочиталось"
+    assert expected["skipped_with_deck"] > 0
+    assert expected["skipped_without_deck"] > expected["skipped_with_deck"], (
+        "без дека пропусков обязано быть больше: часть тестов дека ждёт"
+    )
+
+
+def test_the_clean_clone_check_calls_a_failure_on_the_clone_a_problem():
+    """Падение на клоне — отказ, даже если числа сошлись.
+
+    Это и есть находка 06.09: три теста краснели на клоне без дека, а числа
+    README при этом были про другое состояние и ни с чем не спорили.
+    """
+    check = _clean_clone_check()
+
+    measured = {"no-deck": {"tests": 1592, "failures": 3, "skipped": 29}}
+    expected = {"tests": 1592, "skipped_with_deck": 21, "skipped_without_deck": 29}
+
+    problems = check.verdict(measured, expected)
+
+    assert problems, "падение на клоне прошло молча"
+    assert "падений на чистом клоне" in problems[0]
+
+
+def test_the_clean_clone_check_notices_a_readme_that_promises_other_numbers():
+    """Разошлись числа — расхождение названо обоими значениями."""
+    check = _clean_clone_check()
+
+    measured = {"with-deck": {"tests": 1600, "failures": 0, "skipped": 22},
+                "no-deck": {"tests": 1600, "failures": 0, "skipped": 33}}
+    expected = {"tests": 1592, "skipped_with_deck": 21, "skipped_without_deck": 32}
+
+    problems = check.verdict(measured, expected)
+
+    assert len(problems) == 3, problems
+    assert any("1592" in one and "1600" in one for one in problems)
+    assert any("21" in one and "22" in one for one in problems)
+    assert any("32" in one and "33" in one for one in problems)
+
+
+def test_the_clean_clone_check_is_silent_when_the_clone_matches():
+    """Сошлось — молчание и код 0, иначе шаг нельзя поставить в паспорт дня."""
+    check = _clean_clone_check()
+
+    measured = {"with-deck": {"tests": 1592, "failures": 0, "skipped": 21},
+                "no-deck": {"tests": 1592, "failures": 0, "skipped": 32}}
+    expected = {"tests": 1592, "skipped_with_deck": 21, "skipped_without_deck": 32}
+
+    assert check.verdict(measured, expected) == []
+
+
+def test_the_clean_clone_check_counts_errors_as_failures(tmp_path):
+    """`errors` в junit — это тоже красное, и оно не должно потеряться.
+
+    Сбой на этапе сборки фикстуры пишется в `errors`, а не в `failures`; читать
+    только второе значило бы объявить клон чистым при сломанном conftest.
+    """
+    check = _clean_clone_check()
+
+    report = tmp_path / "report.xml"
+    report.write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite '
+        'name="pytest" errors="2" failures="1" skipped="7" tests="100" '
+        'time="1.0" /></testsuites>',
+        encoding="utf-8")
+
+    assert check.counts(report) == {"tests": 100, "failures": 3, "skipped": 7}
+
+
+def test_the_clean_clone_check_takes_the_deck_step_from_the_readme():
+    """Распаковка делается ровно так, как записана проверяющему.
+
+    Имена дека в скрипте не зашиты по двум причинам сразу: сторож
+    `test_no_module_hardcodes_a_model_z_file_name` запрещает имя `Model_Z` в
+    исполняемой строке, а валидационный кейс придёт с другим деком. Но главная
+    причина третья: разойдись скрипт с инструкцией — он мерил бы не её.
+    """
+    check = _clean_clone_check()
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    archive, destination, unpacked, target = check.deck_steps(readme)
+
+    assert archive.endswith(".zip")
+    assert (ROOT / archive).is_file(), f"README зовёт архив, которого нет: {archive}"
+    assert destination and unpacked.startswith(destination + "/")
+    assert target.startswith(destination + "/")
+
+
+def test_the_clean_clone_check_refuses_a_readme_without_the_deck_step():
+    """Пропала команда распаковки — отказ, а не тихая мера «без дека дважды»."""
+    import pytest
+
+    check = _clean_clone_check()
+
+    with pytest.raises(ValueError, match="раздел 2"):
+        check.deck_steps("# README\n\nникаких команд тут нет\n")
