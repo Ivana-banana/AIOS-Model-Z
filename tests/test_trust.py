@@ -1084,7 +1084,7 @@ def test_the_contract_charges_the_penalty_by_default():
 
 
 def test_the_gate_refuses_without_the_deck_instead_of_falling_over(tmp_path):
-    """Без дека шлюз обязан отказать словами, а не трассировкой (Р-236).
+    """Без дека шлюз обязан отказать словами, а не трассировкой (Р-238).
 
     Опорное расписание берётся из дека, а дек в git не ведётся: на чистом клоне
     промах мимо него — обычный первый запуск. До 06.09 `trust_gate.py` в этом

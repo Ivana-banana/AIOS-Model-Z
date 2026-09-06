@@ -509,3 +509,117 @@ PERMX
 
     assert [one.name for one in found] == ["PORO", "PERMX"]
     assert found[0].records == (("0.2", "0.2", "0.2"),)
+
+
+# ── что нашёл мутационный прогон 06.09 (Р-221) ───────────────────────────────
+
+
+def test_deck_records_cannot_be_edited_after_parsing():
+    """Разобранные записи дека неизменяемы.
+
+    Четыре мутации `frozen=True` на `False` переживали сюиту. Дек — вход всей
+    системы: изменяемая запись позволяет поправить режим скважины между
+    разбором и записью в файл, и в сдаваемом расписании окажется не то, что
+    прочитали.
+    """
+    import dataclasses
+
+    producer = deck.ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0)
+    injector = deck.InjectorControl("2", "WATER", "OPEN", "RATE", 40.0, 300.0)
+    keyword = deck.Keyword(name="WCONPROD", records=())
+
+    for one in (producer, injector, keyword):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            one.well = "подмена" if hasattr(one, "well") else None
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        keyword.name = "COMPDAT"
+
+
+def test_a_block_is_considered_terminated_unless_said_otherwise():
+    """Умолчание `terminated` — «блок закрыт», а не «не закрыт».
+
+    Мутация умолчания переживала сюиту: разбор проставляет флаг явно. Ложь по
+    умолчанию означала бы, что каждый блок, собранный не разбором (в тесте, в
+    генераторе), считается незакрытым — и проверка формата ругалась бы на
+    исправный дек.
+    """
+    assert deck.Keyword(name="WCONPROD", records=()).terminated is True
+
+
+def test_a_short_date_record_is_refused():
+    """Запись `DATES` короче трёх полей или с пропуском — отказ, а не догадка.
+
+    Две мутации сидели здесь: длина `< 3` подменялась на `< 0`, а `or` на `and`.
+    С ними запись `01 NOV` разбиралась бы молча — год брался бы неизвестно
+    откуда, и календарь расписания уехал бы без единого сообщения.
+    """
+    assert deck.parse_date_record(("01", "NOV", "1994")) == date(1994, 11, 1)
+
+    for broken in (("01", "NOV"), ("01",), (), ("01", None, "1994"),
+                   (None, "NOV", "1994")):
+        with pytest.raises(ValueError):
+            deck.parse_date_record(broken)
+
+
+def test_quotes_are_stripped_only_from_a_matching_pair():
+    """Кавычки снимаются парой, и только когда они настоящая пара.
+
+    Три мутации сидели в этой функции: длина `>= 2`, срезы `[1:-1]`. Имя
+    скважины приходит из дека как есть, и лишний срез превращает `'101'` в `10`
+    — то есть в **другую скважину**, молча и на всём горизонте.
+    """
+    from aios.deck import _unquote
+
+    assert _unquote("'101'") == "101"
+    assert _unquote('"101"') == "101"
+    assert _unquote("101") == "101", "имя без кавычек не должно резаться"
+    assert _unquote("'") == "'", "одиночная кавычка — не пара"
+    assert _unquote("") == ""
+    assert _unquote("'101") == "'101", "непарная кавычка оставляется как есть"
+    # пустая пара — тоже пара: длина ровно два, и граница здесь включающая.
+    # Именно её различают `>= 2` и `> 2`, и в деке `''` встречается как пустое
+    # поле в кавычках
+    assert _unquote("''") == "", "пустая пара кавычек не снята"
+    assert _unquote('""') == ''
+
+
+def test_wells_are_sorted_numerically_then_by_name():
+    """Скважины сортируются числом, а не строкой.
+
+    Мутация ключа сортировки переживала сюиту. Строковый порядок ставит «10»
+    перед «2», и список фонда в отчёте, в объяснении и в расписании перестаёт
+    читаться — а на Модели Z имена как раз цифровые.
+    """
+    from aios.deck import _sorted_wells
+
+    assert _sorted_wells({"2", "10", "1"}) == ("1", "2", "10")
+    # нечисловые имена идут после числовых и сортируются между собой
+    assert _sorted_wells({"10", "A1", "2", "B"}) == ("2", "10", "A1", "B")
+
+
+def test_an_injector_without_a_named_fluid_is_water():
+    """Нагнетательная без явной фазы считается водяной.
+
+    Мутация `or "WATER"` на `and` переживала сюиту: в фикстурах фаза всегда
+    названа. С подменой она либо всегда «WATER» (даже когда в деке газ), либо
+    пустая — и запись `WCONINJE` уходит в файл без фазы.
+    """
+    text = chr(10).join([
+        "SCHEDULE",
+        "DATES",
+        "  1 JAN 2014 /",
+        "/",
+        "WCONINJE",
+        "  '9' 1* OPEN RATE 40.0 1* 300.0 /",
+        "/",
+        "WCONINJE",
+        "  '8' GAS OPEN RATE 40.0 1* 300.0 /",
+        "/",
+    ])
+
+    parsed = deck.parse_schedule_text(text)
+    fluids = {one.well: one.fluid for one in parsed.steps[0].injectors}
+
+    assert fluids["9"] == "WATER", "пропущенная фаза не подставлена водой"
+    assert fluids["8"] == "GAS", "названная фаза подменена водой"
+
