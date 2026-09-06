@@ -1119,3 +1119,291 @@ def test_record_audit_refuses_schedules_of_different_length():
     with pytest.raises(ValueError):
         optimise.audit_records(before + before, after)
 
+
+# ── что нашёл мутационный прогон 05.09 (Р-221) ───────────────────────────────
+
+
+def test_the_multiplier_sets_are_what_the_reasoning_says():
+    """Наборы множителей — числа, на которых стоят два решения проекта.
+
+    Мутации обнуляли элементы наборов, и сюита их не замечала: значения
+    проверялись косвенно, через поведение поиска. Между тем `SINGLE_MULTIPLIERS`
+    без нуля — это Р-198, измеренная цена которого −63…−68 % ЧДД на полном
+    расчёте, а ноль в `DEFAULT_MULTIPLIERS` — законная остановка совместного
+    перебора. Подмена любого элемента меняет смысл, а не оформление.
+    """
+    assert optimise.DEFAULT_MULTIPLIERS == (0.0, 0.5, 0.75, 1.0)
+    assert optimise.SINGLE_MULTIPLIERS == (0.5, 0.75, 1.0)
+    assert 0.0 not in optimise.SINGLE_MULTIPLIERS, (
+        "ноль вернулся в одиночный перебор: остановка снова решается маржой "
+        "одной скважины на прогнозе без отклика соседей (Р-198)"
+    )
+    assert 1.0 in optimise.SINGLE_MULTIPLIERS, "режим «как есть» обязан быть в наборе"
+    assert max(optimise.DEFAULT_MULTIPLIERS) == 1.0, (
+        "в наборе по умолчанию появился форсаж — он допускается только явно"
+    )
+
+
+def test_the_trust_weight_is_one_by_default():
+    """Вес конформного запаса — единица: вычитается весь измеренный запас.
+
+    Ноль означал бы «оптимизм суррогата ничего не стоит», и это молча снимало бы
+    первый контур шлюза у всех, кто не передал вес явно.
+    """
+    assert optimise.TRUST_WEIGHT == 1.0
+    assert optimise.TRUST_PENALTY > 0.0
+
+
+def test_a_well_outside_the_multiplier_map_keeps_its_regime():
+    """Скважина, которой карта ничего не назначила, остаётся «как есть».
+
+    Мутация умолчания `1.0` на `0` переживала сюиту. Единица означает режим без
+    изменения, ноль — закрытую скважину: с подменой карта «просить по
+    достигнутому» закрывала бы всё, чего в ней нет.
+    """
+    from aios.optimise import _multiplier_of
+
+    assert _multiplier_of({"a": 1.6}, "a") == 1.6
+    assert _multiplier_of({"a": 1.6}, "b") == 1.0, (
+        "скважина вне карты получила не нейтральный множитель"
+    )
+    assert _multiplier_of(1.5, "что угодно") == 1.5
+
+
+def test_the_explanation_counts_stops_and_pruned_candidates():
+    """Сводка поиска считает остановки и урезанных кандидатов верно.
+
+    Две мутации сидели прямо в счётчиках: `multiplier == 0` подменялось на
+    `!= 0`, а счёт отброшенных множителей — на постоянный ноль. Текст читает
+    человек, и «остановок 0» вместо трёх — неверный отчёт о том, что система
+    сделала.
+    """
+    # счётчик отброшенных множителей живёт у совместного выбора: только он
+    # знает, каких кандидатов не рассматривали как выходящие за обучение
+    choices = [
+        optimise.JointRateChoice(well="a", multiplier=0.0, baseline_chdd_m=2.0,
+                                 chosen_chdd_m=3.0, outside_training=(0.5,)),
+        optimise.JointRateChoice(well="b", multiplier=0.0, baseline_chdd_m=2.0,
+                                 chosen_chdd_m=3.0, outside_training=(0.5,)),
+        optimise.JointRateChoice(well="c", multiplier=0.5, baseline_chdd_m=2.0,
+                                 chosen_chdd_m=3.0),
+    ]
+
+    text = optimise.explain(choices)
+
+    assert "остановок 2" in text, text
+    # число управлений считается, а не подставляется: два выбора назвали ×0.5
+    assert "×0.5 — 2 управлений" in text, text
+    assert "2 из 3" in text, text
+
+
+def test_frozen_choices_cannot_be_edited():
+    """Решение поиска и отчёт о записях неизменяемы после получения.
+
+    Две мутации `frozen=True` на `False` переживали сюиту. Изменяемый выбор
+    поиска позволяет поправить множитель между расчётом и записью в расписание —
+    молча и без следа в объяснении.
+    """
+    import dataclasses
+
+    choice = optimise.JointRateChoice(well="a", kind="production", multiplier=1.5,
+                                      baseline_chdd_m=2.0, chosen_chdd_m=3.0)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        choice.multiplier = 0.0
+
+    audit = optimise.RecordAudit(records=1, zeroed=(), off_mode={}, ratios={})
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        audit.records = 99
+
+
+def test_the_record_audit_refuses_mismatched_injector_lists():
+    """Разное число нагнетательных в паре шагов — отказ, а не тихая обрезка.
+
+    `strict=True` стоял в обоих `zip`, но проверен был только первый: мутация
+    для нагнетательных переживала сюиту. Без строгости лишние записи молча
+    выпадают из сверки, и «обнулённых нет» становится утверждением о части
+    файла, выданным за утверждение о файле.
+    """
+    before = [ScheduleStep(START, (), (InjectorControl("i", "WATER", "OPEN", "RATE",
+                                                       40.0, 300.0),
+                                       InjectorControl("j", "WATER", "OPEN", "RATE",
+                                                       40.0, 300.0)))]
+    after = [ScheduleStep(START, (), (InjectorControl("i", "WATER", "OPEN", "RATE",
+                                                      40.0, 300.0),))]
+
+    with pytest.raises(ValueError):
+        optimise.audit_records(before, after)
+
+
+def test_the_record_audit_skips_a_zero_setpoint_without_calling_it_zeroed():
+    """Уставка, которая и до была нулём, обнулением не считается.
+
+    Мутация `rate_before is None or rate_before == 0` на `and` переживала сюиту:
+    записи с нулевой уставкой в фикстурах не было. С подменой она уходит в счёт
+    уставочных записей и делится на ноль при подсчёте отношения — либо
+    объявляется обнулённой, хотя обнулять было нечего.
+    """
+    zero = ProducerControl("p", "OPEN", "LRAT", 0.0, 50.0)
+    before = [ScheduleStep(START, (zero,), ())]
+    after = [ScheduleStep(START, (zero,), ())]
+
+    audit = optimise.audit_records(before, after)
+
+    assert audit.records == 0, "нулевая уставка зачтена в уставочные записи"
+    assert audit.clean
+    assert audit.zeroed == ()
+
+
+def test_period_spans_refuse_mismatched_bounds():
+    """Границы периодов строятся парами: расхождение — отказ.
+
+    Мутация `strict=True` в `zip(starts, bounds)` переживала сюиту. Без
+    строгости лишний период молча исчезает, и поиск идёт по календарю, которого
+    не просили.
+    """
+    from aios.optimise import _period_spans
+
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("p", "OPEN", "LRAT", 30.0, 50.0),), ())
+             for month in range(1, 13)]
+
+    spans = _period_spans(steps, (date(2014, 1, 1), date(2014, 7, 1)))
+
+    assert sorted(spans) == [date(2014, 1, 1), date(2014, 7, 1)]
+    assert len(spans[date(2014, 1, 1)]) == 6
+    assert len(spans[date(2014, 7, 1)]) == 6
+
+
+def test_an_injector_at_the_neutral_multiplier_is_returned_untouched():
+    """Множитель 1,0 и закрытая запись возвращаются как есть — обе, а не одна.
+
+    Мутация `or` на `and` переживала сюиту: с ней запись, у которой выполнено
+    только одно условие, пересобиралась заново. Для расписания это тот же номер
+    и тот же расход, но **новый объект**, а дальше по цепочке пересборка записи
+    отличается от её сохранения: планировщик считает перезапись мероприятием.
+    """
+    from aios.optimise import _scaled_injector
+
+    open_one = InjectorControl("i", "WATER", "OPEN", "RATE", 40.0, 300.0)
+    shut_one = InjectorControl("j", "WATER", "SHUT", "RATE", 40.0, 300.0)
+
+    assert _scaled_injector(open_one, 1.0) is open_one, "нейтральный множитель пересобрал запись"
+    assert _scaled_injector(shut_one, 0.5) is shut_one, "закрытая запись пересобрана"
+    assert _scaled_injector(open_one, 0.5) is not open_one
+    assert _scaled_injector(open_one, 0.5).rate == 20.0
+
+
+def test_the_multipliers_between_two_schedules_ignore_a_shut_injector():
+    """Закрытая нагнетательная в сравнении расписаний множителя не получает.
+
+    Мутация `mine is None or control.status != "OPEN"` на `and` переживала
+    сюиту. С подменой закрытая запись попадает в карту множителей, и «просить по
+    достигнутому» просит у скважины, которая стоит.
+    """
+    reference = [ScheduleStep(START, (),
+                              (InjectorControl("i", "WATER", "OPEN", "RATE", 40.0, 300.0),
+                               InjectorControl("j", "WATER", "SHUT", "RATE", 40.0, 300.0)))]
+    other = [ScheduleStep(START, (),
+                          (InjectorControl("i", "WATER", "OPEN", "RATE", 80.0, 300.0),
+                           InjectorControl("j", "WATER", "OPEN", "RATE", 80.0, 300.0)))]
+
+    found = optimise.multipliers_of(reference, other)
+
+    assert ("injection", "i") in found, found
+    assert ("injection", "j") not in found, (
+        "закрытая нагнетательная получила множитель — просьба уходит стоящей скважине"
+    )
+
+
+def test_the_conversion_asks_for_what_the_well_produced_by_default():
+    """Множитель перевода под закачку по умолчанию — единица, а не ноль.
+
+    Скважина, переведённая ВНС, закачивает примерно столько, сколько поднимала.
+    Мутация умолчания на ноль переживала сюиту: вызовы передают множитель явно.
+    Ноль означал бы перевод, после которого скважина не закачивает ничего — то
+    есть 5,0 млн руб. OPEX за мероприятие без закачки.
+    """
+    import inspect
+
+    assert inspect.signature(optimise.convert_to_injection)         .parameters["multiplier"].default == 1.0
+
+    steps = [ScheduleStep(START, (ProducerControl("p", "OPEN", "LRAT", 30.0, 50.0),), ())]
+
+    converted = optimise.convert_to_injection(steps, {"p"}, since=START)
+
+    assert converted[0].injectors, "перевод не создал записи закачки"
+    assert converted[0].injectors[0].rate == 30.0, (
+        f"переведённая скважина просит {converted[0].injectors[0].rate} вместо "
+        "поднимавшихся 30,0 м³/сут"
+    )
+
+
+def test_the_scaling_report_forgives_the_last_digit_when_counting_caps():
+    """Допуск сравнения — последний знак, и это не украшение.
+
+    Мутация «убрать 1e-9» переживала сюиту: пары «просили ровно столько,
+    сколько получили» в фикстурах не было. Без допуска запись, где просьба и
+    результат совпадают до последнего знака, считается **урезанной** — а из доли
+    урезанных записей делается вывод «ярлык ×1.5 не описывает файл», то есть
+    отказ шлюза допуска на ровном месте.
+    """
+    from aios.optimise import scaling_report
+
+    rate = 30.0
+    multiplier = 1.5
+    # результат отличается от просьбы на последний знак — как после умножения
+    exact = rate * multiplier
+    nudged = exact - 1e-10
+
+    before = [ScheduleStep(START, (ProducerControl("p", "OPEN", "LRAT", rate, 50.0),), ())]
+    after = [ScheduleStep(START, (ProducerControl("p", "OPEN", "LRAT", nudged, 50.0),), ())]
+
+    report = scaling_report(before, after, production=multiplier, injection={})
+
+    assert report.records == 1
+    assert report.capped == 0, (
+        "расхождение в последнем знаке зачтено урезанием: доля буквально "
+        "применённых записей падает без причины"
+    )
+    assert report.literal == 1
+
+    # и наоборот: настоящее урезание обязано считаться, а не молчать. Счётчик
+    # `capped += 1` подменялся на `+= 0`, и проверка только нулевого случая
+    # этого не видела
+    truncated = [ScheduleStep(START, (ProducerControl("p", "OPEN", "LRAT",
+                                                      rate, 50.0),), ())]
+    real = scaling_report(before, truncated, production=multiplier, injection={})
+
+    assert real.capped == 1, (
+        f"урезанная запись не сосчитана: capped={real.capped}. Доля буквально "
+        "применённых записей завышается, и шлюз допуска пропускает ярлык, "
+        "который файл не описывает"
+    )
+    assert real.literal == 0
+    assert real.share == 0.0
+
+
+def test_the_joint_search_covers_the_whole_horizon_by_default():
+    """По умолчанию режим один на весь горизонт: `periods = 1`, а не ноль.
+
+    Мутация умолчания на ноль переживала сюиту — вызовы передают число периодов
+    явно. Разница смысловая: при `periods > 1` горизонт режется на куски, и
+    каждый получает свой множитель, а `0` попадает в ту же ветку, что и `1`
+    (`periods > 1` ложно), но означает бессмыслицу — «ноль периодов». Умолчание
+    обязано называть то, что действительно происходит, иначе докстринг и подпись
+    расходятся, и следующий читатель поверит подписи.
+    """
+    import inspect
+
+    assert inspect.signature(optimise.choose_joint_rates)         .parameters["periods"].default == 1
+
+    # и разбивка при единице действительно одна на весь горизонт
+    from aios.optimise import _period_spans, _period_starts
+
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("p", "OPEN", "LRAT", 30.0, 50.0),), ())
+             for month in range(1, 13)]
+
+    assert _period_spans(steps, [None]) == {None: steps}
+    assert len(_period_starts(steps, 2)) == 2
+
