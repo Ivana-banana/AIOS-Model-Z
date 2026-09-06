@@ -1923,3 +1923,93 @@ def test_the_profile_covers_every_control_well_exactly_once():
     shorter = NeuralSurrogate.create(short, steps, require_quality=False)
 
     assert len(shorter.control_profile(steps)) < len(profile)
+
+
+def test_the_trivial_baseline_does_not_get_the_joint_search():
+    """У тривиального бейзлайна совместный поиск выключен — и это Р-198.
+
+    Мутация умолчания переживала сюиту: проверялся только случай с обученной
+    сетью. Совместный поиск оценивает кандидата целиком, с откликом соседей;
+    у тривиального бейзлайна отклика соседей нет **по построению**, и включить
+    ему этот путь значит вернуть ровно то, что стоило −63…−68 % ЧДД на полном
+    расчёте.
+    """
+    from conftest import make_row
+
+    history = [make_row("2014-01-01", "1", wlpr=30.0, womr=1.0,
+                        liquid=900.0, oil=30.0)]
+
+    selected = for_cycle(neural_path=None, history=history,
+                         reference_steps=[step()], fluids=Fluids())
+
+    assert selected.name == "тривиальный бейзлайн"
+    assert not selected.joint_rate_search, (
+        "тривиальному бейзлайну включён совместный поиск: оценка действия "
+        "пойдёт по прогнозу, в котором отклика соседей нет"
+    )
+
+
+def test_the_chosen_model_is_labelled_by_its_actual_kind(tmp_path):
+    """Подпись модели называет её вид, а не противоположный.
+
+    Мутация сравнения переживала сюиту: линейную модель подпись звала бы MLP и
+    наоборот. Подписью человек судит, чем посчитан прирост, — и на защите
+    отвечает по ней.
+    """
+    path = tmp_path / "surrogate.joblib"
+    joblib.dump(bundle(), path)
+
+    selected = for_cycle(neural_path=path, history=[], reference_steps=[step()],
+                         fluids=Fluids())
+
+    kind = selected.model.bundle.report.kind
+    if kind == "linear":
+        assert "линейный" in selected.name, selected.name
+        assert "MLP" not in selected.name
+    else:
+        assert "MLP" in selected.name, selected.name
+        assert "линейный" not in selected.name
+
+
+def test_an_unmeasured_quality_is_named_only_when_nothing_was_measured(tmp_path):
+    """Подпись «качество не измерено» ставится, когда не измерено **ничего**.
+
+    Мутация `and` на `or` переживала сюиту. С подменой подпись появлялась бы у
+    модели, у которой измерена одна из двух метрик, — то есть у проверенной, и
+    человек читал бы её как непроверенную. Ворота качества при этом не
+    трогаются: `None` означает «не измерено», а не «плохо».
+    """
+    from dataclasses import replace as _replace
+
+    ready = bundle()
+    metrics = dict(ready.report.metrics)
+    half = _replace(metrics["WLPT_Diff"], linear_r2=0.9, neural_r2=None)
+    blind = _replace(metrics["WOMT_Diff"], linear_r2=None, neural_r2=None)
+
+    measured = _replace(ready, report=_replace(
+        ready.report, metrics={**metrics, "WLPT_Diff": half, "WOMT_Diff": half}))
+    unmeasured = _replace(ready, report=_replace(
+        ready.report, metrics={**metrics, "WLPT_Diff": blind, "WOMT_Diff": blind}))
+
+    for artefact, expected in ((measured, False), (unmeasured, True)):
+        path = tmp_path / f"{expected}.joblib"
+        joblib.dump(artefact, path)
+        selected = for_cycle(neural_path=path, history=[],
+                             reference_steps=[step()], fluids=Fluids())
+        assert ("качество не измерено" in selected.name) is expected, (
+            f"подпись «{selected.name}» не отвечает измеренности метрик"
+        )
+
+
+def test_the_chosen_model_cannot_be_swapped_after_loading(tmp_path):
+    """Выбранная модель неизменяема: подменить её между загрузкой и прогнозом нельзя."""
+    import dataclasses
+
+    path = tmp_path / "surrogate.joblib"
+    joblib.dump(bundle(), path)
+    selected = for_cycle(neural_path=path, history=[], reference_steps=[step()],
+                         fluids=Fluids())
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        selected.joint_rate_search = False
+

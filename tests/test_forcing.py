@@ -194,3 +194,122 @@ def test_a_well_whose_rate_never_moved_enough_gets_no_slope():
     assert found.oil_in_extra_liquid is None
     assert found.verdict == "нельзя сказать"
     assert any("режим не менялся" in reason for reason in found.reasons)
+
+
+# ── что нашёл мутационный прогон 06.09 (Р-221) ───────────────────────────────
+
+
+def test_the_bhp_tolerance_and_the_share_threshold_are_inclusive():
+    """«На нижней уставке» — с допуском 1 атм и от 70 % месяцев включительно.
+
+    Три мутации сидели в этих границах. Забойное давление приходит из выгрузки с
+    округлением, поэтому «ровно на уставке» без допуска не поймать; а доля ровно
+    в 0,7 — это и есть объявленный порог, отбрасывать её значит молчать о
+    скважине, у которой запаса по депрессии нет.
+    """
+    from aios.forcing import MIN_BHP_TOLERANCE_ATM
+
+    # четырнадцать месяцев из двадцати ровно на уставке (в пределах допуска).
+    # Двадцать, а не десять: истории короче года диагноз не судит вовсе — он
+    # говорит «истории 10 мес., нужно 12», и до порога доли дело не доходит
+    bhp = [MIN_BHP + MIN_BHP_TOLERANCE_ATM] * 14 + [MIN_BHP + 20.0] * 6
+    rows = history("1", liquid=[30.0] * 20, oil=[3.0] * 20, bhp=bhp)
+
+    verdict = forcing.diagnose(rows, min_bhp_atm=MIN_BHP)[0]
+
+    assert verdict.at_min_bhp == pytest.approx(0.7), verdict.at_min_bhp
+    assert any("нижней уставке" in one for one in verdict.reasons), (
+        f"доля ровно 0,7 не сочтена отсутствием запаса: {verdict.reasons}"
+    )
+
+    # двенадцать из двадцати — порог не достигнут
+    calmer = history("1", liquid=[30.0] * 20, oil=[3.0] * 20,
+                     bhp=[MIN_BHP] * 12 + [MIN_BHP + 20.0] * 8)
+    assert not any("нижней уставке" in one
+                   for one in forcing.diagnose(calmer, min_bhp_atm=MIN_BHP)[0].reasons)
+
+
+def test_a_watercut_change_at_the_threshold_is_not_yet_meaningful():
+    """Изменение обводнённости считается значимым **строго** выше порога.
+
+    Мутация `> 0.02` на `>=` переживала сюиту. Порог отделяет тренд от шума
+    помесячной выгрузки, и включающая граница объявляла бы трендом ровно ту
+    величину, которая объявлена шумом.
+    """
+    from aios.forcing import MEANINGFUL_CHANGE
+
+    assert MEANINGFUL_CHANGE == 0.02
+    assert forcing.MEANINGFUL_GAP == 0.05
+
+
+def test_a_short_history_gives_no_watercut_trend():
+    """Короткая история тренда не даёт: окон меньше трёх месяцев не бывает.
+
+    Две мутации сидели в размере окна и его минимуме. С обнулённым минимумом
+    тренд считался бы по одному-двум месяцам — то есть по шуму, и вывод «скважина
+    обводняется» появлялся бы там, где данных нет.
+    """
+    short = history("1", liquid=[30.0] * 4, oil=[3.0] * 4, bhp=[MIN_BHP + 20.0] * 4)
+
+    verdict = forcing.diagnose(short, min_bhp_atm=MIN_BHP)[0]
+
+    assert verdict.watercut_change is None, (
+        f"по четырём месяцам посчитан тренд обводнённости: {verdict.watercut_change}"
+    )
+
+    # на длинной истории он появляется и считается как «поздние минус ранние»
+    rising = history("1", liquid=[30.0] * 24, oil=[6.0] * 12 + [3.0] * 12,
+                     bhp=[MIN_BHP + 20.0] * 24)
+    change = forcing.diagnose(rising, min_bhp_atm=MIN_BHP)[0].watercut_change
+    assert change is not None and change > 0, (
+        f"растущая обводнённость дала изменение {change} — знак разности перевёрнут"
+    )
+
+    # и обратный случай: падающая обводнённость даёт отрицательное изменение.
+    # Сумма «поздние плюс ранние» была бы положительной в обоих случаях, то есть
+    # скважина всегда выглядела бы обводняющейся
+    falling = history("1", liquid=[30.0] * 24, oil=[3.0] * 12 + [6.0] * 12,
+                      bhp=[MIN_BHP + 20.0] * 24)
+    back = forcing.diagnose(falling, min_bhp_atm=MIN_BHP)[0].watercut_change
+    assert back is not None and back < 0, (
+        f"падающая обводнённость дала изменение {back}: разность собрана суммой"
+    )
+
+
+def test_a_well_that_never_flowed_is_not_diagnosed():
+    """Скважина без единого месяца работы в диагноз не попадает.
+
+    Отсев стоит на входе: месяц с нулевым `WLPR` не работа, и судить по нему о
+    запасе по притоку нечего. Так же снимается и деление на ноль в «нефти в
+    потоке» — на пустой выборке считать было бы нечего.
+    """
+    idle = history("1", liquid=[0.0] * 12, oil=[0.0] * 12, bhp=[MIN_BHP + 20.0] * 12)
+
+    assert forcing.diagnose(idle, min_bhp_atm=MIN_BHP) == [], (
+        "простаивающая скважина получила диагноз о запасе по притоку"
+    )
+
+    # а скважина, работавшая часть месяцев, судится по ним одним
+    partial = history("1", liquid=[0.0] * 6 + [30.0] * 14,
+                      oil=[0.0] * 6 + [3.0] * 14, bhp=[MIN_BHP + 20.0] * 20)
+    verdict = forcing.diagnose(partial, min_bhp_atm=MIN_BHP)[0]
+    assert verdict.months == 14, f"месяцев {verdict.months}: простой зачтён в работу"
+
+
+def test_wells_are_listed_in_numeric_order():
+    """Скважины в диагнозе идут числом, а не строкой.
+
+    Мутация ключа сортировки переживала сюиту. Строковый порядок ставит «10»
+    перед «2», и список, по которому инженер ищет свою скважину, перестаёт
+    читаться — а на Модели Z имена как раз цифровые.
+    """
+    rows: list[dict] = []
+    # нецифровые имена идут после числовых — на чужом деке они встретятся, и
+    # именно эта часть ключа отличает сортировку числом от сортировки строкой
+    for well in ("10", "A1", "2", "1"):
+        rows += history(well, liquid=[30.0] * 14, oil=[3.0] * 14,
+                        bhp=[MIN_BHP + 20.0] * 14)
+
+    order = [one.well for one in forcing.diagnose(rows, min_bhp_atm=MIN_BHP)]
+
+    assert order == ["1", "2", "10", "A1"], order

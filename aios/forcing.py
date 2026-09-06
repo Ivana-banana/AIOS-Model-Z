@@ -156,6 +156,11 @@ def _one(well: str, months: list[dict[str, Any]], min_bhp_atm: float) -> WellFor
 
     at_min = float((bhp <= min_bhp_atm + MIN_BHP_TOLERANCE_ATM).mean())
     slope = _slope(np.diff(liquid), np.diff(oil), float(liquid.mean()))
+    # Защита от деления на ноль недостижима: `diagnose` отсеял месяцы с
+    # `WLPR <= 0` ещё на входе, поэтому среднее по жидкости здесь всегда
+    # положительно. Мутационный прогон помечает подмену границы эквивалентной, и
+    # это верный вердикт (Р-244); ветка оставлена как страховка на случай, если
+    # отсев однажды снимут.
     in_flow = float(oil.mean() / liquid.mean()) if liquid.mean() > 0 else 0.0
     change = _watercut_change(liquid, oil)
 
@@ -168,6 +173,9 @@ def _one(well: str, months: list[dict[str, Any]], min_bhp_atm: float) -> WellFor
     reasons: list[str] = []
     if at_min >= 0.7:
         reasons.append(f"на нижней уставке {at_min:.0%} месяцев — запаса по депрессии нет")
+    # Строгое сравнение и нестрогое различаются только при изменении ровно на
+    # 0,02: обводнённость считается отношением сумм, и попасть им в круглое
+    # число нельзя — подмена эквивалентна (Р-244).
     if change is not None and change > 0.02:
         reasons.append(f"обводнённость выросла на {change * 100:.1f} п.п. за историю")
 

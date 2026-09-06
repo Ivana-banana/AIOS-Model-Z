@@ -168,3 +168,72 @@ def test_stability_requires_at_least_one_bootstrap_draw():
 
     with pytest.raises(ValueError, match="число выборок"):
         stability(rows, SINCE, draws=0, seed=0)
+
+
+# ── что нашёл мутационный прогон 06.09 (Р-221) ───────────────────────────────
+
+
+def test_every_window_includes_the_date_it_names():
+    """Окно истории включает названную дату — во всех четырёх местах модуля.
+
+    Четыре мутации подменяли `>= since` на `>`, каждая в своей функции. Потеря
+    первого месяца сдвигает и обводнённость, и веса скважин внутри группы, и
+    доли групп в отборе — то есть само разбиение фонда, по которому дальше
+    двигаются множители.
+    """
+    # январь чистый по нефти, февраль обводнённый: если первый месяц выпадет,
+    # доля изменится — на этом и держится проверка
+    rows = _rows([
+        {"DATA": "2007-01-01", "well": "1", "WLPR": 30.0,
+         "WLPT_Diff": 900.0, "WOMT_Diff": 900.0},
+        {"DATA": "2007-02-01", "well": "1", "WLPR": 30.0,
+         "WLPT_Diff": 900.0, "WOMT_Diff": 0.0},
+    ])
+
+    from_january = watercut(rows, "2007-01-01")
+    from_february = watercut(rows, "2007-02-01")
+
+    assert from_january["1"] == pytest.approx(0.5), (
+        f"январь выпал из окна: доля {from_january['1']} вместо (1800−900)/1800"
+    )
+    assert from_february["1"] == pytest.approx(1.0)
+
+
+def test_a_month_without_liquid_gets_no_watercut():
+    """Обводнённость месяца с нулевой жидкостью не считается.
+
+    Мутация `liquid > 0` на `>=` переживала сюиту: строки простоя в фикстурах не
+    было. С подменой `0/0` даёт `nan`, и он расходится по разбиению — скважина
+    попадает не в ту группу молча.
+    """
+    rows = _rows([
+        {"DATA": "2007-01-01", "well": "1", "WLPT_Diff": 0.0, "WOMT_Diff": 0.0},
+        {"DATA": "2007-01-01", "well": "2", "WLPT_Diff": 900.0, "WOMT_Diff": 90.0},
+    ])
+
+    shares = watercut(rows, SINCE)
+
+    assert not np.isnan(shares.get("2", np.nan)), "рабочая скважина потеряла долю"
+    assert shares.get("2") == pytest.approx(0.9)
+    idle = shares.get("1")
+    assert idle is None or np.isnan(idle), (
+        f"скважина без жидкости получила обводнённость {idle}"
+    )
+
+
+def test_a_correlation_needs_at_least_three_months():
+    """Связь между скважинами считается не меньше чем по трём месяцам.
+
+    Мутация минимума переживала сюиту. По двум точкам корреляция равна ±1 всегда
+    — то есть разбиение фонда строилось бы на числе, которое ничего не выражает.
+    """
+    from aios.groups import _correlate
+
+    two = np.array([[1.0], [2.0]])
+    assert np.allclose(_correlate(two, two), 0.0), (
+        "по двум месяцам посчитана связь: корреляция двух точек равна ±1 всегда"
+    )
+
+    three = np.array([[1.0], [2.0], [3.0]])
+    assert np.allclose(_correlate(three, three), 1.0)
+
