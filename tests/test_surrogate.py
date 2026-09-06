@@ -477,3 +477,175 @@ def test_folding_counts_reasons_and_keeps_one_example_each():
     ]
     assert groups[0].example.startswith("скв. 1:"), "пример берётся первый встреченный"
     assert fold_warnings([]) == []
+
+
+# ── что нашёл мутационный прогон 06.09 (Р-221) ───────────────────────────────
+
+
+def test_the_surrogate_structures_cannot_be_edited():
+    """Прогноз и его область применимости неизменяемы после сборки.
+
+    Две мутации `frozen=True` на `False` переживали сюиту. Изменяемый прогноз
+    позволяет поправить число между расчётом и ЧДД — молча и без следа в
+    объяснении; изменяемая область применимости позволяет то же с признаком
+    «вне обучающего диапазона», ради которого она и заведена.
+    """
+    import dataclasses
+
+    span = NumericRange(minimum=0.0, maximum=1.0)
+    envelope = TrainingEnvelope(control_multipliers={}, field_production=span,
+                                field_injection=span)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        envelope.field_production = span
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        span.minimum = 5.0
+
+
+def test_injection_is_accumulated_not_subtracted():
+    """Накопленная закачка складывается, а не вычитается.
+
+    Мутация знака переживала сюиту: накопленную никто не сверял с суммой шагов.
+    Со знаком минус закачка уходит в отрицательные значения, а по ней считается
+    и баланс воды, и `WWIT_Diff` в контракте расчётчика.
+    """
+    rows = history(months=6)
+    surrogate = DeclineSurrogate.fit(rows, fluids=FLUIDS)
+
+    steps = [ScheduleStep(date(2015, month, 1), (),
+                          (InjectorControl("9", "WATER", "OPEN", "RATE", 40.0, 300.0),))
+             for month in range(1, 4)]
+    predicted = [row for row in surrogate.predict(steps) if row["well"] == "9"]
+
+    assert len(predicted) == 3, predicted
+    totals = [row["WWIT"] for row in predicted]
+    assert totals == sorted(totals), f"накопленная закачка не растёт: {totals}"
+    assert all(row["WWIT_Diff"] >= 0 for row in predicted), (
+        f"отрицательный прирост закачки: {[row['WWIT_Diff'] for row in predicted]}"
+    )
+
+
+def test_water_is_liquid_minus_oil():
+    """Вода — это жидкость **минус** нефть, а не их произведение.
+
+    Мутация переживала сюиту: массы никто не сверял с объёмами. От этой строки
+    зависит вся правая часть контракта — обводнённость, баланс воды, выручка.
+    """
+    rows = history(months=6, watercut_start=0.5, watercut_step=0.0)
+    surrogate = DeclineSurrogate.fit(rows, fluids=FLUIDS)
+
+    steps = [ScheduleStep(date(2015, month, 1),
+                          (ProducerControl("1", "OPEN", "LRAT", 30.0, 50.0),), ())
+             for month in range(1, 4)]
+    predicted = surrogate.predict(steps)
+
+    for row in predicted:
+        liquid_t, oil_t = row["WLPT_Diff"], row["WOMT_Diff"]
+        assert 0.0 <= oil_t <= liquid_t, (
+            f"нефти {oil_t} при жидкости {liquid_t} — вода вышла отрицательной"
+        )
+
+    # и массы обязаны быть массами: 30 м³/сут при обводнённости 0,5 за месяц из
+    # 31 дня дают около 465 м³ нефти, то есть ~425 т при плотности 913 кг/м³.
+    # Деление вместо умножения дало бы число в миллион раз больше
+    january = predicted[0]
+    assert 300.0 < january["WOMT_Diff"] < 600.0, (
+        f"нефти за месяц {january['WOMT_Diff']:.4g} т — объём переведён в массу "
+        "не умножением на плотность"
+    )
+    assert 700.0 < january["WLPT_Diff"] < 1200.0, january["WLPT_Diff"]
+
+
+def test_a_row_without_liquid_is_not_fitted():
+    """Строка без жидкости в подгонку не идёт, как и нефизичная.
+
+    Две мутации сидели в этом отборе: граница нуля и верхняя граница «нефти не
+    больше жидкости». Обе пропускали бы в обучение строки, по которым спад
+    описать нельзя, — и бейзлайн, планка для нейросети, считался бы по мусору.
+    """
+    from aios.surrogate import _fit_well
+
+    good = [make_row(f"2014-{month:02d}-01", "1", wlpr=30.0, womr=1.0,
+                     liquid=900.0, oil=90.0) for month in range(1, 7)]
+    assert _fit_well("1", good, FLUIDS) is not None
+
+    empty = [make_row(f"2014-{month:02d}-01", "1", wlpr=0.0, womr=0.0,
+                      liquid=0.0, oil=0.0) for month in range(1, 7)]
+    assert _fit_well("1", empty, FLUIDS) is None, (
+        "спад подогнан по строкам без жидкости"
+    )
+
+    unphysical = [make_row(f"2014-{month:02d}-01", "1", wlpr=30.0, womr=1.0,
+                           liquid=900.0, oil=1000.0) for month in range(1, 7)]
+    assert _fit_well("1", unphysical, FLUIDS) is None, (
+        "спад подогнан по строкам, где нефти больше жидкости"
+    )
+
+    # границы включающие с обеих сторон: нефти **ровно** сколько жидкости — это
+    # чистая нефть, законная строка; жидкости ровно ноль — уже нет
+    dry_oil = [make_row(f"2014-{month:02d}-01", "1", wlpr=30.0, womr=1.0,
+                        liquid=900.0, oil=900.0) for month in range(1, 7)]
+    assert _fit_well("1", dry_oil, FLUIDS) is not None, (
+        "чистая нефть (нефти ровно столько же, сколько жидкости) отвергнута"
+    )
+
+
+def test_a_single_value_range_is_printed_as_one_number():
+    """Диапазон из одного значения печатается числом, а не «5…5».
+
+    Мутация сравнения переживала сюиту. Строка идёт человеку в предупреждении
+    «вне обучающего диапазона», и «×1.5…1.5» вместо «×1.5» читается как
+    интервал там, где значение одно.
+    """
+    from aios.surrogate import _seen
+
+    hit = date(2014, 1, 1)
+    assert _seen([(hit, 1.5)]) == "1.5"
+    assert _seen([(hit, 1.5), (hit, 1.5)]) == "1.5"
+    assert _seen([(hit, 0.5), (hit, 1.5)]) == "0.5…1.5"
+
+
+def test_injection_within_the_tolerance_raises_no_warning():
+    """Закачка в пределах допуска историческим диапазоном не предупреждается.
+
+    Мутация границы допуска переживала сюиту: значений ровно на её краю в
+    фикстурах не было. Допуск здесь — 5 % от верхнего исторического значения:
+    бейзлайн отклика на закачку не моделирует, и предупреждать о каждом
+    четвёртом знаке значило бы утопить настоящие выходы за диапазон.
+    """
+    from aios.surrogate import INJECTION_CHANGE_TOLERANCE
+
+    rows = []
+    for month in range(1, 7):
+        rows.append(make_row(f"2014-{month:02d}-01", "1", wlpr=30.0, womr=1.0,
+                             liquid=900.0, oil=90.0))
+        rows.append(make_row(f"2014-{month:02d}-01", "9", wwir=40.0,
+                             injection=1200.0))
+    surrogate = DeclineSurrogate.fit(rows, fluids=FLUIDS)
+
+    slack = max(40.0, 1.0) * INJECTION_CHANGE_TOLERANCE
+    at_edge = [ScheduleStep(date(2015, 1, 1), (),
+                            (InjectorControl("9", "WATER", "OPEN", "RATE",
+                                             40.0 + slack, 300.0),))]
+    beyond = [ScheduleStep(date(2015, 1, 1), (),
+                           (InjectorControl("9", "WATER", "OPEN", "RATE",
+                                            40.0 + slack * 3, 300.0),))]
+
+    assert not [one for one in surrogate.in_training_range(at_edge)
+                if "закачка" in one], (
+        "закачка ровно на краю допуска объявлена выходом за исторический диапазон"
+    )
+    assert [one for one in surrogate.in_training_range(beyond) if "закачка" in one], (
+        "заметный выход за диапазон не назван"
+    )
+
+
+def test_the_decline_surrogate_cannot_be_edited():
+    """Собранный бейзлайн неизменяем: подменить спад после подгонки нельзя."""
+    import dataclasses
+
+    surrogate = DeclineSurrogate.fit(history(months=6), fluids=FLUIDS)
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        surrogate.wells = {}
+
