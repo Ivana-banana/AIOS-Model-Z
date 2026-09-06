@@ -57,6 +57,10 @@ def readme_expectations(text: str) -> dict[str, int]:
         expected["tests"] = int(re.sub(r"\D", "", with_deck.group(1)))
         expected["skipped_with_deck"] = int(re.sub(r"\D", "", with_deck.group(2)))
 
+    stamp = re.search(r"`git clone`, коммит `([0-9a-f]{7,40})`", text)
+    if stamp:
+        expected["commit"] = stamp.group(1)
+
     no_deck = re.search(r"до распаковки дека, пропусков становится ([\d\s ]+)", text)
     if no_deck:
         expected["skipped_without_deck"] = int(re.sub(r"\D", "", no_deck.group(1)))
@@ -79,9 +83,23 @@ def counts(report: Path) -> dict[str, int]:
     }
 
 
-def verdict(measured: dict[str, dict[str, int]], expected: dict[str, int]) -> list[str]:
-    """Расхождения замера с README. Пустой список — всё сошлось."""
-    problems = []
+def verdict(measured: dict[str, dict[str, int]], expected: dict[str, int | str],
+            tests_touched: bool | None = None,
+            strict: bool = False) -> tuple[list[str], list[str]]:
+    """Разбор замера: (отказы, замечания). Пустой первый список — код 0.
+
+    Отказ — то, что проверяющий увидит как поломку или как враньё документа:
+    падение на клоне и разошедшиеся **пропуски**. Замечание — общее число
+    тестов, устаревшее по уважительной причине: README подписывает его коммитом,
+    и если с тех пор кто-то дописал тесты, число обязано отличаться.
+
+    `tests_touched` — менялось ли с того коммита то, что влияет на состав сюиты.
+    `False` (не менялось) и `None` (выяснить не удалось) означают строгую
+    сверку: расхождение тогда ничем не объясняется. `strict=True` — день
+    отправки, дерево заморожено, устаревшему числу взяться неоткуда.
+    """
+    problems: list[str] = []
+    notes: list[str] = []
 
     for stage, result in measured.items():
         if result["failures"]:
@@ -91,9 +109,15 @@ def verdict(measured: dict[str, dict[str, int]], expected: dict[str, int]) -> li
 
     if "with-deck" in measured and "tests" in expected:
         if measured["with-deck"]["tests"] != expected["tests"]:
-            problems.append(
-                f"README обещает {expected['tests']} тестов, на клоне "
-                f"{measured['with-deck']['tests']}")
+            said = (f"README обещает {expected['tests']} тестов, на клоне "
+                    f"{measured['with-deck']['tests']}")
+            if tests_touched and not strict:
+                notes.append(
+                    said + f"; число подписано коммитом "
+                    f"{expected.get('commit', '?')}, с тех пор тесты дописывали "
+                    "— перемерить и подписать заново")
+            else:
+                problems.append(said)
         if measured["with-deck"]["skipped"] != expected.get("skipped_with_deck"):
             problems.append(
                 f"README обещает {expected.get('skipped_with_deck')} пропусков с "
@@ -105,7 +129,7 @@ def verdict(measured: dict[str, dict[str, int]], expected: dict[str, int]) -> li
             f"README обещает {expected['skipped_without_deck']} пропусков без "
             f"дека, на клоне {measured['no-deck']['skipped']}")
 
-    return problems
+    return problems, notes
 
 
 def deck_steps(text: str) -> tuple[str, str, str, str]:
@@ -132,6 +156,27 @@ def unpack_deck(clone: Path, steps: tuple[str, str, str, str]) -> None:
     (clone / unpacked).rename(clone / target)
 
 
+#: Что влияет на состав сюиты. Меняли только документы — число обязано сойтись.
+SUITE_PATHS = ("tests", "aios", "scripts", "vendor", "pyproject.toml")
+
+
+def suite_touched_since(clone: Path, stamp: str) -> bool | None:
+    """Менялось ли с коммита `stamp` то, от чего зависит состав сюиты.
+
+    `None` — выяснить не удалось (подписи нет, коммит не найден): тогда
+    расхождение в числе ничем не объясняется и считается отказом.
+    """
+    if not stamp:
+        return None
+    done = subprocess.run(
+        ["git", "diff", "--quiet", stamp, "HEAD", "--", *SUITE_PATHS],
+        cwd=clone, capture_output=True, text=True, encoding="utf-8",
+        errors="replace")
+    if done.returncode not in (0, 1):
+        return None
+    return done.returncode == 1
+
+
 def run_pytest(clone: Path, report: Path, python: str) -> dict[str, int]:
     """Прогон изнутри клона — как его запустит проверяющий."""
     subprocess.run(
@@ -151,6 +196,9 @@ def main() -> int:
                         help="что мерить: оба состояния, только с деком, только без")
     parser.add_argument("--keep", action="store_true",
                         help="не удалять клон — пригодится, чтобы посмотреть падение")
+    parser.add_argument("--strict", action="store_true",
+                        help="устаревшее число тестов тоже отказ; день отправки, "
+                             "когда дерево заморожено")
     args = parser.parse_args()
 
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -159,6 +207,8 @@ def main() -> int:
     workspace = Path(tempfile.mkdtemp(prefix="aios-clean-clone-"))
     clone = workspace / "clone"
     measured: dict[str, dict[str, int]] = {}
+    expected = readme_expectations(readme)
+    touched: bool | None = None
     try:
         done = subprocess.run(
             ["git", "clone", "--quiet", str(ROOT), str(clone)],
@@ -167,10 +217,11 @@ def main() -> int:
             print(f"клон не сделался: {done.stderr.strip()}")
             return 1
 
-        head = subprocess.run(
+        told = subprocess.run(
             ["git", "log", "--oneline", "-1"], cwd=clone,
             capture_output=True, text=True, encoding="utf-8", errors="replace")
-        print(f"клон: {head.stdout.strip()}")
+        print(f"клон: {told.stdout.strip()}")
+        touched = suite_touched_since(clone, str(expected.get("commit", "")))
 
         if args.stage in ("all", "nodeck"):
             measured["no-deck"] = run_pytest(
@@ -191,14 +242,23 @@ def main() -> int:
         print(f"{stage:<24} {result['tests']:>7} {result['failures']:>8} "
               f"{result['skipped']:>10}")
 
-    problems = verdict(measured, readme_expectations(readme))
+    problems, notes = verdict(measured, expected, tests_touched=touched,
+                              strict=args.strict)
     print()
+    for one in notes:
+        print(f"УСТАРЕЛО: {one}")
+    if notes:
+        print()
     if problems:
         for one in problems:
             print(f"РАСХОЖДЕНИЕ: {one}")
         return 1
 
-    print("клон сходится с README")
+    if notes:
+        print("падений нет и пропуски сходятся; расходится только общее число, "
+              "и оно подписано другим коммитом")
+    else:
+        print("клон сходится с README")
     return 0
 
 

@@ -622,7 +622,7 @@ def test_the_clean_clone_check_calls_a_failure_on_the_clone_a_problem():
     measured = {"no-deck": {"tests": 1592, "failures": 3, "skipped": 29}}
     expected = {"tests": 1592, "skipped_with_deck": 21, "skipped_without_deck": 29}
 
-    problems = check.verdict(measured, expected)
+    problems, _notes = check.verdict(measured, expected)
 
     assert problems, "падение на клоне прошло молча"
     assert "падений на чистом клоне" in problems[0]
@@ -636,7 +636,7 @@ def test_the_clean_clone_check_notices_a_readme_that_promises_other_numbers():
                 "no-deck": {"tests": 1600, "failures": 0, "skipped": 33}}
     expected = {"tests": 1592, "skipped_with_deck": 21, "skipped_without_deck": 32}
 
-    problems = check.verdict(measured, expected)
+    problems, _notes = check.verdict(measured, expected)
 
     assert len(problems) == 3, problems
     assert any("1592" in one and "1600" in one for one in problems)
@@ -652,7 +652,7 @@ def test_the_clean_clone_check_is_silent_when_the_clone_matches():
                 "no-deck": {"tests": 1592, "failures": 0, "skipped": 32}}
     expected = {"tests": 1592, "skipped_with_deck": 21, "skipped_without_deck": 32}
 
-    assert check.verdict(measured, expected) == []
+    assert check.verdict(measured, expected) == ([], [])
 
 
 def test_the_clean_clone_check_counts_errors_as_failures(tmp_path):
@@ -700,3 +700,121 @@ def test_the_clean_clone_check_refuses_a_readme_without_the_deck_step():
 
     with pytest.raises(ValueError, match="раздел 2"):
         check.deck_steps("# README\n\nникаких команд тут нет\n")
+
+
+def test_the_clean_clone_check_stamps_the_total_with_a_commit():
+    """Общее число тестов подписано коммитом — иначе оно врёт почти всегда.
+
+    Над репозиторием работают две машины, тесты дописывают обе, и точное число
+    устаревает за часы: 06.09 оно разошлось дважды за один час, оба раза без
+    чьей-либо ошибки. Незакреплённое число означало бы, что документ почти
+    всегда неверен; закреплённое намертво — что сторож почти всегда кричит
+    впустую. Подпись коммитом разводит эти случаи (Р-236).
+    """
+    check = _clean_clone_check()
+
+    expected = check.readme_expectations(
+        (ROOT / "README.md").read_text(encoding="utf-8"))
+
+    assert "commit" in expected, "число тестов в README не подписано коммитом"
+    assert len(str(expected["commit"])) >= 7
+
+
+def test_an_outdated_total_is_a_note_only_when_the_suite_really_changed():
+    """Тесты дописывали — замечание; не дописывали — отказ.
+
+    Ровно это и отличает «документ отстал по уважительной причине» от «документ
+    неверен»: во втором случае расхождению взяться неоткуда.
+    """
+    check = _clean_clone_check()
+
+    measured = {"with-deck": {"tests": 1700, "failures": 0, "skipped": 21}}
+    expected = {"tests": 1683, "skipped_with_deck": 21, "commit": "a87fc0d"}
+
+    problems, notes = check.verdict(measured, expected, tests_touched=True)
+    assert problems == [] and len(notes) == 1
+    assert "перемерить" in notes[0] and "a87fc0d" in notes[0]
+
+    problems, notes = check.verdict(measured, expected, tests_touched=False)
+    assert notes == [] and len(problems) == 1, (problems, notes)
+
+    # выяснить не удалось — тоже отказ: расхождение ничем не объяснено
+    problems, notes = check.verdict(measured, expected, tests_touched=None)
+    assert notes == [] and len(problems) == 1
+
+
+def test_strict_turns_an_outdated_total_into_a_refusal():
+    """В день отправки дерево заморожено — устаревшему числу взяться неоткуда."""
+    check = _clean_clone_check()
+
+    measured = {"with-deck": {"tests": 1700, "failures": 0, "skipped": 21}}
+    expected = {"tests": 1683, "skipped_with_deck": 21, "commit": "a87fc0d"}
+
+    problems, notes = check.verdict(measured, expected, tests_touched=True,
+                                    strict=True)
+
+    assert notes == [] and len(problems) == 1
+
+
+def test_skips_are_strict_even_when_the_suite_changed():
+    """Пропуски не плавают от дописанных тестов — их сверка строгая всегда.
+
+    Пропуск меняется, только когда меняется, чего машине не хватает. Смягчить
+    его вместе с общим числом значило бы погасить единственную проверку,
+    которая ловит «тест перестал пропускаться и начал падать».
+    """
+    check = _clean_clone_check()
+
+    measured = {"with-deck": {"tests": 1700, "failures": 0, "skipped": 24},
+                "no-deck": {"tests": 1700, "failures": 0, "skipped": 35}}
+    expected = {"tests": 1683, "skipped_with_deck": 21, "commit": "a87fc0d",
+                "skipped_without_deck": 32}
+
+    problems, notes = check.verdict(measured, expected, tests_touched=True)
+
+    assert len(notes) == 1, "общее число обязано остаться замечанием"
+    assert len(problems) == 2, problems
+    assert any("21" in one and "24" in one for one in problems)
+    assert any("32" in one and "35" in one for one in problems)
+
+
+def test_the_suite_touch_check_reads_the_repository_not_a_guess(tmp_path):
+    """Менялся ли состав сюиты — вопрос к git, а не к дате правки файла."""
+    import subprocess
+
+    check = _clean_clone_check()
+
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "docs").mkdir()
+    (repo / "tests" / "test_one.py").write_text("def test_one(): pass\n",
+                                                encoding="utf-8")
+    (repo / "docs" / "note.md").write_text("первая редакция\n", encoding="utf-8")
+
+    def git(*arguments: str) -> str:
+        return subprocess.run(["git", *arguments], cwd=repo, capture_output=True,
+                              text=True, encoding="utf-8", check=True).stdout.strip()
+
+    git("init", "--quiet")
+    git("config", "user.email", "check@example.com")
+    git("config", "user.name", "check")
+    git("add", "-A")
+    git("commit", "--quiet", "-m", "первый")
+    stamp = git("rev-parse", "HEAD")
+
+    # правка документа состава сюиты не меняет
+    (repo / "docs" / "note.md").write_text("вторая редакция\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "--quiet", "-m", "только документ")
+    assert check.suite_touched_since(repo, stamp) is False
+
+    # а новый тест — меняет
+    (repo / "tests" / "test_two.py").write_text("def test_two(): pass\n",
+                                                encoding="utf-8")
+    git("add", "-A")
+    git("commit", "--quiet", "-m", "новый тест")
+    assert check.suite_touched_since(repo, stamp) is True
+
+    # подписи нет или коммит не найден — «выяснить не удалось»
+    assert check.suite_touched_since(repo, "") is None
+    assert check.suite_touched_since(repo, "0" * 40) is None
