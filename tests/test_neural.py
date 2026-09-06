@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import date
+
 import joblib
 import numpy as np
 import pandas as pd
@@ -1570,3 +1573,353 @@ def test_the_diagnostics_still_see_what_the_clamp_hides():
         "кламп спрятал от диагностики именно «нефти больше жидкости» — "
         "она смотрит уже исправленный прогноз"
     )
+
+
+# ── что нашёл мутационный прогон 05.09 (Р-221) ───────────────────────────────
+
+
+def test_the_time_features_encode_the_month_and_the_season():
+    """Признаки времени: номер месяца от начала и синус-косинус сезона.
+
+    Пять мутаций сидели прямо здесь — в арифметике номера месяца, в делении на
+    длину горизонта, в множителе `2π`. Сеть на этих признаках учится, и ошибка в
+    них не падает, а тихо врёт: модель получает не тот момент времени и не тот
+    сезон, а метрики на тех же признаках выглядят прежними.
+
+    Проверяется числом, а не формой: январь 2015 при старте января 2014 — это
+    двенадцатый месяц, и его сезон совпадает с январём 2014 по синусу и косинусу.
+    """
+    from aios.neural import _inference_features
+
+    start = pd.Timestamp("2014-01-01")
+    span = 24
+    multipliers = np.array([1.0, 1.5])
+
+    first = _inference_features(date(2014, 1, 1), multipliers, start, span)[0]
+    year_later = _inference_features(date(2015, 1, 1), multipliers, start, span)[0]
+    mid = _inference_features(date(2014, 7, 1), multipliers, start, span)[0]
+
+    assert first[0] == 0.0, "старт горизонта обязан быть нулём по времени"
+    assert year_later[0] == pytest.approx(12 / span), (
+        f"январь через год получил время {year_later[0]} вместо {12 / span}: "
+        "номер месяца или деление на длину горизонта считаются неверно"
+    )
+    assert mid[0] == pytest.approx(6 / span)
+
+    # сезон цикличен: тот же месяц другого года даёт те же синус и косинус
+    assert year_later[1] == pytest.approx(first[1])
+    assert year_later[2] == pytest.approx(first[2])
+    # синус и косинус проверяются **порознь**: подмена множителя в одном из них
+    # проскакивает мимо проверки «различаются хоть чем-то» (05.09)
+    assert first[1] == pytest.approx(np.sin(2 * np.pi / 12))
+    assert first[2] == pytest.approx(np.cos(2 * np.pi / 12))
+    assert mid[1] == pytest.approx(np.sin(2 * np.pi * 7 / 12))
+    assert mid[2] == pytest.approx(np.cos(2 * np.pi * 7 / 12))
+    assert mid[1] != pytest.approx(first[1]), "январь и июль совпали по синусу сезона"
+    assert mid[2] != pytest.approx(first[2]), "январь и июль совпали по косинусу сезона"
+
+    # множители идут следом за тремя признаками времени
+    assert list(first[3:]) == [1.0, 1.5]
+
+
+def test_watercut_of_a_month_without_liquid_is_zero_not_a_division():
+    """Обводнённость при нулевой жидкости — ноль, а не деление на ноль.
+
+    Мутация `liquid > 0` на `>= 0` переживала сюиту: строки с нулевой жидкостью
+    в фикстурах не было. На выгрузке она появляется сама — остановленная
+    скважина даёт ровно такую, и `1 - 0/0` дало бы `nan`, который тихо разъедет
+    по обучению.
+    """
+    from aios.neural import _model_space
+
+    values = np.array([[0.0, 0.0], [100.0, 30.0]])
+
+    converted = _model_space(values, "watercut")
+
+    assert not np.isnan(converted).any(), f"в целях появился nan: {converted}"
+    assert converted[0, 1] == 0.0, "месяц без жидкости получил ненулевую обводнённость"
+    assert converted[1, 1] == pytest.approx(0.7)
+
+
+def test_a_missing_control_is_filled_with_the_neutral_multiplier():
+    """Пропуск в таблице управлений заполняется единицей, а не нулём.
+
+    Тот же класс, что в `trust` и `optimise`, и третье место, где он нашёлся:
+    1,0 означает режим без изменения, 0 — закрытую скважину. С нулём месяц, о
+    котором в датасете нет строки, учит сеть, что фонд стоял.
+    """
+    from aios.neural import _pivot_controls
+
+    # в феврале строки нет — её и должен заполнить нейтральный множитель
+    frame = pd.DataFrame({
+        "scenario": ["s1", "s1"],
+        "DATA": pd.to_datetime(["2014-01-01", "2014-03-01"]),
+        "well": ["a", "a"],
+    })
+    values = pd.Series([1.5, 0.5], index=frame.index)
+    full = pd.MultiIndex.from_product(
+        [["s1"], pd.date_range("2014-01-01", "2014-03-01", freq="MS")],
+        names=["scenario", "DATA"],
+    )
+
+    pivoted = _pivot_controls(frame, values, "m:", full)
+
+    assert pivoted.loc[("s1", pd.Timestamp("2014-02-01")), "m:a"] == 1.0, (
+        "пропущенный месяц заполнен не нейтральным множителем: "
+        "сеть учится тому, что скважина стояла"
+    )
+    assert pivoted.loc[("s1", pd.Timestamp("2014-01-01")), "m:a"] == 1.5
+
+
+def test_quality_is_required_unless_asked_otherwise():
+    """Ворота качества суррогата включены по умолчанию.
+
+    Мутация умолчания `require_quality = True` на `False` переживала сюиту:
+    вызовы передают флаг явно. Умолчание, равное `False`, означало бы, что
+    непроверенная модель проходит в цикл везде, где о воротах забыли, — и
+    заявляемое число опёрлось бы на сеть, которую никто не допускал.
+    """
+    import inspect
+
+    from aios.neural import NeuralSurrogate
+
+    assert inspect.signature(NeuralSurrogate.create)         .parameters["require_quality"].default is True
+
+
+def test_the_surrogate_bundle_cannot_be_edited_after_loading():
+    """Загруженный суррогат неизменяем: артефакт подписан хэшем."""
+    import dataclasses
+
+    from aios.neural import NeuralSurrogate
+
+    assert dataclasses.is_dataclass(NeuralSurrogate)
+    assert any(one.name for one in dataclasses.fields(NeuralSurrogate))
+    assert NeuralSurrogate.__dataclass_params__.frozen, (
+        "суррогат стал изменяемым: модель можно подменить между загрузкой и прогнозом"
+    )
+
+
+def test_the_control_centre_puts_each_month_in_its_own_row():
+    """Центр обучающего облака раскладывается по номеру месяца от старта.
+
+    Две мутации сидят в этой арифметике: `год × 12 + месяц − месяц старта`.
+    Ошибка здесь не падает — она сдвигает центр, от которого отсчитывается
+    отклик, и прогноз оказывается смещён на столько же. Ровно тот случай, о
+    котором предупреждает принцип «сеть не падает, а тихо врёт».
+
+    Месяцы, которых в обучении нет, остаются нейтральной единицей — это тоже
+    закреплено: иначе пропуск читался бы как «фонд стоял».
+    """
+    from aios.neural import _control_centre
+
+    index = pd.MultiIndex.from_tuples(
+        [("s1", pd.Timestamp("2014-01-01")), ("s1", pd.Timestamp("2014-03-01"))],
+        names=["scenario", "DATA"],
+    )
+    controls = pd.DataFrame({"m:a": [1.5, 0.5]}, index=index)
+
+    centre = _control_centre(controls, frozenset({"s1"}),
+                             pd.Timestamp("2014-01-01"), 3)
+
+    assert centre.shape == (4, 1)
+    assert centre[0, 0] == pytest.approx(1.5), "январь не встал в нулевую строку"
+    assert centre[2, 0] == pytest.approx(0.5), (
+        f"март не встал во вторую строку: центр {centre.ravel()} — номер месяца "
+        "считается неверно, и отклик отсчитывается от смещённой точки"
+    )
+    assert centre[1, 0] == 1.0, "месяц без обучения заполнен не единицей"
+    assert centre[3, 0] == 1.0
+
+
+def test_a_split_needs_at_least_three_scenarios():
+    """Меньше трёх сценариев — отказ: train/test на двух не делится осмысленно.
+
+    Мутация `< 3` на `< 0` переживала сюиту. С ней сплит на двух сценариях
+    проходит молча, и «тест» оказывается либо пустым, либо тем же сценарием,
+    что и обучение, — то есть метрика меряет запоминание.
+    """
+    with pytest.raises(ValueError, match="три сценария"):
+        split_scenarios(["s1", "s2"], seed=1, test_fraction=0.25)
+
+    train_set, test_set = split_scenarios(["s1", "s2", "s3"], seed=1,
+                                          test_fraction=0.25)
+    assert train_set and test_set
+    assert not (train_set & test_set), "сценарий попал и в обучение, и в тест"
+
+
+def test_the_prediction_adds_the_response_to_the_level():
+    """Прогноз — уровень **плюс** отклик, а не минус.
+
+    Мутация знака переживала сюиту: метрики считались на тех же данных, и
+    разница уходила в число, которое никто не сверял с определением. Между тем
+    это и есть устройство суррогата — «уровень скважины плюс отклик на
+    управление», и знак здесь меняет прогноз на противоположный по смыслу.
+    """
+    from aios.neural import _raw_space
+
+    level = np.array([[100.0, 30.0]])
+    response = np.array([[10.0, 3.0]])
+
+    combined = _raw_space(level + response, "raw")
+
+    assert combined[0, 0] == pytest.approx(110.0), (
+        "прогноз собран не как «уровень плюс отклик»"
+    )
+    assert combined[0, 1] == pytest.approx(33.0)
+
+
+def test_the_quality_gate_names_the_kind_and_checks_its_own_metric():
+    """Ворота качества зовут модель своим именем и смотрят свою метрику.
+
+    Две мутации подменяли сравнение с именем вида на обратное. Первая меняет имя
+    в отказе — линейная модель называлась бы MLP и наоборот; вторая страшнее:
+    ворота проверяли бы `R²` **чужой** модели, то есть допускали бы сеть по
+    качеству линейного бейзлайна.
+    """
+    metrics = {
+        "WOMT_Diff": TargetMetric(neural_mae=1.0, linear_mae=2.0,
+                                  neural_r2=-1.0, linear_r2=0.9),
+    }
+    report = TrainingReport(train_scenarios=("s1",), test_scenarios=("s2",),
+                            wells=1, rows=10, metrics=metrics, kind="mlp")
+
+    with pytest.raises(ValueError) as raised:
+        assert_quality(report)
+
+    text = str(raised.value)
+    assert "MLP" in text, f"вид модели назван неверно: {text}"
+    assert "линейный суррогат" not in text
+    assert "WOMT_Diff" in text, (
+        f"ворота смотрят чужую метрику: у MLP R² = -1,0, у линейной 0,9 — "
+        f"отказ обязан прийти по первой. {text}"
+    )
+
+    # линейная модель с теми же числами проходит: её собственный R² выше нуля
+    assert_quality(TrainingReport(train_scenarios=("s1",), test_scenarios=("s2",),
+                                  wells=1, rows=10, metrics=metrics, kind="linear"))
+
+
+def test_training_stores_the_model_kind_it_was_asked_for():
+    """`kind="mlp"` кладёт в артефакт нейросеть, `kind="linear"` — линейную.
+
+    Мутация `kind == "mlp"` на `!=` переживала сюиту: тесты смотрели на метрики
+    и состав скважин, но не на **тип** сохранённой модели. С подменой обучение
+    считает и сравнивает обе, а в артефакт кладёт не ту — заявляемое число
+    опёрлось бы на модель, которую никто не выбирал, и метрики в отчёте
+    относились бы к другой.
+    """
+    from sklearn.linear_model import Ridge
+    from sklearn.neural_network import MLPRegressor
+
+    def inner(model):
+        """Достать регрессор из-под обёрток пайплайна."""
+        while hasattr(model, "regressor_") or hasattr(model, "steps"):
+            model = (model.regressor_ if hasattr(model, "regressor_")
+                     else model.steps[-1][1])
+        return model
+
+    neural = train(dataset(), seed=42, hidden_layers=(8,), max_iter=300, kind="mlp")
+    linear = train(dataset(), seed=42, kind="linear")
+
+    assert neural.report.kind == "mlp"
+    assert linear.report.kind == "linear"
+
+    picked = inner(next(iter(neural.models.values())))
+    assert isinstance(picked, MLPRegressor), (
+        f"под видом MLP сохранено {type(picked).__name__}: артефакт несёт не ту "
+        "модель, а метрики отчёта относятся к другой"
+    )
+    picked = inner(next(iter(linear.models.values())))
+    assert isinstance(picked, Ridge), f"под видом линейной сохранено {type(picked).__name__}"
+
+
+def test_the_warning_about_lost_wells_counts_the_hidden_ones():
+    """Предупреждение о скважинах без модели честно считает скрытых.
+
+    Мутация `len(lost) - 5` на `+ 5` переживала сюиту: список длиннее пяти в
+    фикстурах не встречался, а первая редакция этого теста повторяла формулу
+    вместо вызова — и мутацию, разумеется, не убивала. Здесь строка берётся из
+    самого суррогата.
+
+    Строку читает человек: «и ещё 13» вместо трёх меняет представление о том,
+    насколько прогноз неполон, а прогноз по этим скважинам отсутствует целиком.
+    """
+    frame, _ = _frame_with_a_well_only_in_training()
+    bundle = train(frame, seed=7, hidden_layers=(4,), max_iter=50)
+
+    # восемь скважин без модели и без доноров: перенос невозможен, все «потеряны»
+    lost = tuple(f"нет-{index}" for index in range(8))
+    report = replace(bundle.report, wells_without_model=lost)
+    surrogate = NeuralSurrogate.create(replace(bundle, report=report),
+                                       _schedule_with_three(rate=95.0),
+                                       require_quality=False)
+
+    about = [one for one in surrogate.in_training_range(_schedule_with_three(rate=95.0))
+             if "без модели и без уровня" in one]
+
+    assert about, surrogate.in_training_range(_schedule_with_three(rate=95.0))
+    assert "и ещё 3" in about[0], (
+        f"скрытых скважин посчитано неверно: {about[0]}"
+    )
+    assert "скважин без модели и без уровня: 8" in about[0], about[0]
+
+
+def test_the_metric_is_computed_as_level_plus_response():
+    """Метрика собирается как «уровень **плюс** отклик» — знак проверяем числом.
+
+    Мутация знака в этой сборке переживала сюиту: метрики считались, выглядели
+    конечными, и никто не сверял их с определением суррогата. Замер 05.09
+    показывает цену: по жидкости `neural_mae` растёт с 4,2 до 23,3, по нефти с
+    3,8 до 16,6 — и MLP становится **хуже** линейного бейзлайна, на котором
+    стоят ворота качества.
+
+    Отсюда и форма проверки: не абсолютное число (оно зависит от seed и данных),
+    а отношение к бейзлайну. Именно им меряется Skill, и именно оно ломается при
+    неверном знаке.
+    """
+    bundle = train(dataset(), seed=42, hidden_layers=(8,), max_iter=300)
+
+    liquid = bundle.report.metrics["WLPT_Diff"]
+    assert liquid.neural_mae < liquid.linear_mae, (
+        f"MLP хуже линейного бейзлайна по жидкости: {liquid.neural_mae:.4g} против "
+        f"{liquid.linear_mae:.4g}. Так выглядит прогноз, собранный не как "
+        "«уровень плюс отклик»"
+    )
+    assert liquid.neural_r2 > 0.9, (
+        f"R² по жидкости {liquid.neural_r2:.4g} — модель не объясняет отложенные "
+        "сценарии на данных, где отклик задан явно"
+    )
+
+
+def test_the_profile_covers_every_control_well_exactly_once():
+    """Профиль покрывает каждое управление ровно один раз.
+
+    `strict=True` в сборке профиля мутационный прогон помечает эквивалентным, и
+    это верный вердикт: `_schedule_multipliers` строит вектор циклом **по тому
+    же** списку `control_wells`, поэтому длины совпадают по построению —
+    расхождение недостижимо даже на укороченном списке (проверено 05.09).
+    Строгость оставлена как защита от будущей правки, а здесь закреплён сам
+    инвариант, ради которого она стоит.
+
+    Инвариант не косметический: по профилю шлюз доверия меряет расстояние до
+    обучающих сценариев, и потерянное управление означало бы, что судится не
+    то, что сдаётся.
+    """
+    bundle = train(dataset(), seed=42, hidden_layers=(8,), max_iter=300)
+    steps = _schedule_with_three(rate=95.0)
+
+    surrogate = NeuralSurrogate.create(bundle, steps, require_quality=False)
+    profile = surrogate.control_profile(steps)
+
+    assert profile, "профиль пуст"
+    named = {key.rsplit(":", 1)[0] for key in profile}
+    for well in bundle.control_wells:
+        assert any(key.startswith(well) for key in named) or well in named, (
+            f"управление {well} не попало в профиль: {sorted(named)[:5]}"
+        )
+    # укороченный список даёт укороченный профиль — длина следует за списком,
+    # а не задаётся отдельно; отсюда и недостижимость расхождения
+    short = replace(bundle, control_wells=bundle.control_wells[:-1])
+    shorter = NeuralSurrogate.create(short, steps, require_quality=False)
+
+    assert len(shorter.control_profile(steps)) < len(profile)

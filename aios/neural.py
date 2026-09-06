@@ -440,6 +440,11 @@ class NeuralSurrogate:
             return {}
         multipliers = self._multipliers(steps, timeline)
         keys = list(self.bundle.control_wells)
+        # `strict=True` здесь защитный: `_schedule_multipliers` строит вектор
+        # циклом по тому же `control_wells`, поэтому длины совпадают по
+        # построению и расхождение недостижимо — мутационный прогон помечает
+        # подмену эквивалентной, и это верный вердикт (Р-235). Сам инвариант
+        # закреплён `test_the_profile_covers_every_control_well_exactly_once`.
         return trust.profile({
             month_start: dict(zip(keys, (float(value) for value in vector), strict=True))
             for month_start, vector in multipliers.items()
