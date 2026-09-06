@@ -1304,3 +1304,167 @@ def test_the_comparison_page_shows_the_declared_triple(tmp_path):
     assert f"{declared:.1f}" in page, (
         f"страница сравнения не показывает заявленное число {declared:.1f}"
     )
+
+
+# ── что нашёл мутационный прогон 06.09 (Р-221) ───────────────────────────────
+
+
+def test_the_neural_surrogate_needs_every_condition_at_once(tmp_path):
+    """Суррогат считается готовым, только когда выполнено **всё** сразу.
+
+    Мутация `and` на `or` переживала сюиту: в фикстурах условия совпадали по
+    знаку. С подменой интерфейс предлагал бы прогон на суррогате, у которого нет
+    файла модели, или на том, что не прошёл ворота качества, — то есть на
+    непроверенной сети. Заявляемое число опёрлось бы на неё же.
+    """
+    from aios.web import app as web_app
+
+    # статус читается из файла со сложной схемой метрик; здесь проверяется не
+    # разбор, а само правило готовности, поэтому загрузчик подменяется
+    def status(state: str, passed: bool):
+        return web_app.SurrogateStatus(state=state, quality_passed=passed)
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(web_app, "load_surrogate_status",
+                      lambda _path: status("ready", True))
+        assert not web_app._neural_available(tmp_path), (
+            "суррогат объявлен готовым без файла модели"
+        )
+
+        (artifacts / "surrogate.joblib").write_bytes(b"payload does not matter")
+        assert web_app._neural_available(tmp_path), (
+            "полный набор условий не признан готовностью"
+        )
+
+        patch.setattr(web_app, "load_surrogate_status",
+                      lambda _path: status("ready", False))
+        assert not web_app._neural_available(tmp_path), (
+            "суррогат, не прошедший ворота качества, объявлен готовым"
+        )
+
+        patch.setattr(web_app, "load_surrogate_status",
+                      lambda _path: status("invalid", True))
+        assert not web_app._neural_available(tmp_path), (
+            "повреждённый артефакт объявлен готовым"
+        )
+
+
+def test_the_lookback_window_is_bounded_on_both_ends(client):
+    """Окно диагноза ограничено с двух сторон: от 1 до 60 месяцев.
+
+    Мутация второй границы переживала сюиту: проверялась только нижняя.
+    Шестьдесят один месяц — это пять лет «истории убытков», по которым политика
+    решает об остановке; без верхней границы одно поле формы превращает
+    причинное решение в решение по всему горизонту.
+    """
+    assert client.get("/run/base/cycle?lookback=60").status_code != 400
+    assert client.get("/run/base/cycle?lookback=61").status_code == 400, (
+        "окно в 61 месяц принято — верхняя граница не действует"
+    )
+    assert client.get("/run/base/cycle?lookback=0").status_code == 400
+
+
+def test_every_trust_state_gets_its_own_verdict():
+    """Каждое состояние доверия называется своими словами.
+
+    Две мутации подменяли сравнение состояния на обратное. Молчание и
+    нейтральный статус здесь читаются как «всё в порядке», а это неправда:
+    «не калибрована» обязана нести продолжение «кандидат обязателен к полному
+    расчёту», а повреждённый артефакт — называться повреждённым.
+    """
+    from aios.web.app import TrustStatus
+
+    assert TrustStatus("calibrated").verdict == "калибрована"
+    assert TrustStatus("uncalibrated").verdict == (
+        "не калибрована; кандидат обязателен к полному расчёту")
+    assert TrustStatus("invalid").verdict == "артефакт доверия повреждён"
+    assert TrustStatus("missing").verdict == "не собрана"
+
+    # четыре состояния — четыре разных текста, иначе подмена одного на другое
+    # проходит незаметно
+    verdicts = {TrustStatus(state).verdict
+                for state in ("calibrated", "uncalibrated", "invalid", "missing")}
+    assert len(verdicts) == 4, verdicts
+
+
+def test_a_refusal_page_carries_the_heading_of_its_code(client):
+    """Заголовок страницы отказа соответствует коду.
+
+    Мутация подменяла код `404` в таблице заголовков, и страница «такого здесь
+    нет» получала бы заголовок другого отказа. На демо это выглядит как ошибка
+    сервиса там, где отказ законный.
+    """
+    answer = client.get("/run/нет-такого")
+
+    assert answer.status_code == 404
+    assert "такого здесь нет" in answer.text, answer.text[:400]
+
+    bad = client.get("/compare")
+    assert bad.status_code == 400
+    assert "запрос не понят" in bad.text
+
+
+def test_a_broken_rows_file_names_every_problem_it_found(tmp_path):
+    """Отказ по выгрузке перечисляет все находки, а не первую.
+
+    Мутация в сборке сообщения переживала сюиту: текст ошибки никто не сверял с
+    её содержимым. Он — единственное, что видит оператор, когда выгрузка не
+    подходит под контракт из 14 колонок.
+    """
+    from aios.web.app import read_rows_csv
+
+    broken = tmp_path / "rows.csv"
+    broken.write_text("DATA,well,DATA,WLPR" + chr(10) + "2014-01-01,1,x,30" + chr(10),
+                      encoding="utf-8")
+
+    with pytest.raises(ValueError) as raised:
+        read_rows_csv(broken)
+
+    text = str(raised.value)
+    assert "колонки повторены" in text, text
+    assert ";" in text or "нет колонок" in text, (
+        f"перечислена только одна находка: {text}"
+    )
+
+
+def test_the_run_page_shows_at_most_twenty_five_wells(project):
+    """Страница прогона показывает не больше двадцати пяти скважин.
+
+    Две мутации обнуляли этот срез, и сюита их не замечала: в фикстуре всего две
+    скважины. На Модели Z их 109, и без среза страница распухает — тот же класс,
+    что Р-209, где свёрнутая таблица весила 222 КБ и не читалась.
+
+    Проверяется и то, что срез не выродился в ноль: пустая таблица «показывает»
+    ровно столько же, сколько бесконечная, — то есть ничего.
+    """
+    fluids = summary.Fluids()
+    rows = []
+    for index in range(26):
+        rows += rows_for(f"w{index:02d}", 0.5 + index * 0.01, 0.001)
+    with (project / "runs" / "base" / "rows.csv").open(
+            "w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=economics.REQUIRED_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    assert fluids is not None  # плотности берутся страницей из конфигурации
+
+    page = TestClient(create_app(project)).get("/run/base")
+
+    assert page.status_code == 200
+    named = {f"w{index:02d}" for index in range(26)}
+    shown = {well for well in named if well in page.text}
+
+    assert len(shown) == 25, (
+        f"на странице {len(shown)} скважин из 26: срез либо снят, либо обнулён"
+    )
+
+    # тот же срез стоит и у графика, и это отдельная мутация: имя показанной
+    # скважины обязано встретиться дважды — в таблице и на оси графика
+    first = sorted(shown)[0]
+    assert page.text.count(first) >= 2, (
+        f"скважина {first} есть в таблице, но не на графике: срез графика обнулён"
+    )
+
