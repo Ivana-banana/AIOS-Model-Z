@@ -213,12 +213,13 @@ def test_a_month_without_liquid_gets_no_watercut():
 
     shares = watercut(rows, SINCE)
 
-    assert not np.isnan(shares.get("2", np.nan)), "рабочая скважина потеряла долю"
-    assert shares.get("2") == pytest.approx(0.9)
-    idle = shares.get("1")
-    assert idle is None or np.isnan(idle), (
-        f"скважина без жидкости получила обводнённость {idle}"
+    assert shares.get("2") == pytest.approx(0.9), "рабочая скважина потеряла долю"
+    # скважины без жидкости в ряду нет вовсе — не `nan`, а отсутствие. С
+    # подменой границы она появляется с `0/0`, и `nan` расходится по разбиению
+    assert "1" not in shares, (
+        f"скважина без жидкости попала в ряд обводнённостей: {dict(shares)}"
     )
+    assert not shares.isna().any(), f"в ряду есть nan: {dict(shares)}"
 
 
 def test_a_correlation_needs_at_least_three_months():
@@ -242,22 +243,32 @@ def _month(index: int) -> str:
     return f"20{7 + index // 12:02d}-{index % 12 + 1:02d}-01"
 
 
+#: Обводнённость четырёх добывающих за историю — намеренно близкая. Медиана
+#: проходит между «2» и «3», и потеря **одного** месяца их переставляет: это и
+#: отличает окно `>= since` от `>`. Разброс пошире (0,1 против 0,9) такой
+#: подмены не замечает — порядок скважин от одного месяца там не меняется, и
+#: первая версия фикстуры мутации не убивала (замер 06.09).
+_WATERCUT = {"1": 0.50, "2": 0.52, "3": 0.51, "4": 0.53}
+
+
 def _field(months: int = 36) -> pd.DataFrame:
     """Фонд из восьми скважин: четыре добывающих и четыре нагнетательных.
 
-    Первый месяц намеренно выделен — у добывающих в нём вся жидкость чистая
-    нефть. Так граница окна (`>= since` против `>`) меняет и обводнённость, и
-    разбиение, и доли групп: без этого месяца скважины меняются местами.
+    Месяцев 36, а не 18: история короче `MAX_LAG_MONTHS` обрывает срез по
+    запаздыванию, и матрица связей не считается вовсе.
+
+    Первый месяц выделен у скважины «2» — в нём вся её жидкость чистая нефть.
+    С этим месяцем её доля 0,5056 и она попадает в сухие; без него — 0,52, и
+    сухой становится «3». То есть граница окна меняет **само разбиение фонда**,
+    а не только четвёртый знак доли.
     """
     records = []
     for index in range(months):
-        clean = index == 0
-        for number, watercut_share in enumerate(("0.1", "0.3", "0.7", "0.9"), start=1):
+        for well, share in _WATERCUT.items():
             liquid = 900.0
-            oil = liquid if clean else liquid * (1 - float(watercut_share))
-            records.append({"DATA": _month(index), "well": str(number),
-                            "WLPR": 30.0 + number, "WLPT_Diff": liquid,
-                            "WOMT_Diff": oil})
+            oil = liquid if (index == 0 and well == "2") else liquid * (1 - share)
+            records.append({"DATA": _month(index), "well": well, "WLPR": 30.0,
+                            "WLPT_Diff": liquid, "WOMT_Diff": oil})
         for number in range(5, 9):
             records.append({"DATA": _month(index), "well": str(number),
                             "WWIR": 40.0 + number * (index % 3),
@@ -278,12 +289,13 @@ def test_the_grouping_window_includes_the_date_it_names():
     from_start = watercut(rows, _month(0))
     without_first = watercut(rows, _month(1))
 
-    assert from_start["1"] != pytest.approx(without_first["1"]), (
-        "первый месяц выпал из окна: обводнённость не изменилась"
-    )
-    assert from_start["1"] < without_first["1"], (
-        "чистый по нефти месяц не снизил обводнённость — окно считается не оттуда"
-    )
+    assert from_start["2"] == pytest.approx(0.5056, abs=1e-4), from_start["2"]
+    assert without_first["2"] == pytest.approx(0.52, abs=1e-9), without_first["2"]
+
+    # и это меняет разбиение, а не только четвёртый знак доли
+    dry = {one.wells for one in build_groups(rows, _month(0))
+           if one.name == "добывающие сухие"}
+    assert dry == {("1", "2")}, dry
 
 
 def test_the_groups_split_the_fund_by_the_median():
@@ -304,7 +316,7 @@ def test_the_groups_split_the_fund_by_the_median():
 
     assert set(dry) | set(wet) == {"1", "2", "3", "4"}, (dry, wet)
     assert not set(dry) & set(wet), "скважина попала в обе группы"
-    assert "1" in dry and "4" in wet, (dry, wet)
+    assert set(dry) == {"1", "2"} and set(wet) == {"3", "4"}, (dry, wet)
 
 
 def test_a_thin_group_is_reported_by_share_and_by_count():
@@ -375,3 +387,120 @@ def test_links_are_taken_at_their_strongest_lag():
     )
     assert (matrix.to_numpy() <= 1.0 + 1e-9).all(), "связь больше единицы"
 
+
+def _two_months() -> pd.DataFrame:
+    """Два месяца, где первый решает: у «1» в нём режим и объём вдесятеро выше.
+
+    Длинная история для этих проверок не годится: один месяц из тридцати шести
+    не двигает ни медиану режима, ни долю объёма, и подмена границы окна
+    переживает любой такой тест (замер 06.09). На двух месяцах первый — половина
+    данных, и граница становится различима.
+    """
+    return _rows([
+        {"DATA": _month(0), "well": "1", "WLPR": 100.0,
+          "WLPT_Diff": 10000.0, "WOMT_Diff": 1000.0},
+        {"DATA": _month(0), "well": "2", "WLPR": 10.0,
+          "WLPT_Diff": 300.0, "WOMT_Diff": 30.0},
+        {"DATA": _month(1), "well": "1", "WLPR": 10.0,
+          "WLPT_Diff": 300.0, "WOMT_Diff": 30.0},
+        {"DATA": _month(1), "well": "2", "WLPR": 10.0,
+          "WLPT_Diff": 300.0, "WOMT_Diff": 30.0},
+    ])
+
+
+def test_group_weights_are_taken_from_the_named_month_on():
+    """Веса внутри группы считаются от названной даты включительно.
+
+    Мутация `>= since` на `>` в `_group` переживала прежние тесты: на длинной
+    истории медиана режима от одного месяца не сдвигается. Здесь сдвигается —
+    и вместе с ней доли, которыми групповой множитель распределяется по
+    скважинам.
+    """
+    from aios.groups import _group
+
+    rows = _two_months()
+
+    with_first = _group("тест", "producer", ["1", "2"], rows, _month(0), "WLPR")
+    without_first = _group("тест", "producer", ["1", "2"], rows, _month(1), "WLPR")
+
+    assert with_first.weights["1"] == pytest.approx(0.8462, abs=1e-4), (
+        f"первый месяц выпал из весов: {with_first.weights}"
+    )
+    assert without_first.weights["1"] == pytest.approx(0.5)
+    assert sum(with_first.weights.values()) == pytest.approx(1.0)
+
+
+def test_the_share_of_volume_is_measured_from_the_named_month_on():
+    """Доля объёма группы считается от названной даты включительно.
+
+    Мутация границы окна в `problems` переживала прежние тесты по той же
+    причине. Здесь первый месяц решает: с ним у «мелкой» группы 5,5 % объёма —
+    меньше десятой части, и об этом обязано быть сказано; без него у обеих групп
+    поровну, и говорить не о чем.
+    """
+    rows = _two_months()
+    big = Group(name="крупная", kind="producer", weights={"1": 1.0})
+    small = Group(name="мелкая", kind="producer", weights={"2": 1.0})
+
+    with_first = [one for one in problems([big, small], rows, _month(0))
+                  if "объёма" in one]
+    without_first = [one for one in problems([big, small], rows, _month(1))
+                     if "объёма" in one]
+
+    assert len(with_first) == 1 and "мелкая" in with_first[0], with_first
+    assert "5.5%" in with_first[0], with_first[0]
+    assert without_first == [], (
+        f"при равных объёмах группа объявлена ничтожной: {without_first}"
+    )
+
+
+def test_a_well_exactly_on_the_median_goes_to_the_dry_group():
+    """Скважина ровно на медиане попадает в сухую группу.
+
+    Мутация `<= median` на `<` переживала сюиту: на чётном фонде медиана
+    проходит **между** скважинами, и ровно на ней никто не стоит. На нечётном
+    стоит средняя — и граница становится различима. Смысл включающей границы:
+    медиана делит фонд пополам, и «ровно посередине» это ещё не «обводнённая».
+    """
+    rows = _rows([
+        {"DATA": _month(index), "well": well, "WLPR": 30.0,
+          "WLPT_Diff": 900.0, "WOMT_Diff": 900.0 * (1 - share)}
+        for index in range(3)
+        for well, share in (("1", 0.2), ("2", 0.5), ("3", 0.8))
+    ])
+
+    groups = {one.name: set(one.wells) for one in build_groups(rows, _month(0))}
+
+    assert groups["добывающие сухие"] == {"1", "2"}, (
+        f"скважина ровно на медиане ушла в обводнённые: {groups}"
+    )
+    assert groups["добывающие обводнённые"] == {"3"}
+
+
+def test_a_share_exactly_at_a_tenth_is_not_reported():
+    """Доля ровно в десятую часть объёма нарушением не считается.
+
+    Мутация `share < 0.10` на `<=` переживала сюиту: доли ровно на пороге в
+    фикстурах не было. Порог объявлен как «меньше десятой части», и группа,
+    двигающая ровно десятую, ему отвечает — жаловаться не на что.
+    """
+    rows = _rows([
+        {"DATA": _month(0), "well": "1", "WLPT_Diff": 900.0, "WOMT_Diff": 90.0},
+        {"DATA": _month(0), "well": "2", "WLPT_Diff": 100.0, "WOMT_Diff": 10.0},
+    ])
+    big = Group(name="крупная", kind="producer", weights={"1": 1.0})
+    edge = Group(name="ровно десятая", kind="producer", weights={"2": 1.0})
+
+    about = [one for one in problems([big, edge], rows, _month(0)) if "объёма" in one]
+
+    assert about == [], (
+        f"доля ровно 100/1000 объявлена меньше десятой части: {about}"
+    )
+
+    # а чуть меньшая доля называется
+    smaller = _rows([
+        {"DATA": _month(0), "well": "1", "WLPT_Diff": 900.0, "WOMT_Diff": 90.0},
+        {"DATA": _month(0), "well": "2", "WLPT_Diff": 50.0, "WOMT_Diff": 5.0},
+    ])
+    assert [one for one in problems([big, edge], smaller, _month(0))
+            if "объёма" in one], "доля 5 % не названа"
