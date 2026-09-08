@@ -145,6 +145,22 @@ def profile(multipliers: dict[date, dict[str, float]]) -> dict[str, float]:
     return result
 
 
+def _neutral_get(profile: dict[str, float], key: str) -> float:
+    """Значение признака или его нейтральное умолчание.
+
+    Нейтральный **уровень** — 1,0 (режим как в истории), нейтральный **размах**
+    — 0,0 (режим не менялся ни разу). Умолчание было единым, 1,0, и управление,
+    которого в пакете нет вовсе, получало «размах 1,0» — величину, которой в
+    обучении не бывает: там размах сотых долей. Замер: добавление пакета без
+    закачки меняло масштаб `inj:2|размах` с 0,00229 на 0,39325, центр с 0,21 на
+    0,607, а расстояние того же кандидата падало с 299,62 до 19,20 — шлюз
+    становился в пятнадцать раз мягче от одного отсутствующего ключа (Н-27).
+    """
+    if key in profile:
+        return float(profile[key])
+    return 0.0 if key.endswith("|размах") else 1.0
+
+
 @dataclass(frozen=True)
 class TrustRegion:
     """Доверенная область: где обучающие сценарии стоят достаточно густо."""
@@ -207,7 +223,7 @@ class TrustRegion:
 
         scenarios = tuple(sorted(profiles))
         every = tuple(sorted({key for one in profiles.values() for key in one}))
-        raw = np.array([[profiles[name].get(key, 1.0) for key in every]
+        raw = np.array([[_neutral_get(profiles[name], key) for key in every]
                         for name in scenarios], dtype=float)
 
         spread = raw.std(axis=0)
@@ -284,7 +300,7 @@ class TrustRegion:
                     neighbours=(),
                 )
 
-        vector = np.array([one.get(key, 1.0) for key in self.features], dtype=float)
+        vector = np.array([_neutral_get(one, key) for key in self.features], dtype=float)
         vector = (vector - np.array(self.centre)) / np.array(self.scale)
         gaps = _pairwise(vector[None, :], np.array(self.points))[0]
         order = np.argsort(gaps)

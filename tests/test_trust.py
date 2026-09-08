@@ -1123,3 +1123,52 @@ def test_the_gate_refuses_without_the_deck_instead_of_falling_over(tmp_path):
         f"\n{done.stderr}")
     assert "Дек не читается" in done.stderr and "README.md" in done.stderr, (
         f"отказ не говорит, чего не хватает и где взять:\n{done.stderr}")
+
+
+def test_a_missing_spread_counts_as_no_change_not_as_a_full_multiplier():
+    """Нейтральный размах — ноль, а не единица.
+
+    Умолчание было общим на все признаки: управление, которого в пакете нет
+    вовсе, получало «размах 1,0» — величину, которой в обучении не бывает
+    (там размах сотых долей). Один отсутствующий ключ сдвигал масштаб и центр
+    всей координаты, и шлюз доверия менял строгость в разы: замер ревизии —
+    масштаб `inj:2|размах` с 0,00229 на 0,39325, расстояние того же кандидата
+    с 299,62 до 19,20 (Н-27).
+
+    Тест `test_a_missing_control_counts_as_the_neutral_multiplier` закрепляет
+    умолчание 1,0 и остаётся верным: он про ключи уровня.
+    """
+    from aios.trust import _neutral_get
+
+    assert _neutral_get({}, "inj:2|уровень") == 1.0
+    assert _neutral_get({}, "inj:2|размах") == 0.0
+    assert _neutral_get({"inj:2|размах": 0.5}, "inj:2|размах") == 0.5
+
+
+def test_a_package_without_injection_does_not_soften_the_gate():
+    """Добавление пакета без закачки не обязано смягчать шлюз впятнадцатеро.
+
+    Профиль сценария, где закачкой не управляли, не содержит ключей `inj:`.
+    Пока их размах подставлялся единицей, такой сценарий выглядел «сильно
+    менявшим закачку», раздвигал масштаб координаты — и все кандидаты
+    оказывались к выборке ближе, чем они есть.
+    """
+    from aios.trust import TrustRegion
+
+    steady = {f"s{number}": {"inj:2|уровень": 1.0 + number / 100,
+                             "inj:2|размах": 0.002 + number / 10000}
+              for number in range(1, 9)}
+    region = TrustRegion.fit(steady)
+    spread = region.features.index("inj:2|размах")
+    scale_before = region.scale[spread]
+
+    with_gap = {**steady, "s9": {"inj:2|уровень": 1.05}}
+    scale_after = TrustRegion.fit(with_gap).scale[spread]
+
+    # Ноль вместо 0,002 масштаб слегка двигает — это честно: сценарий и правда
+    # закачкой не управлял. Единица двигала его на три порядка: 0,00023 → 0,313.
+    assert scale_after < scale_before * 10, (
+        f"отсутствующий ключ раздвинул масштаб размаха на порядки: "
+        f"{scale_before:.5f} → {scale_after:.5f}"
+    )
+    assert scale_after < 0.01, "масштаб размаха ушёл из порядка обучающих величин"
