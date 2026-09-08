@@ -264,11 +264,24 @@ def events(steps: tuple[deck_module.ScheduleStep, ...]) -> dict[str, int]:
     counts = {"остановок": 0, "пусков": 0, "переводов под закачку": 0}
     state: dict[str, tuple[str, str]] = {}  # скважина → (роль, статус) на конец шага
     for step in steps:
-        now = {control.well: ("добыча", control.status) for control in step.producers}
+        producers = {control.well: control.status for control in step.producers}
+        now = {well: ("добыча", status) for well, status in producers.items()}
         now.update({control.well: ("закачка", control.status) for control in step.injectors})
+        # Пара строк одного шага — закрыть на добычу, открыть на закачку — и есть
+        # запись перевода. По ней он виден даже на первом шаге файла, где
+        # предыдущего состояния нет вовсе. Заявка сдаётся хвостом за период
+        # управления, и её первый шаг именно таков (скважина 102 на 2007-01-01).
+        converted = {
+            control.well
+            for control in step.injectors
+            if control.well in producers
+            and state.get(control.well, ("добыча", ""))[0] == "добыча"
+        }
         for well, (role, status) in now.items():
             was = state.get(well)
-            if was is None:
+            if well in converted:
+                counts["переводов под закачку"] += 1
+            elif was is None:
                 pass
             elif was[0] != role:
                 if role == "закачка":
