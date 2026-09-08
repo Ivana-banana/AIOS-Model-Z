@@ -347,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
             # записано в docs/experiments.md; передавать сюда параметр,
             # который некому применить, — значит лгать сигнатурой.
             fluids=config.fluids,
+            # предел дебита кейса — тот же, которым цикл проверяет расписание;
+            # без него диагностика прогноза молчала бы про 480 м³/сут на кейсе
+            # с верхним насосом до 320 (Н-25)
+            max_liquid_rate=liquid_limit(
+                economics.load_norms(config.economics.norms_file)[1]),
         )
     except SurrogateLoadError as error:
         print(error, file=sys.stderr)

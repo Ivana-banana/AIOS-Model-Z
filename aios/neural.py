@@ -37,6 +37,7 @@ from sklearn.preprocessing import StandardScaler
 
 from aios import trust
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+from aios.schedule import MAX_LIQUID_RATE_M3_PER_DAY
 from aios.summary import Fluids, sanity_problems
 from aios.surrogate import TrainingEnvelope, expand
 
@@ -273,14 +274,24 @@ class NeuralSurrogate:
     bundle: NeuralBundle
     reference_steps: tuple[ScheduleStep, ...]
     fluids: Fluids = field(default_factory=Fluids)
+    max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY
+    """Предел дебита жидкости кейса — для физических проверок прогноза.
+
+    Умолчание — литерал 500 от Модели Z. Прогноз суррогата был единственным
+    местом, где предел оставался зашитым: `export_rows`, `run_cycle` и
+    `rehearse_case` передают предел кейса, цикл проверяет им расписание, а
+    диагностика прогноза считала по 500 — то есть на кейсе с верхним насосом до
+    320 м³/сут молчала ровно там, где обязана предупредить (Н-25).
+    """
 
     @classmethod
     def create(cls, bundle: NeuralBundle,
                reference_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-               fluids: Fluids | None = None, *, require_quality: bool = True) -> NeuralSurrogate:
+               fluids: Fluids | None = None, *, require_quality: bool = True,
+               max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> NeuralSurrogate:
         if require_quality:
             assert_quality(bundle.report)
-        return cls(bundle, tuple(reference_steps), fluids or Fluids())
+        return cls(bundle, tuple(reference_steps), fluids or Fluids(), max_liquid_rate)
 
     def predict(self,
                 steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
@@ -629,7 +640,8 @@ class NeuralSurrogate:
 
         warnings: list[str] = []
         for well in sorted(by_well, key=_well_key):
-            problems = sanity_problems(by_well[well])
+            problems = sanity_problems(by_well[well],
+                                       max_liquid_rate=self.max_liquid_rate)
             if not problems:
                 continue
             warnings.append(
