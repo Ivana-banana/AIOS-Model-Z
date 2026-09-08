@@ -190,6 +190,66 @@ def test_every_pinned_runtime_package_has_its_licence_text():
             f"нет текста лицензии для {requirement} (ожидался {prefix}*.txt)"
 
 
+def test_every_copyleft_package_of_the_image_is_named_in_the_register():
+    """Копилефт из образа обязан быть в реестре и иметь текст лицензии.
+
+    Прежний сторож проверял `requirements.txt` — прямые пакеты. Образ же с 22.08
+    ставится из `requirements.lock` (`docker/Dockerfile`), и транзитивные в
+    сторож не попадали. Так в поставке оказались три неназванных
+    копилефт-компонента: `cwrap` (GPL-3.0-or-later, обязательная зависимость
+    `resdata`), `resfo` и `resfo-utilities` (LGPL-3.0-or-later), а текста LGPL в
+    `LICENSES/` не было вовсе — при том что раздел «GPL-компоненты» заведён ровно
+    под §6 GPLv3 (найдено ревизией 09.09).
+
+    Лицензия читается из метаданных установленного дистрибутива, а не из
+    таблицы: таблица и есть то, что проверяется.
+    """
+    import importlib.metadata as metadata
+
+    lock = ROOT / "requirements.lock"
+    if not lock.is_file():
+        pytest.skip("нет requirements.lock")
+    names = sorted({
+        match.group(1).lower()
+        for match in re.finditer(r"^([A-Za-z0-9._-]+)==", lock.read_text(encoding="utf-8"), re.M)
+    })
+
+    copyleft: list[tuple[str, str, str]] = []
+    unknown: list[str] = []
+    for name in names:
+        try:
+            meta = metadata.metadata(name)
+        except metadata.PackageNotFoundError:
+            unknown.append(name)
+            continue
+        licence = meta.get("License-Expression") or meta.get("License") or ""
+        if any(mark in licence.upper() for mark in ("GPL", "MPL", "EPL", "CDDL")):
+            copyleft.append((name, licence, metadata.version(name)))
+
+    if unknown:
+        pytest.skip("не установлены пакеты из lock: " + ", ".join(unknown[:5]))
+
+    register = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    texts = [path.name for path in LICENSES.glob("*.txt")]
+    # Имя файла — `<пакет>-<версия>-<лицензия>.txt`, и версия в нём обязательна:
+    # без неё `resfo-utilities-1.1.0-…` засчитывался бы как текст для `resfo`,
+    # то есть пропажа настоящего текста проходила бы молча.
+    #
+    # Текст лицензии требуется для GPL и LGPL — GPLv3 §4 и LGPLv3 велят
+    # приложить копию. MPL реестр называет ссылкой, и этого достаточно.
+    missing = [
+        f"{name} ({licence})" for name, licence, version in copyleft
+        if f"`{name}`" not in register
+        or ("GPL" in licence.upper()
+            and not any(text.startswith(f"{name}-{version}-") for text in texts))
+    ]
+
+    assert not missing, (
+        "копилефт-пакеты образа не названы в THIRD_PARTY_NOTICES.md или без "
+        "текста лицензии в LICENSES/: " + ", ".join(missing)
+    )
+
+
 def test_the_image_carries_the_licence_texts_but_not_our_rights_register():
     """GPLv3 §4: копия лицензии передаётся вместе с программой.
 
