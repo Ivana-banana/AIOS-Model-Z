@@ -727,7 +727,8 @@ def _multiplier_of(spec: float | Mapping[str, float], well: str) -> float:
 
 def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
           multiplier: float,
-          wells: set[str] | None = None) -> list[ScheduleStep]:
+          wells: set[str] | None = None,
+          max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> list[ScheduleStep]:
     """Умножить дебит добывающих скважин на множитель.
 
     Ноль означает остановку, а не открытую скважину с нулевым дебитом: последнее
@@ -742,7 +743,7 @@ def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             if wells is not None and control.well not in wells:
                 producers.append(control)
                 continue
-            producers.append(_scaled(control, multiplier))
+            producers.append(_scaled(control, multiplier, max_liquid_rate))
         result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
     return result
 
@@ -898,13 +899,22 @@ def _injection_pressure(steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) ->
 
 
 def apply_choices(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-                  choices: list[RateChoice] | list[JointRateChoice]) -> list[ScheduleStep]:
-    """Собрать расписание из выбранных по скважинам режимов."""
+                  choices: list[RateChoice] | list[JointRateChoice],
+                  max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY
+                  ) -> list[ScheduleStep]:
+    """Собрать расписание из выбранных по скважинам режимов.
+
+    `max_liquid_rate` — предел дебита **этого кейса**, из таблицы ЭЦН его
+    нормативов (`schedule.liquid_limit`). Умолчание — литерал 500 от Модели Z, и
+    на кейсе с верхним насосом, скажем, до 320 м³/сут оно значит вот что:
+    уставка зажимается до 500, `validate` тут же объявляет её запрещённой, и
+    поиск не соберёт ни одного кандидата с множителем больше единицы (Н-18).
+    """
     selected = {
         (choice.kind, choice.well, getattr(choice, "since", None)): choice.multiplier
         for choice in choices
     }
-    return _scale_individually(steps, selected)
+    return _scale_individually(steps, selected, max_liquid_rate=max_liquid_rate)
 
 
 def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
@@ -1025,6 +1035,7 @@ def multipliers_of(reference: list[ScheduleStep] | tuple[ScheduleStep, ...],
 def _scale_individually(
     steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     multipliers: dict[tuple[str, str, date | None], float],
+    max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY,
 ) -> list[ScheduleStep]:
     """Применить выбранные множители, каждый — со своей даты и до следующей."""
     by_control: dict[tuple[str, str], list[tuple[date | None, float]]] = {}
@@ -1036,7 +1047,9 @@ def _scale_individually(
     result: list[ScheduleStep] = []
     for step in steps:
         producers = tuple(
-            _scaled(control, _multiplier_at(by_control, "production", control.well, step.date))
+            _scaled(control,
+                    _multiplier_at(by_control, "production", control.well, step.date),
+                    max_liquid_rate)
             for control in step.producers
         )
         injectors = tuple(
@@ -1106,7 +1119,8 @@ def _chdd(rows: list[dict[str, Any]], start_date: date,
     ).chdd_m
 
 
-def _scaled(control: ProducerControl, multiplier: float) -> ProducerControl:
+def _scaled(control: ProducerControl, multiplier: float,
+            max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> ProducerControl:
     if multiplier == 1.0 or control.status != "OPEN":
         return control
     if multiplier == 0.0:
@@ -1127,7 +1141,7 @@ def _scaled(control: ProducerControl, multiplier: float) -> ProducerControl:
         control.well,
         control.status,
         control.mode,
-        min(rate, MAX_LIQUID_RATE_M3_PER_DAY),
+        min(rate, max_liquid_rate),
         control.bhp,
     )
 

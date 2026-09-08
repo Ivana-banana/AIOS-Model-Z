@@ -205,6 +205,13 @@ def run_cycle(surrogate: Surrogate,
 
     origin = (base_steps if start_multipliers is None
               else optimise.apply_start(base_steps, start_multipliers))
+    # Предел дебита жидкости — из таблицы ЭЦН ТЕХ нормативов, по которым считается
+    # ЧДД этого прогона, а не литерал 500 от Модели Z. Считается один раз и идёт
+    # в оба места: в сборку кандидатов и в проверку результата. Пока он доходил
+    # только до проверки, на кейсе с верхним насосом до 320 м³/сут уставка
+    # зажималась до 500, проверка объявляла её запрещённой, и поиск не собирал
+    # ни одного кандидата с множителем больше единицы (Н-18).
+    rate_ceiling = liquid_limit(economics.load_norms(norms_file)[1])
     step("прогноз базы")
     base_rows = surrogate.predict(origin)
     base = _npv(base_rows, start_date, norms_file)
@@ -252,7 +259,8 @@ def run_cycle(surrogate: Surrogate,
         # бы от одного сценария, а расписание собиралось из другого (Р-190).
         # Множители осмысленны только в той системе координат, в которой их
         # искали, поэтому применяются к ней же.
-        tuned = optimise.apply_choices(frame, choices) if choices else list(origin)
+        tuned = (optimise.apply_choices(frame, choices, max_liquid_rate=rate_ceiling)
+                 if choices else list(origin))
 
     forecast = surrogate.predict(tuned)
     step("политика остановок")
@@ -331,7 +339,7 @@ def run_cycle(surrogate: Surrogate,
     # ЧДД этого прогона, а не из литерала 500 от Модели Z (Б28)
     problems = validate(
         steps, known_wells,
-        max_liquid_rate=liquid_limit(economics.load_norms(norms_file)[1]),
+        max_liquid_rate=rate_ceiling,
         # предел давления нагнетания — свойство кейса, а не Модели Z: у неё во всей
         # истории 300 атм, и это умолчание, а не физический закон (ревизия 2.3 #5)
         **({} if limits is None or limits.max_injector_bhp_atm is None

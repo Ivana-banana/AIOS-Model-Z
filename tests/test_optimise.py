@@ -1407,3 +1407,28 @@ def test_the_joint_search_covers_the_whole_horizon_by_default():
     assert _period_spans(steps, [None]) == {None: steps}
     assert len(_period_starts(steps, 2)) == 2
 
+
+def test_the_rate_ceiling_comes_from_the_case_pump_table_not_from_the_literal():
+    """Уставку зажимает предел ЭЦН кейса, а не литерал 500 от Модели Z.
+
+    `schedule.liquid_limit` берёт предел из таблицы насосов ТЕХ нормативов, по
+    которым считается ЧДД прогона. До 09.09 он доходил только до проверки
+    результата, а сборка кандидатов зажимала литералом 500: на кейсе с верхним
+    насосом до 320 м³/сут уставка становилась 500, проверка объявляла её
+    запрещённой — и поиск не собирал ни одного кандидата с множителем больше
+    единицы (Н-18).
+    """
+    from aios.deck import ProducerControl, ScheduleStep
+
+    steps = [ScheduleStep(date(2007, 1, 1),
+                          (ProducerControl("1", "OPEN", "LRAT", 300.0, 50.0),), ())]
+
+    assert optimise.scale(steps, 2.0)[0].producers[0].liquid_rate == 500.0
+    assert optimise.scale(
+        steps, 2.0, max_liquid_rate=320.0)[0].producers[0].liquid_rate == 320.0
+
+    choices = [optimise.RateChoice(well="1", multiplier=2.0,
+                                   baseline_margin_m=0.0, chosen_margin_m=1.0)]
+    applied = optimise.apply_choices(steps, choices, max_liquid_rate=320.0)
+
+    assert applied[0].producers[0].liquid_rate == 320.0

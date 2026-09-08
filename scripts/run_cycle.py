@@ -44,6 +44,7 @@ from aios.deckfiles import layout  # noqa: E402
 from aios.margin import Norms  # noqa: E402
 from aios.model import SurrogateLoadError, for_cycle  # noqa: E402
 from aios.run import build_case  # noqa: E402
+from aios.schedule import liquid_limit  # noqa: E402
 
 
 def surrogate_identity(path: str | None, name: str) -> dict[str, str]:
@@ -385,6 +386,11 @@ def main(argv: list[str] | None = None) -> int:
 
         problems = summary.sanity_problems(
             rows,
+            # Предел дебита — из таблицы ЭЦН нормативов ЭТОГО кейса, а не
+            # умолчание 500 от Модели Z: на кейсе с верхним насосом до 320 м³/сут
+            # подтверждение пропускало выгрузку с 480 молча (Н-18).
+            max_liquid_rate=liquid_limit(
+                economics.load_norms(config.economics.norms_file)[1]),
             min_reservoir_pressure=config.limits.min_reservoir_pressure_atm,
             max_reservoir_pressure=config.limits.max_reservoir_pressure_atm,
         )

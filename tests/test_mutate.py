@@ -255,3 +255,40 @@ def test_a_run_started_from_inside_a_run_refuses(tmp_path):
     assert not (tmp_path / "жертва.py.mutation-backup").exists(), (
         "отказ случился после снятия бэкапа — замок стоит слишком поздно"
     )
+
+
+def test_a_red_suite_refuses_instead_of_reporting_every_mutation_killed(tmp_path):
+    """Красный набор — отказ, а не отчёт «убито всё, выжило 0».
+
+    Без базового прогона на неизменённом модуле любая причина, по которой набор
+    красен сам по себе — сломанный импорт, отсутствующая зависимость, один
+    упавший тест, неверный `--tests`, замок против рекурсии, — давала «убито
+    всё, выжило 0» и код 0. Это худший из возможных отчётов: он неотличим от
+    настоящего успеха и читается как доказательство качества тестов. Ровно ту же
+    ложь первый абзац этого файла называет недопустимой, только там источником
+    была сбитая нумерация.
+
+    Нашла соседняя сессия — по замеру, который сделал я сам: прогон с заведомо
+    неверным `--tests` напечатал «убито 7, выжило 0» и вернул 0.
+    """
+    import subprocess
+    import sys as system
+
+    module = tmp_path / "жертва.py"
+    module.write_text("def f(a):" + chr(10) + "    return a < 10" + chr(10), encoding="utf-8")
+    red = tmp_path / "test_красный.py"
+    red.write_text("def test_red():" + chr(10) + "    assert False" + chr(10), encoding="utf-8")
+
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [system.executable, str(root / "scripts" / "mutate.py"),
+         "--module", str(module), "--tests", str(red), "--limit", "1"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=root, timeout=600,
+    )
+
+    assert done.returncode == 1, done.stdout[-400:]
+    assert "красные на неизменённом модуле" in done.stderr, done.stderr[-400:]
+    assert "выжило" not in done.stdout, (
+        "инструмент всё-таки выдал вердикт по красному набору: " + done.stdout[-400:]
+    )
