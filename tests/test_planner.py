@@ -641,6 +641,41 @@ def test_explain_groups_by_resource():
     assert "скв. 1" in text and "скв. 2" in text
 
 
+def test_a_pressure_decision_is_printed_in_atmospheres_not_in_rate():
+    """Решение по давлению не печатается как расход.
+
+    `Allocation.__str__` дописывала «м³/сут» ко всякому решению, потому что
+    режущих расход решений подавляющее большинство. Пределы давления кейс
+    задаёт в атмосферах, и строка выходила «забойное давление … 50 → 80 м³/сут»
+    — величина неверная, а не описка. Читают её глазами: `rehearse_case.py`
+    печатает решения по каждому условию, и в окне ограничений 11.09 это
+    единственный способ увидеть, что предел применён.
+    """
+    from datetime import date
+
+    step = planner.ScheduleStep(
+        date(2007, 1, 1),
+        (planner.ProducerControl("1", "OPEN", "LRAT", 100.0, 50.0),),
+        (planner.InjectorControl("2", "WATER", "OPEN", "RATE", 100.0, 400.0),),
+    )
+    limits = planner.Limits(min_producer_bhp_atm=80.0, max_injector_bhp_atm=300.0)
+
+    _, decisions = planner._fit_pressures([step], limits)
+
+    assert len(decisions) == 2, decisions
+    for decision in decisions:
+        assert decision.unit == "атм", decision
+        assert "м³/сут" not in str(decision), str(decision)
+        assert "атм" in str(decision)
+
+
+def test_a_rate_decision_keeps_the_default_unit():
+    """Умолчание не сдвинулось: решения по расходу по-прежнему в м³/сут."""
+    decision = planner.Allocation("1", "закачка", 100.0, 50.0, "воды не хватает")
+
+    assert decision.unit == "м³/сут"
+    assert "100 → 50 м³/сут" in str(decision)
+
 # ── единицы ранжирования ─────────────────────────────────────────────────────
 
 def test_margin_is_ranked_per_cubic_metre_not_per_tonne(norms):

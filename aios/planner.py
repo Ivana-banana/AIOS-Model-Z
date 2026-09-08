@@ -387,6 +387,12 @@ class Allocation:
     before: float
     after: float
     reason: str
+    #: единица величин `before`/`after`. Почти все решения планировщика режут
+    #: расход, поэтому умолчание — «м³/сут»; но пределы давления из кейса
+    #: приходят в атмосферах, и до 08.09 строка решения печатала их как расход.
+    #: На защите и в окне ограничений 11.09 эту строку читают глазами, и
+    #: «50 → 80 м³/сут» про забойное давление — не описка, а неверная величина.
+    unit: str = "м³/сут"
 
     @property
     def cut(self) -> float:
@@ -394,8 +400,8 @@ class Allocation:
 
     def __str__(self) -> str:
         return (
-            f"скв. {self.well}: {self.resource} {self.before:.4g} → {self.after:.4g} м³/сут — "
-            f"{self.reason}"
+            f"скв. {self.well}: {self.resource} {self.before:.4g} → {self.after:.4g} "
+            f"{self.unit} — {self.reason}"
         )
 
 
@@ -1210,6 +1216,7 @@ def _fit_pressures(steps: list[ScheduleStep],
                 reported.add(control.well)
                 decisions.append(Allocation(
                     well=control.well, resource="забойное давление, предел из конфига",
+                    unit="атм",
                     before=control.bhp, after=floor,
                     reason=(f"забойное {control.bhp:,.10g} ниже предела "
                             f"{floor:,.10g} атм, заданного конфигурацией"),
@@ -1226,6 +1233,7 @@ def _fit_pressures(steps: list[ScheduleStep],
                 reported.add(control.well)
                 decisions.append(Allocation(
                     well=control.well, resource="давление нагнетания, предел из конфига",
+                    unit="атм",
                     before=control.bhp, after=ceiling,
                     reason=(f"давление нагнетания {control.bhp:,.10g} выше предела "
                             f"{ceiling:,.10g} атм, заданного конфигурацией"),
