@@ -282,7 +282,11 @@ HEAVY_ALLOWED = {
     "materials/Техническое_задание_хакатона_«AIOS».docx":
         "ТЗ хакатона — сама постановка задачи",
     "runs/matched-0995/wells_schedule.inc":
-        "сдаваемый файл — заявленный сценарий, на нём считается заявляемый ЧДД",
+        "прогон заявленного сценария целиком (371 шаг, с 1994 года) — из него "
+        "режется сдаваемый хвост и им же воспроизводится расчёт",
+    "runs/matched-0995/submission/wells_schedule.inc":
+        "сдаваемый файл — хвост за период управления AIOS (225 шагов, с 08.09), "
+        "на нём заявлен ЧДД; его называет docs/submission.md и тег submit-*",
     "artifacts/surrogate.joblib":
         "обученный суррогат — часть комплекта поставки; без него допуск падал "
         "9 из 10 на клоне проверяющего (Д4, Р-197)",
@@ -334,6 +338,43 @@ def test_every_heavy_tracked_file_has_a_written_reason():
     assert not unexplained, (
         "отслеживается тяжёлый файл без записанной причины: " + ", ".join(unexplained)
         + " — либо снять через git rm --cached, либо дописать причину в HEAVY_ALLOWED"
+    )
+
+
+def test_the_file_the_submission_declares_is_tracked_by_git():
+    """Файл, который заявка называет своим, обязан лежать в репозитории.
+
+    Правило `.gitignore` с исключением под `runs/` заведено ровно за этим
+    (Р-181): проверяющий клонирует репозиторий и должен получить то, что мы
+    сдаём, а потеря диска не должна означать потерю заявки.
+
+    08.09 форма сдачи сменилась на «хвост» за период управления, и заявляемым
+    стал `runs/matched-0995/submission/wells_schedule.inc` — путь на уровень
+    глубже. Исключение в `.gitignore` осталось прежним, поэтому в git лежал
+    **другой** файл с другим `md5`, а тег `submit-2026-09-08` объявлял файл,
+    которого в теге нет. На чистом клоне `check_package.py` отвечал
+    «пакет неполон: 1 пункт(а)» и возвращал 1 — то есть допуск падал 9 из 10.
+
+    Сторож берёт путь из `docs/submission.md` тем же выражением, что и
+    `check_package.py`, — чтобы проверялся именно заявленный файл, а не
+    записанный здесь когда-то.
+    """
+    import subprocess
+
+    text = (ROOT / "docs" / "submission.md").read_text(encoding="utf-8")
+    declared = re.findall(r"`(runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc)`", text)
+
+    assert declared, "в docs/submission.md не назван сдаваемый файл"
+
+    listed = subprocess.run(["git", "ls-files", "-z", "--", *set(declared)], cwd=ROOT,
+                            capture_output=True, check=True).stdout.decode("utf-8")
+    tracked = {name for name in listed.split("\x00") if name}
+    missing = sorted(set(declared) - tracked)
+
+    assert not missing, (
+        "заявка называет файл, которого нет в git: " + ", ".join(missing)
+        + " — снять исключение в .gitignore и добавить файл, иначе чистый клон "
+          "проверяющего не содержит того, что мы сдаём"
     )
 
 
