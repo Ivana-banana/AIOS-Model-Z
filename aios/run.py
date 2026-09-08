@@ -387,3 +387,31 @@ def _render_data(deck: DeckLayout, schedule_file: Path, summary_file: Path) -> s
         "-- подменены только SUMMARY и SCHEDULE.\n\n"
     )
     return header + _INCLUDE_RE.sub(replace, text)
+
+
+def control_tail(schedule_text: str, cut_date: date) -> str:
+    """Часть SCHEDULE начиная с первого шага с датой `cut_date` или позже.
+
+    Точное дополнение к `history_prefix`: организаторы просят сдавать файл
+    управляющих последовательностей **без исторической части** (письмо от
+    08.09.2026), то есть ровно то, что остаётся от собранного расписания, когда
+    у него отрезана история. Историю в расчёт подставляют они сами, поэтому её
+    копия в нашем файле — не «на всякий случай», а второй экземпляр тех же дат:
+    для симулятора это шаг, не превосходящий текущего времени, то есть отказ.
+
+    Резать текстом, а не пересобирать из разобранных шагов, — по той же причине,
+    по которой так устроена `history_prefix`: между `DATES` лежат вскрытия
+    (`COMPDAT`, `COMPDATMD`, `WELLTRACK`) новых скважин, и они обязаны уехать
+    вместе со своим шагом дословно.
+
+    Пусто, если управляемых шагов в тексте нет вовсе, — это не «нечего резать», а
+    расписание, в котором нам нечего сдавать; вызывающий обязан это заметить.
+    """
+    lines = schedule_text.splitlines()
+    for index, line in enumerate(lines):
+        if not _DATES_LINE_RE.match(line):
+            continue
+        step_date = _first_date_after(lines, index)
+        if step_date is not None and step_date >= cut_date:
+            return "\n".join(lines[index:]).rstrip() + "\n"
+    return ""

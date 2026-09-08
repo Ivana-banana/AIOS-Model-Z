@@ -453,18 +453,19 @@ def _trace_record(**overrides):
 
 
 def test_a_trace_from_another_starting_year_is_refused(tmp_path):
-    """База 1991 и 2007 дают числа, различающиеся в 4,6 раза.
+    """Окна 1991 и 2007 дают числа, различающиеся в 4,6 раза.
 
-    След, посчитанный при прежней базе, совпадёт с заявкой прежней базы и
-    промолчит — а проверяющий считает по своей.
+    След, посчитанный в отозванном окне, совпадёт с заявкой того окна и
+    промолчит — а проверяющий считает в своём. С 08.09 действующее окно — 2007
+    (только период управления, Р-249), поэтому отвергается след от 1991.
     """
     from check_package import _trace_inputs_problem
 
     problem = _trace_inputs_problem(tmp_path / "wells_schedule.inc",
-                                    _trace_record(startYear=2007))
+                                    _trace_record(startYear=1991))
 
     assert problem is not None
-    assert "2007" in problem
+    assert "1991" in problem
 
 
 def test_a_trace_computed_by_other_norms_is_refused(tmp_path):

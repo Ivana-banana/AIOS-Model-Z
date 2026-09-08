@@ -42,7 +42,7 @@ def declared_manifest(text: str) -> Manifest:
         "прирост",
     )
     schedule, md5 = _capture(
-        r"^\| сдаваемый файл \| `(runs/[\w.-]+/wells_schedule\.inc)`[^\n]*"
+        r"^\| сдаваемый файл \| `(runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc)`[^\n]*"
         r"`md5 ([0-9a-fA-F]{32})`",
         text,
         "файл и md5",
@@ -61,7 +61,7 @@ def tagged_manifest(text: str) -> Manifest:
         "база и прирост в теге",
     )
     schedule, md5 = _capture(
-        r"^Файл: (runs/[\w.-]+/wells_schedule\.inc), md5 ([0-9a-fA-F]{32})\.",
+        r"^Файл: (runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc), md5 ([0-9a-fA-F]{32})\.",
         text,
         "файл и md5 в теге",
     )
@@ -91,6 +91,11 @@ def reproduction_problem(manifest: Manifest, submission: str) -> str | None:
     except IndexError:
         return "в снимке тега нет полного раздела 3 инструкции воспроизведения"
     run = manifest.schedule.rsplit("/", maxsplit=1)[0]
+    # С 08.09 сдаётся хвост за период управления, и он лежит в подкаталоге
+    # `<прогон>/submission/` (Р-249). Кейс же собирается в самом каталоге
+    # прогона, и инструкция воспроизведения называет именно его `RUN.DATA`.
+    if run.endswith("/submission"):
+        run = run[: -len("/submission")]
     if f"{run}/RUN.DATA" not in commands:
         return f"инструкция снимка тега не считает заявленный сценарий {run}"
     return None

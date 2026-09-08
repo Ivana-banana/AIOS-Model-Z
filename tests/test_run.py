@@ -699,3 +699,53 @@ def test_the_injection_pressure_limit_reaches_it_too(model_dir, tmp_path):
         run.build_case(tmp_path / "case", model_dir, steps=steps,
                        control_start=date(2007, 1, 1), wells=("1", "2"),
                        limits={"max_injection_bhp": 250.0})
+
+
+def test_control_tail_starts_at_the_control_date_and_keeps_completions():
+    """Хвост — это управляемая часть целиком, вместе со вскрытиями своих шагов."""
+    tail = run.control_tail(SCHEDULE, date(2007, 1, 1))
+
+    assert tail.startswith("DATES\n 01 JAN 2007 /")
+    assert "01 NOV 2006" not in tail
+    assert "45.0" not in tail  # исторический режим остался за организаторами
+    assert "30.0" in tail
+
+
+def test_control_tail_and_history_prefix_split_the_schedule_without_loss():
+    """Ни одна содержательная строка не потеряна и не удвоена на стыке.
+
+    Разрез текстовый, и это единственная гарантия, которая тут нужна: файл
+    организаторов плюс наш хвост обязаны дать ровно исходное расписание. Пустые
+    строки на стыке не считаются — `history_prefix` обрезает хвостовые.
+    """
+    cut = date(2007, 1, 1)
+    parts = run.history_prefix(SCHEDULE, cut) + run.control_tail(SCHEDULE, cut)
+
+    def meaningful(text: str) -> list[str]:
+        return [line for line in text.splitlines() if line.strip()]
+
+    assert meaningful(parts) == meaningful(SCHEDULE)
+
+
+def test_control_tail_is_empty_when_there_is_nothing_to_control():
+    """За концом истории управлять нечем — и это должно быть видно, а не пусто-«ок»."""
+    assert run.control_tail(SCHEDULE, date(2030, 1, 1)) == ""
+
+
+def test_control_tail_of_a_built_case_is_what_the_generator_wrote(model_dir, tmp_path):
+    """Хвост собранного кейса — ровно наши шаги, без единой строки истории."""
+    steps = [
+        ScheduleStep(date(2007, 1, 1),
+                     (ProducerControl("1", "OPEN", "LRAT", 20.0, 50.0),), ()),
+        ScheduleStep(date(2007, 2, 1),
+                     (ProducerControl("1", "OPEN", "LRAT", 25.0, 50.0),), ()),
+    ]
+    case = run.build_case(tmp_path / "run", model_dir, steps=steps,
+                          control_start=date(2007, 1, 1))
+    text = case.schedule_file.read_text(encoding="utf-8")
+
+    tail = run.control_tail(text, date(2007, 1, 1))
+    assert [step.date for step in parse_schedule_text(tail).steps] == [
+        date(2007, 1, 1), date(2007, 2, 1)
+    ]
+    assert "01 NOV 2006" not in tail

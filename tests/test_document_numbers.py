@@ -18,24 +18,27 @@ def test_declared_npv_is_the_same_in_all_current_documents():
     for name in ("docs/submission.md", "docs/report.md", "docs/defence-final.md",
                  "docs/presentation.md", "docs/defence-qa.md",
                  "docs/submission-day.md"):
-        assert "5 579,5" in _read(name), f"{name} потерял заявляемый ЧДД"
+        assert "13 133,8" in _read(name), f"{name} потерял заявляемый ЧДД"
 
 
-def test_the_old_triple_never_stands_unlabelled_next_to_the_claim():
-    """Прежняя тройка при базе 2007 не стоит рядом с заявкой без подписи базы.
+def test_the_withdrawn_triple_never_stands_unlabelled_next_to_the_claim():
+    """Отозванная тройка при базе 1991 не стоит рядом с заявкой без подписи базы.
 
-    Смена базы дисконтирования на 1991 (Р-158) — не равномерный пересчёт, поэтому
-    сравнительные разборы остались при базе 2007, и сами по себе старые числа
-    законны. Опасна **смесь в одном абзаце**: ревизия 03.09 нашла в сценарии
-    защиты фразу «Заявляем 5 579,5 … при базовом 11 851,8, то есть плюс 1 281,9»
-    — докладчик так и прочитает, а жюри услышит противоречие с пакетом.
+    Заявка меняла систему отсчёта дважды, и оба раза по слову организаторов:
+    02.09 трекер ответила, что дисконтируется от 1991 (Р-158), а письмо от
+    08.09 потребовало число **только за период управления**, и окно вернулось
+    на 2007 (Р-249). У эталона окно и база — один параметр, поэтому «за период
+    управления» и «от 2007» — это одно и то же число: 13 133,8.
 
-    Правило: абзац, где заявляемое число стоит вместе с числом прежней тройки,
-    обязан называть базу — иначе читатель не может знать, какое из них к чему.
+    Числа 5 579,5 / 5 300,5 / +279,0 законны как история заявки, но опасна
+    **смесь в одном абзаце**: докладчик прочитает подряд, а жюри услышит
+    противоречие с пакетом. Правило прежнее, поменялись местами стороны: абзац,
+    где заявляемое число стоит вместе с числом отозванной тройки, обязан
+    называть базу или прямо говорить, что та тройка отозвана.
     """
-    old = ("11 851,8", "13 133,8", "1 281,9", "13 152,9")
-    new = ("5 579,5", "5 300,5", "+279,0")
-    excuses = ("2007", "1991", "прежн", "прошл", "не заявля", "отозв")
+    withdrawn = ("5 579,5", "5 300,5", "+279,0", "5 579,509")
+    claimed = ("13 133,8", "11 851,8", "1 281,9")
+    excuses = ("2007", "1991", "прежн", "прошл", "не заявля", "отозв", "08.09")
     offenders: list[str] = []
 
     for name in ("README.md", "docs/submission.md", "docs/report.md",
@@ -43,13 +46,14 @@ def test_the_old_triple_never_stands_unlabelled_next_to_the_claim():
                  "docs/team-brief.md", "docs/tz-compliance.md",
                  "docs/presentation.md", "docs/submission-day.md"):
         for number, block in enumerate(_read(name).split("\n\n"), start=1):
-            if not (any(one in block for one in old) and any(one in block for one in new)):
+            if not (any(one in block for one in withdrawn)
+                    and any(one in block for one in claimed)):
                 continue
             if not any(excuse in block for excuse in excuses):
                 offenders.append(f"{name}, абзац {number}: {block.strip()[:100]}")
 
     assert offenders == [], (
-        "заявляемое число стоит в одном абзаце с прежней тройкой и базы не называет:"
+        "заявляемое число стоит в одном абзаце с отозванной тройкой и базы не называет:"
         "\n  " + "\n  ".join(offenders)
     )
 
@@ -57,10 +61,32 @@ def test_the_old_triple_never_stands_unlabelled_next_to_the_claim():
 def test_submission_pairs_declared_npv_with_same_run_baseline_and_uplift():
     submission = _read("docs/submission.md")
 
-    assert "5 579,5 млн руб." in submission
-    assert "5 300,5 млн руб." in submission
-    assert "+279,0 млн руб. (+5,26 %)" in submission
+    assert "13 133,8 млн руб." in submission
+    assert "11 851,8 млн руб." in submission
+    assert "+1 281,9 млн руб. (+10,82 %)" in submission
     assert "| **по достигнутому — наш сценарий** | **13 133,8** | **+10,8 %** | **20,0 %** |" in submission
+
+
+def test_submission_states_the_period_it_covers():
+    """Заявка обязана называть период: письмо 08.09 требует его, а не весь горизонт.
+
+    Сдать число за весь горизонт при файле за период управления — это ровно то
+    расхождение с пересчётом организаторов, которое стоит дисквалификации.
+    """
+    submission = _read("docs/submission.md")
+
+    assert "01.01.2007 — 01.09.2025" in submission
+    assert "без исторической части" in submission or "исторической части в заявке нет" in submission
+
+
+def test_the_delivered_file_is_the_one_built_for_the_control_period():
+    """Во всех сдаточных документах назван файл из `submission/`, а не с историей."""
+    for name in ("docs/submission.md", "docs/submission-day.md"):
+        text = _read(name)
+        assert "runs/matched-0995/submission/wells_schedule.inc" in text, (
+            f"{name} называет не тот файл: с 08.09 сдаётся хвост за период управления")
+        assert "a7132dad996a86a30766d06f5ba63c7b" in text, (
+            f"{name} потерял md5 сдаваемого файла")
 
 
 def test_audit_uses_the_actual_uplift_percentage():
@@ -297,10 +323,11 @@ def test_cycle_uplift_is_not_mixed_between_different_starting_points():
     # со схлопнутыми пробелами, иначе сторож держит вёрстку, а не число
     flat = " ".join(explained.split())
     assert "+460,8 у лучшего кандидата цикла, то есть 35,9 %" in flat
-    # 03.09: доля 35,9 % снята при базе дисконтирования 2007 и только при ней
-    # верна — заявка с 02.09 живёт при базе 1991 (Р-158). Без этой пометки абзац
-    # читается как сравнение с действующей заявкой, а это разные точки отсчёта.
-    assert "оба числа при прежней базе дисконтирования 2007" in flat
+    # Доля 35,9 % снята в окне 2007 и только в нём верна. С 08.09 в этом же окне
+    # живёт и заявка (Р-249), то есть точка отсчёта у них теперь общая — но
+    # сказать это абзац обязан: 03.09 та же строка читалась как сравнение с
+    # заявкой при базе 1991, а это были разные точки отсчёта.
+    assert "оба числа в том же окне расчёта, в каком заявляется результат" in flat
 
 
 def test_letter_maps_field_injection_and_external_water_to_separate_limits():
@@ -395,7 +422,7 @@ def test_the_scalability_concept_keeps_its_honest_boundary():
 def test_defence_does_not_present_aggressive_uplift_as_the_declared_result():
     defence = _read("docs/defence-final.md")
 
-    assert "плюс 279,0 млн руб., или 5,3 процента" in defence
+    assert "плюс 1 281,9 млн руб., или 10,8 процента" in defence
     assert "Прирост самого доходного сценария | +1 789,5 млн руб. (+15,1 %)" in defence
 
 
@@ -409,9 +436,9 @@ def test_the_jury_answers_carry_the_same_declared_triple():
     """
     answers = _read("docs/defence-qa.md")
 
-    assert "5 579,5" in answers
-    assert "5 300,5" in answers
-    assert "+279,0 млн руб. (+5,26 %)" in answers
+    assert "13 133,8" in answers
+    assert "11 851,8" in answers
+    assert "+1 281,9 млн руб. (+10,8 %)" in answers
     assert "прогон 24.08, каталог `runs/matched-0995`" in answers
     assert "13 264,6 − 13 133,8 = **130,8 млн руб.**" in answers
     assert "**20,0 %**" in answers
@@ -440,9 +467,9 @@ def test_the_presentation_keeps_the_slide_we_agreed_not_to_cut():
     presentation = _read("docs/presentation.md")
 
     assert "## Слайд 7. Что мы не заявляем" in presentation
-    assert "5 579,5" in presentation, "презентация потеряла заявляемый ЧДД"
+    assert "13 133,8" in presentation, "презентация потеряла заявляемый ЧДД"
     assert "`runs/matched-0995`, прогон 24.08" in presentation
-    assert "это 5,3 процента" in presentation
+    assert "это 10,8 процента" in presentation
     assert "27 процентов" in presentation, "нет оговорки про сторонний водоисточник"
     assert "втрое" in presentation, (
         "со слайда пропала главная оговорка про суррогат: он переоценивает отклик "
@@ -458,8 +485,8 @@ def test_the_declared_pair_names_the_run_it_came_from():
     """
     submission = _read("docs/submission.md")
 
-    assert "runs/matched-0995/wells_schedule.inc" in submission
-    assert "5 579,5 млн руб." in submission
+    assert "runs/matched-0995/submission/wells_schedule.inc" in submission
+    assert "13 133,8 млн руб." in submission
 
 
 def test_the_previous_candidate_survives_only_as_history():
@@ -534,20 +561,22 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
         "python -m ruff check .",
         "python scripts/check_release_tag.py",
         "python scripts/check_package.py",
-        "python scripts/check_submission.py runs/matched-0995/wells_schedule.inc",
+        "python scripts/check_submission.py runs/matched-0995/submission/wells_schedule.inc",
     ):
         assert command in sheet
-    assert "submit-2026-09-02" in sheet
-    assert "5 300,5" in sheet
-    assert "+279,0 млн руб. (+5,26 %)" in sheet
-    assert "подменяет секцию SCHEDULE целиком; история включена" in sheet
-    assert "подтверждённой трекером на КТ-2 31.08.2026 (В-03 закрыт)" in sheet
-    assert "В-03 не получен" not in sheet
+    assert "11 851,8" in sheet
+    assert "+1 281,9 млн руб. (+10,8 %)" in sheet
+    assert "только период управления AIOS" in sheet
+    assert "python scripts/build_submission.py --run runs/matched-0995" in sheet
+    # форма сдачи сменилась письмом 08.09: прежняя формулировка про «секцию
+    # SCHEDULE целиком» теперь описывала бы файл, который отправлять нельзя
+    assert "подменяет секцию SCHEDULE целиком; история включена" not in sheet
+    assert "Файл с историей не отправлять" in sheet
     assert "всем 103 скважинам с режимом после 01.01.2007" in sheet
     assert "не получен (В-04)" in sheet
     assert "docs/submission-day.md" in _read("README.md")
     assert "все шесть проверок" in _read("README.md")
-    assert "в **отдельной чистой копии** `submit-2026-09-02`" in sheet
+    assert "в **отдельной чистой копии** `submit-2026-09-08`" in sheet
     assert "вернуть в текущий `main`" in sheet
 
 
@@ -603,8 +632,8 @@ def test_current_submission_parameters_are_not_mixed_with_matched_100():
     # 03.09: сторож требовал «заявляем **+10,8 %**» — то есть держал заявку при
     # базе 2007 через неделю после перевода на 1991 (Р-158). Проверка,
     # закреплявшая устаревшее число, и есть та, из-за которой оно дожило.
-    assert "заявляем **+5,26 %**" in compliance
-    assert "заявляем **+10,8 %**" not in compliance
+    assert "заявляем **+10,8 %**" in compliance
+    assert "заявляем **+5,26 %**" not in compliance
     assert "13 264,6 − 13 133,8 = 130,8 млн руб." in audit
     assert "111,7 млн — переход" in audit and "ещё 19,1 млн" in audit
 
@@ -624,9 +653,9 @@ def test_handoff_opens_with_the_current_submission_before_historical_snapshots()
     opening = "\n".join(_read("HANDOFF.md").splitlines()[:50])
 
     assert "## Текущий срез заявки" in opening
-    assert "5 579,5 млн руб." in opening
-    assert "runs/matched-0995/wells_schedule.inc" in opening
-    assert "41d813345e95f9d484c792ee6312a270" in opening
+    assert "13 133,8 млн руб." in opening
+    assert "runs/matched-0995/submission/wells_schedule.inc" in opening
+    assert "a7132dad996a86a30766d06f5ba63c7b" in opening
     assert "submit-2026-09-02" in opening
 
 
@@ -911,23 +940,28 @@ def test_withdrawn_oil_gap_is_marked_as_withdrawn_wherever_it_appears():
             assert any(word in paragraph for word in excuses), (
                 f"{name}: отозванное число подано как действующее:\n{paragraph[:400]}"
             )
-# --- Две базы дисконтирования не смешиваются в документах защиты -------------
+# --- Две системы отсчёта не смешиваются в документах защиты ------------------
 #
-# 02.09 трекер ответила, что расчёт ведётся с 1991 года, и заявка переехала на
-# 5 579,5 / 5 300,5 / +279,0 (Р-158). Смена базы **неравномерна** (Р-159): при
-# базе 2007 та же пара давала 13 133,8 / 11 851,8 / +1 281,9, то есть +10,8 %
-# вместо +5,26 %. Старая тройка законна там, где сравниваются сценарии между
-# собой, — эти замеры при базе 2007 и снимались, — но абзац обязан назвать базу.
-# Ревизия 03.09 нашла её без пометки в 26 местах, включая речь `defence-final.md`,
-# где в одной фразе стояли «Заявляем 5 579,5» и «при базовом 11 851,8».
+# Заявка меняла систему отсчёта дважды, и оба раза по слову организаторов. 02.09
+# трекер ответила, что расчёт ведётся с 1991 года, и заявка переехала на
+# 5 579,5 / 5 300,5 / +279,0 (Р-158). 08.09 письмо потребовало и файл, и число
+# **только за период управления, без исторической части**, — а у эталонного
+# расчётчика окно расчёта и база дисконтирования это один параметр, поэтому
+# заявка вернулась к 13 133,8 / 11 851,8 / +1 281,9 (Р-249).
+#
+# Числа при базе 1991 законны там, где сравниваются полные горизонты — сверка с
+# раскладками организаторов при базе 1991 и снималась, — но абзац обязан назвать
+# базу. Смена неравномерна (Р-159): доуправленческая история 1994–2006 при базе
+# 2007 умножается вверх, при базе 1991 дисконтируется.
 
-#: Числа заявки при прежней базе. `+11,9 %` — прежний кандидат ×1.6 оттуда же.
-BASE_2007_NUMBERS = ("13 133,8", "11 851,8", "1 281,9", "+10,8 %",
-                     "10,8 процента", "+11,9 %")
+#: Числа заявки при отозванной базе 1991.
+BASE_1991_NUMBERS = ("5 579,5", "5 300,5", "+279,0", "+5,26 %", "5,3 процента")
 
-#: Чем абзац признаёт, что число снято при прежней базе. Список узкий намеренно:
-#: «баз» сюда не годится — «базовый сценарий» содержит его и пропускал бы всё.
-BASE_2007_MARKS = ("2007", "Р-158", "Р-159")
+#: Чем абзац признаёт, что число снято при отозванной базе. Список узкий
+#: намеренно: «баз» сюда не годится — «базовый сценарий» содержит его и
+#: пропускал бы всё. «сверк» здесь законен: сверка с раскладками организаторов
+#: сделана на полном горизонте, потому что таковы сами раскладки.
+BASE_1991_MARKS = ("1991", "Р-158", "Р-159", "Р-249", "отозв", "сверк")
 
 #: Документы, которые читают или произносят на защите. `numbers-audit.md` и
 #: `defence-qa.md` сюда не входят и это осознанно: первый по устройству — реестр
@@ -950,20 +984,20 @@ DUAL_BASE_DOCUMENTS = (
 )
 
 
-def test_numbers_from_the_old_discount_base_always_name_that_base():
-    """Число при базе 2007 живёт только в абзаце, который эту базу называет.
+def test_numbers_from_the_withdrawn_discount_base_always_name_that_base():
+    """Число при базе 1991 живёт только в абзаце, который эту базу называет.
 
-    Проверяется абзац, а не документ: запрещать саму тройку нельзя — сравнения
-    сценариев между собой при базе 2007 и снимались, и переписывать их значило бы
-    выдумывать замеры, которых не было.
+    Проверяется абзац, а не документ: запрещать саму тройку нельзя — сверка с
+    раскладками организаторов при базе 1991 и снималась, и переписывать её
+    значило бы выдумывать замеры, которых не было.
     """
     for name in DUAL_BASE_DOCUMENTS:
         document = _read(name)
-        for paragraph in document.split('\n\n'):
-            if not any(one in paragraph for one in BASE_2007_NUMBERS):
+        for paragraph in document.split("\n\n"):
+            if not any(one in paragraph for one in BASE_1991_NUMBERS):
                 continue
-            assert any(mark in paragraph for mark in BASE_2007_MARKS), (
-                f"{name}: число прежней базы подано как действующее: "
+            assert any(mark in paragraph for mark in BASE_1991_MARKS), (
+                f"{name}: число отозванной базы подано как действующее: "
                 + paragraph[:400]
             )
 
@@ -980,11 +1014,11 @@ def test_the_spoken_defence_claims_the_current_triple():
     section = defence[defence.index("## 7. Что мы заявляем"):]
     section = " ".join(section[:section.index("##", 10)].split())
 
-    assert "Заявляем **5 579,5 млн руб.**" in section
-    assert "при базовом сценарии 5 300,5" in section
-    assert "плюс 279,0 млн руб., плюс 5,3" in section
-    for stale in ("11 851,8", "1 281,9", "10,8"):
-        assert stale not in section, f"речь заявки называет число прежней базы: {stale}"
+    assert "Заявляем **13 133,8 млн руб.**" in section
+    assert "при базовом сценарии 11 851,8" in section
+    assert "плюс 1 281,9 млн руб., плюс 10,8" in section
+    for stale in ("5 579,5", "5 300,5", "279,0", "5,26"):
+        assert stale not in section, f"речь заявки называет число отозванной базы: {stale}"
 
 
 # --- Слайды: показываемый файл обязан говорить то же, что сценарий -----------
@@ -998,7 +1032,7 @@ def test_slides_carry_the_claimed_triple_and_the_reference_check():
     """
     slides = _read("docs/slides.html")
 
-    for number in ("5 579,5", "5 300,5", "+279,0", "+5,26 %"):
+    for number in ("13 133,8", "11 851,8", "+1 281,9", "+10,8 %"):
         assert number in slides, f"слайды не называют {number}"
     for number in ("5 218,9", "5 207,7", "5 157,0", "1,20 %"):
         assert number in slides, f"слайды не называют число сверки {number}"
@@ -1385,28 +1419,29 @@ def test_the_deck_cites_the_tag_that_is_actually_current():
 
 
 def test_jury_documents_do_not_discount_the_claim_from_the_retracted_base():
-    """Документы жюри не говорят, что заявка считается от 2007.
+    """Документы жюри не говорят, что заявка считается от 1991.
 
-    База дисконтирования заявки — **1991** с 02.09 (Р-158, Р-159, ответ трекера);
-    машинный след `runs/matched-0995/npv.json` несёт `startYear: 1991`, и слайд
-    «Заявляемое число» так и говорит. А слайд 9 и сценарий доклада сохранили
-    фразу «заявка считается от 2007» — остаток отозванного Р-123 от 31.08.
+    Окно заявки — **2007** с 08.09: письмо организаторов требует число только за
+    период управления, а у эталона окно расчёта и база дисконтирования это один
+    параметр (Р-249). Машинный след `runs/matched-0995/npv.json` несёт
+    `startYear: 2007`, и документы обязаны говорить то же.
 
-    То есть колода противоречила сама себе на двух слайдах подряд, и вторая
-    половина противоречия — это последний слайд доклада, который читают вслух.
-    Проверяется по следу, а не по памяти: сменится база — сменится и запрет.
+    Проверяется по следу, а не по памяти: сменится окно — сменится и запрет. До
+    08.09 этот же тест стерёг обратное утверждение, и это не ошибка теста, а
+    история заявки: она меняла систему отсчёта дважды, оба раза по слову
+    организаторов.
     """
     import json
 
     trace = json.loads(
         (ROOT / "runs" / "matched-0995" / "npv.json").read_text(encoding="utf-8"))
     year = trace["startYear"]
-    assert year == 1991, f"база заявки изменилась на {year} — обновить документы и этот тест"
+    assert year == 2007, f"окно заявки изменилось на {year} — обновить документы и этот тест"
 
     for name in ("docs/slides.html", "docs/presentation.md", "docs/defence-final.md",
                  "docs/team-brief.md"):
         document = _read(name)
-        for wrong in ("заявка считается от 2007", "заявка считается от 2007 года"):
+        for wrong in ("заявка считается от 1991", "заявка считается от 1991 года"):
             assert wrong not in document, (
                 f"{name}: сохранилось отозванное утверждение «{wrong}», "
                 f"заявка считается от {year}"

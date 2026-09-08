@@ -1,14 +1,14 @@
 {
   "run": "matched-0995",
-  "chddM": 5579.508651053811,
-  "claimedM": 5579.5,
+  "chddM": 13133.757025590206,
+  "claimedM": 13133.8,
   "claimedFrom": "docs/submission.md",
-  "differenceM": 0.00865105381126341,
+  "differenceM": 0.04297440979280509,
   "agreed": true,
-  "startYear": 1991,
+  "startYear": 2007,
   "vendorVersion": "7.0.2-negative-row-filter",
   "normsSha256": "4f96a304db486f158994173be6e86b45d63858b8d851470cab8168c86b366358",
   "rowsMd5": "765a211f037a29bf0cea0675ab2ea683",
   "scheduleMd5": "41d813345e95f9d484c792ee6312a270",
-  "command": "python vendor/CHDD_PYTHON/РАСЧЕТ_ЧДД.py --input runs/matched-0995/rows.csv --norms vendor/CHDD_PYTHON/input/Нормативы_ЧДД.xlsx --start-year 1991 --output runs/matched-0995/npv-vendor.xlsx --json runs/matched-0995/npv-vendor.json"
+  "command": "python vendor/CHDD_PYTHON/РАСЧЕТ_ЧДД.py --input runs/matched-0995/rows.csv --norms vendor/CHDD_PYTHON/input/Нормативы_ЧДД.xlsx --start-year 2007 --output runs/matched-0995/npv-vendor.xlsx --json runs/matched-0995/npv-vendor.json"
 }

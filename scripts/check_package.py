@@ -26,7 +26,10 @@ DECLARED_NPV = re.compile(r"\| \*\*ЧДД\*\* \| \*\*([^*]+ млн руб\.)\*\*
 #: Сдаваемый файл, как он назван в самой заявке. Число и файл обязаны быть из
 #: одного прогона — пара «файл от одного расчёта, число от другого» и есть тот
 #: механизм, которым расхождение с пересчётом организаторов возникает молча.
-DECLARED_SCHEDULE = re.compile(r"`(runs/[\w.-]+/wells_schedule\.inc)`")
+DECLARED_SCHEDULE = re.compile(r"`(runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc)`")
+#: Путь стал двухуровневым 08.09: сдаваемый файл лежит в `<прогон>/submission/`,
+#: потому что рядом с ним живёт файл с историей, а имя у обоих одно и то же —
+#: `wells_schedule.inc`, и другое имя организаторам отправлять нельзя.
 DECLARED_MD5 = re.compile(r"`md5 ([0-9a-fA-F]{32})`")
 DECLARED_MODEL = re.compile(r"`(artifacts/[\w.-]+\.joblib)`")
 DECLARED_MODEL_SHA256 = re.compile(
@@ -341,7 +344,12 @@ def _trace_inputs_problem(schedule: Path, record: dict) -> str | None:
             return (f"след посчитан по другим нормативам: в нём sha256 "
                     f"{written_norms[:12]}, у {norms.name} — {actual[:12]}")
 
+    # Выгрузка лежит в каталоге прогона, а сдаваемый файл — в его подкаталоге
+    # `submission/` (форма «хвост», 08.09). Ищем на обоих уровнях: иначе сверка
+    # выгрузки молча пропускалась бы именно для того файла, который отправляют.
     rows = schedule.parent / "rows.csv"
+    if not rows.is_file():
+        rows = schedule.parent.parent / "rows.csv"
     written_rows = record.get("rowsMd5")
     if written_rows is not None and rows.is_file():
         actual = _md5(rows)
@@ -471,7 +479,13 @@ def _scaling_problem(path: Path) -> tuple[str | None, str]:
     40 % применённых записей недопустимо. Отчёта нет — не отказ (кейс мог быть
     собран до 23.08), но и не молчание: это сказано в строке проверки.
     """
+    # Отчёт масштабирования пишется в каталог прогона, а сдаваемый файл с 08.09
+    # лежит в его подкаталоге `submission/` (форма «хвост»). Ищем на обоих
+    # уровнях — иначе проверка молча съезжала бы на ветку «отчёта нет» именно
+    # для того файла, который отправляют.
     report = path.parent / "scaling.json"
+    if not report.is_file():
+        report = path.parent.parent / "scaling.json"
     if not report.is_file():
         return _audit_without_report(path)
     try:
@@ -582,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--schedule", type=Path,
-                        default=Path("runs/matched-0995/wells_schedule.inc"))
+                        default=Path("runs/matched-0995/submission/wells_schedule.inc"))
     parser.add_argument("--model", type=Path, default=Path("artifacts/surrogate.joblib"))
     arguments = parser.parse_args(argv)
 

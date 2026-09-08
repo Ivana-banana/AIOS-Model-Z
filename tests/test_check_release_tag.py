@@ -14,24 +14,25 @@ from check_release_tag import (  # noqa: E402
     reproduction_problem,
 )
 
-# Заявка переведена на базу дисконтирования 1991 ответом трекера 02.09 (Р-158).
-# Синтетические сообщения тега ниже намеренно оставлены на прежней тройке: они
-# проверяют механику сверки манифеста с сообщением, а не саму заявку. Совпадать с
-# документом обязан только этот MANIFEST.
+# Письмо организаторов 08.09 сменило форму сдачи: и файл, и число — только за
+# период управления AIOS (Р-249). Синтетические сообщения тега ниже намеренно
+# оставлены на прежней тройке: они проверяют механику сверки манифеста с
+# сообщением, а не саму заявку. Совпадать с документом обязан только этот
+# MANIFEST.
 MANIFEST = Manifest(
-    npv="5 579,5",
-    base="5 300,5",
-    uplift="279,0",
-    uplift_percent="5,26",
-    schedule="runs/matched-0995/wells_schedule.inc",
-    md5="41d813345e95f9d484c792ee6312a270",
+    npv="13 133,8",
+    base="11 851,8",
+    uplift="1 281,9",
+    uplift_percent="10,82",
+    schedule="runs/matched-0995/submission/wells_schedule.inc",
+    md5="a7132dad996a86a30766d06f5ba63c7b",
 )
 
 
 def test_matching_tag_message_passes():
-    message = """Заявляемый ЧДД: 5 579,5 млн руб.
-База: 5 300,5. Прирост: +279,0 (+5,26 %).
-Файл: runs/matched-0995/wells_schedule.inc, md5 41d813345e95f9d484c792ee6312a270.
+    message = """Заявляемый ЧДД: 13 133,8 млн руб.
+База: 11 851,8. Прирост: +1 281,9 (+10,82 %).
+Файл: runs/matched-0995/submission/wells_schedule.inc, md5 a7132dad996a86a30766d06f5ba63c7b.
 """
 
     assert manifest_problem(MANIFEST, message) is None
@@ -44,9 +45,9 @@ def test_current_submission_has_the_declared_manifest():
 
 
 def test_changed_schedule_is_rejected_even_when_numbers_match():
-    message = """Заявляемый ЧДД: 5 579,5 млн руб.
-База: 5 300,5. Прирост: +279,0 (+5,26 %).
-Файл: runs/matched-100/wells_schedule.inc, md5 41d813345e95f9d484c792ee6312a270.
+    message = """Заявляемый ЧДД: 13 133,8 млн руб.
+База: 11 851,8. Прирост: +1 281,9 (+10,82 %).
+Файл: runs/matched-100/submission/wells_schedule.inc, md5 a7132dad996a86a30766d06f5ba63c7b.
 """
 
     problem = manifest_problem(MANIFEST, message)
@@ -57,8 +58,8 @@ def test_changed_schedule_is_rejected_even_when_numbers_match():
 
 def test_historical_correct_number_does_not_hide_wrong_tag_header():
     message = """Заявляемый ЧДД: 13 152,9 млн руб.
-База: 11 851,8. Прирост: +1 281,9 (+10,8 %).
-Файл: runs/matched-0995/wells_schedule.inc, md5 41d813345e95f9d484c792ee6312a270.
+База: 11 851,8. Прирост: +1 281,9 (+10,82 %).
+Файл: runs/matched-0995/submission/wells_schedule.inc, md5 a7132dad996a86a30766d06f5ba63c7b.
 
 Историческая справка: прежний документ называл 13 133,8 млн руб.
 """

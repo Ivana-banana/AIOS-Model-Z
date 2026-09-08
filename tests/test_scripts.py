@@ -1626,11 +1626,13 @@ def test_check_deck_reads_the_real_deck(capsys):
 #: писать. Таблица открытая: новый скрипт обязан попасть либо сюда, либо в
 #: DECK_READERS_NOT_SWEPT с причиной — это стережёт отдельная проверка ниже.
 DECK_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
+    "adopt_history.py": ("--history", "{schedule}", "--out", "{out}"),
     "benchmark_scale.py": ("--rows", "{rows}"),
     "build_case.py": ("{out}",),
     "build_doe.py": (),
     "build_matched_case.py": ("{out}", "--rows", "{rows}"),
     "build_scaled_case.py": ("{out}",),
+    "build_submission.py": ("--run", "{run}", "--out", "{out}"),
     "check_submission.py": ("{schedule}",),
     "forecast_speed.py": ("--rows", "{rows}"),
     "pressure_check.py": ("{run}", "--model", "{model}"),
@@ -1715,7 +1717,9 @@ def test_no_entry_point_answers_a_missing_deck_with_a_traceback(name: str, tmp_p
         pytest.skip("нет сдаваемого суррогата")
     if "{schedule}" in DECK_ENTRY_POINTS[name] and not schedule.is_file():
         pytest.skip("нет сдаваемого расписания")
-    if name == "pressure_check.py":
+    if name in ("pressure_check.py", "build_submission.py") and not schedule.is_file():
+        pytest.skip("нет сдаваемого расписания")
+    if name in ("pressure_check.py", "build_submission.py"):
         (run / "wells_schedule.inc").write_bytes(schedule.read_bytes())
 
     done = subprocess.run(
