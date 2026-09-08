@@ -41,6 +41,7 @@ import argparse
 import ast
 import random
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -273,12 +274,35 @@ def main(argv: list[str] | None = None) -> int:
         random.Random(arguments.seed).shuffle(order)
         chosen = order if arguments.limit == 0 else order[:arguments.limit]
 
-    print(f"модуль:  {module.relative_to(ROOT)}")
+    # Модуль бывает и вне репозитория (так его гоняют тесты самого инструмента),
+    # и `relative_to` на таком пути бросает ValueError — трассировкой, сразу
+    # после того, как бэкап уже снят.
+    inside = module.is_relative_to(ROOT)
+    print(f"модуль:  {module.relative_to(ROOT) if inside else module}")
     print(f"тесты:   {' '.join(tests)}")
     print(f"мутаций: {len(chosen)} из {len(every)} возможных, seed {arguments.seed}")
     print()
 
     shutil.copy2(module, backup)
+
+    # `finally` спасает от исключения и от Ctrl-C, но не от `SIGTERM`: так
+    # прогон убивает таймаут вызывающей команды или диспетчер задач, и модуль
+    # остаётся мутированным. Ровно это случилось 09.09 — `aios/run.py` пролежал
+    # переписанным `ast.unparse`, и заметил снова `ruff`, а не человек.
+    # Обработчик восстанавливает файл и выходит тем же кодом, что и без него.
+    def _restore_and_exit(number: int, _frame: object) -> None:
+        shutil.copy2(backup, module)
+        backup.unlink(missing_ok=True)
+        print(f"\nпрогон прерван сигналом {number}: {module.name} восстановлен",
+              file=sys.stderr)
+        raise SystemExit(128 + number)
+
+    previous = {
+        number: signal.signal(number, _restore_and_exit)
+        for number in (signal.SIGTERM, signal.SIGHUP)
+        if hasattr(signal, number.name)
+    }
+
     survived: list[Mutation] = []
     broken = killed = 0
     started = time.monotonic()
@@ -299,8 +323,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{position:3d}/{len(chosen)}] {mark:7s} {mutation} "
                   f"({time.monotonic() - started:.0f} с)", flush=True)
     finally:
-        shutil.copy2(backup, module)
-        backup.unlink()
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+        # Обработчик сигнала мог восстановить и убрать бэкап раньше нас.
+        if backup.is_file():
+            shutil.copy2(backup, module)
+            backup.unlink()
 
     print()
     print(f"убито {killed}, выжило {len(survived)}, не собралось {broken}")

@@ -16,6 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from mutate import apply_one, plan  # noqa: E402
 
+#: Тесты для подопытных прогонов ниже — **чужие**, а не свои.
+#: `--tests tests/test_mutate.py` означал бы, что инструмент запускает тот самый
+#: файл, который его и запустил: каждая мутация порождала вложенный `pytest`,
+#: тот — новый `mutate.py`, и так вглубь. Пока `mutate.py` падал на пути к
+#: замеру, этого не было видно; как только путь починили, рекурсия оставила
+#: подопытный модуль мутированным. Нужен дешёвый файл, не зовущий инструмент.
+NEUTRAL_TESTS = "tests/test_config.py"
+
 SOURCE = "\n".join([
     "def f(a, b):",
     "    if a < 10 and b:",
@@ -150,7 +158,7 @@ def test_an_interrupted_run_restores_the_module_on_the_next_start(tmp_path):
     root = Path(__file__).resolve().parent.parent
     done = subprocess.run(
         [system.executable, str(root / "scripts" / "mutate.py"),
-         "--module", str(module), "--tests", "tests/test_mutate.py", "--limit", "0"],
+         "--module", str(module), "--tests", NEUTRAL_TESTS, "--limit", "1"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=root, timeout=600,
     )
@@ -162,3 +170,52 @@ def test_an_interrupted_run_restores_the_module_on_the_next_start(tmp_path):
     assert not backup.exists(), "бэкап остался лежать рядом"
     assert "восстановлен" in (done.stderr or ""), done.stderr[:300]
 
+
+def test_a_run_killed_by_sigterm_restores_the_module_itself(tmp_path):
+    """`SIGTERM` тоже восстанавливает модуль — не дожидаясь следующего прогона.
+
+    Восстановление «на входе» (тест выше) спасает лишь того, кто запустит
+    мутацию по тому же модулю снова. Всё остальное — `ruff`, `pytest`,
+    коммит — видит переписанный `ast.unparse` файл: без комментариев, без
+    docstring, с перекроенными импортами. Так и вышло 09.09 на `aios/run.py`,
+    вторично после 06.09: прогон убил таймаут вызывающей команды, `finally`
+    при `SIGTERM` не выполняется, и файл пролежал мутированным, пока его не
+    заметил `ruff`.
+
+    Проверяется делом: настоящий подпроцесс, настоящий сигнал.
+    """
+    import signal
+    import subprocess
+    import sys as system
+    import time
+
+    module = tmp_path / "жертва.py"
+    original = ("# важный комментарий" + chr(10) + "def f(a, b):" + chr(10)
+                + "    if a < 10 and b:" + chr(10) + "        return a + 1" + chr(10)
+                + "    return a - 1" + chr(10))
+    module.write_text(original, encoding="utf-8")
+
+    root = Path(__file__).resolve().parent.parent
+    # Тесты нарочно медленные: нужно успеть послать сигнал в середине прогона.
+    proc = subprocess.Popen(
+        [system.executable, str(root / "scripts" / "mutate.py"),
+         "--module", str(module), "--tests", NEUTRAL_TESTS, "--limit", "1"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=root)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and module.read_text(encoding="utf-8") == original:
+        if proc.poll() is not None:
+            break
+        time.sleep(0.2)
+    mutated = module.read_text(encoding="utf-8") != original
+    proc.send_signal(signal.SIGTERM)
+    _, errors = proc.communicate(timeout=120)
+
+    if not mutated:
+        pytest.skip("прогон закончился раньше, чем удалось прервать его на середине")
+
+    assert module.read_text(encoding="utf-8") == original, (
+        "убитый сигналом прогон оставил модуль мутированным: "
+        + module.read_text(encoding="utf-8")
+    )
+    assert not module.with_suffix(".py.mutation-backup").exists(), "бэкап остался лежать рядом"
+    assert "прерван сигналом" in (errors or ""), errors[-300:]
