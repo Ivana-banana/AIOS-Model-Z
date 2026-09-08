@@ -176,8 +176,7 @@ def _field_rate(steps: list[ScheduleStep], limit: float, *, key: str,
 
     volume: dict[int, float] = {}
     days: dict[int, int] = {}
-    for step in steps:
-        span = monthrange(step.date.year, step.date.month)[1]
+    for step, span in zip(steps, _spans(steps), strict=True):
         volume[step.date.year] = volume.get(step.date.year, 0.0) + \
             sum(_rates(step, producers=producers).values()) * span
         days[step.date.year] = days.get(step.date.year, 0) + span
@@ -210,11 +209,32 @@ def _group_rate(steps: list[ScheduleStep], members: frozenset[str], limit: float
     return LimitCheck(key=key, limit=limit, value=best, where=where, unit="м³/сут")
 
 
+def _spans(steps: list[ScheduleStep]) -> list[int]:
+    """Сколько суток действует каждый шаг: до следующего, а не до конца месяца.
+
+    Уставка в деке держится до следующей записи. Считать шаг равным его
+    календарному месяцу верно ровно тогда, когда шаг месячный, — а `--horizon`
+    и чужой дек бывают квартальными и годовыми. На квартальном расписании при
+    уставке 1 000 м³/сут годовой объём выходил 123 000 м³ вместо 365 000, и
+    предел 200 000 объявлялся соблюдённым при превышении почти вдвое (Н-24).
+
+    Последний шаг длится до конца своего месяца: чем он кончится, расписание не
+    говорит, и месяц — самое короткое честное допущение.
+    """
+    spans: list[int] = []
+    for index, step in enumerate(steps):
+        if index + 1 < len(steps):
+            spans.append(max((steps[index + 1].date - step.date).days, 0))
+        else:
+            spans.append(monthrange(step.date.year, step.date.month)[1]
+                         - step.date.day + 1)
+    return spans
+
+
 def _annual_volume(steps: list[ScheduleStep], limit: float, *, key: str,
                    producers: bool) -> LimitCheck:
     volume: dict[int, float] = {}
-    for step in steps:
-        span = monthrange(step.date.year, step.date.month)[1]
+    for step, span in zip(steps, _spans(steps), strict=True):
         volume[step.date.year] = volume.get(step.date.year, 0.0) + \
             sum(_rates(step, producers=producers).values()) * span
     best, where = 0.0, "—"
@@ -228,8 +248,7 @@ def _horizon_volume(steps: list[ScheduleStep], limit: float, *, key: str,
                     producers: bool) -> LimitCheck:
     """Объём за весь горизонт — одна корзина вместо годовых."""
     total = 0.0
-    for step in steps:
-        span = monthrange(step.date.year, step.date.month)[1]
+    for step, span in zip(steps, _spans(steps), strict=True):
         total += sum(_rates(step, producers=producers).values()) * span
     span_from = f"{steps[0].date:%Y-%m}" if steps else "—"
     span_to = f"{steps[-1].date:%Y-%m}" if steps else "—"
