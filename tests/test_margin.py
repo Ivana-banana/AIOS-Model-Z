@@ -28,6 +28,35 @@ def norms():
     return Norms.from_assumptions(assumptions)
 
 
+def test_event_prices_follow_the_methodology_lock_not_the_case_book():
+    """Стоимость события берётся у методики, а не из книги нормативов кейса.
+
+    Эталонный расчётчик перед расчётом перезаписывает `stopStartCostM` и
+    `conversionBaseCostM` значениями `METHODOLOGY_LOCKS` — 1,0 и 5,0 млн руб.,
+    чего бы ни стояло в книге. Мы читали книгу как есть, и кейс с другими
+    числами развёл бы скрининг с деньгами: событие оценивалось бы в 4,0 при
+    настоящей цене 1,0, то есть искался бы максимум не той функции.
+    """
+    подложное = {
+        "oilPriceRubT": 28000.0,
+        "deductionsRubT": 19600.0,
+        "oilOpexRubT": 40.0,
+        "liquidOpexRubT": 130.0,
+        "injectionOpexRubM3": 30.0,
+        "fundAnnualRubWell": 1_000_000.0,
+        "stopStartCostM": 4.0,
+        "conversionBaseCostM": 12.0,
+        "waccRate": 10.0,
+    }
+
+    norms = Norms.from_assumptions(подложное)
+
+    assert norms.stop_start_m == 1.0, "цена остановки взята из книги, а не у методики"
+    assert norms.conversion_m == 5.0, "цена перевода взята из книги, а не у методики"
+    # Всё остальное книга по-прежнему задаёт сама.
+    assert norms.oil_price_m_per_t == pytest.approx(0.028)
+
+
 def test_norms_are_read_from_the_organisers_file(norms):
     assert norms.oil_price_m_per_t == pytest.approx(0.028)
     assert norms.deductions_m_per_t == pytest.approx(0.0196)

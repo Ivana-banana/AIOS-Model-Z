@@ -36,6 +36,22 @@ class Norms:
 
     @classmethod
     def from_assumptions(cls, assumptions: dict[str, Any]) -> Norms:
+        """Нормативы кейса — но те из них, что методика держит замком, берутся у неё.
+
+        Эталонный расчётчик перед расчётом **перезаписывает** часть нормативов
+        значениями `METHODOLOGY_LOCKS` (`chdd_model.py`): стоимость остановки и
+        пуска — 1,0 млн руб., перевода под закачку — 5,0 млн руб., чего бы ни
+        стояло в книге. Мы же читали книгу как есть, и на кейсе с другими
+        числами (проверено книгой с 4,0 и 12,0) скрининг оценивал бы событие в
+        4,0 при настоящей цене 1,0 — то есть искал бы максимум не той функции,
+        которой считают деньги.
+
+        Замки берутся у вендора, а не переписываются литералами: обновят архив
+        с другими значениями — пойдём за ним, а не разойдёмся молча.
+        """
+        from aios.economics import chdd_model
+
+        assumptions = {**assumptions, **chdd_model.METHODOLOGY_LOCKS}
         return cls(
             oil_price_m_per_t=assumptions["oilPriceRubT"] / MILLION,
             deductions_m_per_t=assumptions["deductionsRubT"] / MILLION,
