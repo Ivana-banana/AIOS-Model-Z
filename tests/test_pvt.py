@@ -346,6 +346,40 @@ def test_wells_missing_from_the_deck_are_listed(tmp_path):
     assert "без региона осталось 1" in result.note
 
 
+def test_a_well_declared_but_not_completed_is_named_without_being_asked(tmp_path):
+    """Фонд берётся из дека, а не только из аргумента — иначе сторож мёртв.
+
+    `wells=` передают только тесты; шесть рабочих точек входа (`export_rows`,
+    `run_cycle`, `pack_npv`, `build_dataset`, `collect_pairs`, `web/app`) зовут
+    без него. Пока состав фонда приходил только аргументом, скважина без своего
+    PVT-региона молча получала общую плотность из конфигурации, а `note` бодро
+    сообщала «плотности из дека: скважин N» без единого «ВНИМАНИЕ». Плотность —
+    множитель в тоннах, то есть прямо в выручке: замер ревизии на настоящей
+    выгрузке даёт −1,6 % нефти по одной скважине (Н-40).
+
+    Регион теряется не только на смешанном деке: `parse_completions` намеренно
+    пропускает `COMPDAT` с координатами по умолчанию, а `assign_regions` —
+    вскрытия вне активной сетки. Обе формы штатные.
+    """
+    schedule = (
+        "WELSPECS\n"
+        " 'A' 'G' 1 1 1* 'OIL' /\n"
+        " 'B' 'G' 2 2 1* 'OIL' /\n"
+        " 'C' 'G' 3 3 1* 'OIL' /\n"
+        "/\n\n" + COMPDAT
+    )
+
+    result = fluids_by_well(_deck(tmp_path, schedule))
+
+    assert set(result.by_well) == {"A", "B"}
+    assert result.without_region == ("C",), (
+        "скважина из WELSPECS без вскрытия не названа — сторож молчит там, где "
+        "подставляет чужую плотность"
+    )
+    assert not result.complete
+    assert "без региона осталось 1" in result.note
+
+
 def test_the_note_counts_wells_that_open_several_regions(tmp_path):
     """Вскрытие двух регионов — приближение, и оно обязано быть видно."""
     both = """\

@@ -369,7 +369,20 @@ def fluids_by_well(model_dir: str | Path,
                 "нельзя, взята общая из конфигурации"
         )
 
-    missing = tuple(sorted(set(wells) - set(by_well))) if wells else ()
+    # Состав фонда берётся из самого дека, когда его не назвали снаружи. Пока
+    # он приходил только аргументом, сторож был мёртв во всех рабочих путях:
+    # `wells=` передают лишь тесты, а шесть точек входа (`export_rows`,
+    # `run_cycle`, `pack_npv`, `build_dataset`, `collect_pairs`, `web/app`)
+    # зовут без него — и скважина без своего PVT-региона молча получала общую
+    # плотность из конфигурации. Плотность — множитель в тоннах, то есть прямо в
+    # выручке: замер ревизии на настоящей выгрузке даёт −1,6 % нефти по одной
+    # скважине, и ни строки предупреждения (Н-40).
+    #
+    # Регион теряется не только на смешанном деке: `parse_completions`
+    # намеренно пропускает `COMPDAT` с координатами по умолчанию (`1*`), а
+    # `assign_regions` — вскрытия вне активной сетки. Обе формы штатные.
+    known = tuple(wells) if wells else _wells_of_deck(model_dir)
+    missing = tuple(sorted(set(known) - set(by_well))) if known else ()
     regions = sorted({placement.region for placement in assigned.values()})
     mixed = sum(1 for placement in assigned.values() if placement.mixed)
 
@@ -382,6 +395,26 @@ def fluids_by_well(model_dir: str | Path,
     if missing:
         note += f"; без региона осталось {len(missing)} — им общая из конфигурации"
     return DeckFluids(by_well, note, missing)
+
+
+def _wells_of_deck(model_dir: str | Path) -> tuple[str, ...]:
+    """Фонд дека по `WELSPECS`. Пустой кортеж — прочитать не удалось.
+
+    Своего разбора здесь нет: имена скважин объявляет `WELSPECS`, и та же
+    выборка уже сделана в `aios.deck.parse_keywords`.
+    """
+    from aios.deck import parse_keywords
+    from aios.deckfiles import layout
+
+    try:
+        schedule = _read(layout(model_dir).one("SCHEDULE"))
+    except (ValueError, OSError):
+        return ()
+    return tuple(sorted({
+        str(record[0]).strip("'\"")
+        for keyword in parse_keywords(schedule) if keyword.name == "WELSPECS"
+        for record in keyword.records if record and record[0]
+    }))
 
 
 def from_deck(model_dir: str | Path) -> tuple[dict[str, Fluids], dict[str, WellRegion]]:
