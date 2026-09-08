@@ -26,6 +26,19 @@ from build_submission import meaningful_lines, split_off_history  # noqa: E402
 
 CONTROL_START = date(2007, 1, 1)
 
+
+def test_output_cannot_overwrite_the_full_run_schedule(tmp_path, capsys):
+    from build_submission import main
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    source = run_dir / "wells_schedule.inc"
+    source.write_text(SCHEDULE, encoding="utf-8")
+
+    assert main(["--run", str(run_dir), "--out", str(run_dir)]) == 1
+    assert source.read_text(encoding="utf-8") == SCHEDULE
+    assert "исходного прогона" in capsys.readouterr().err
+
 SCHEDULE = """\
 RPTSCHED
  'WELLS=1' /

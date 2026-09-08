@@ -184,14 +184,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"нет расписания {schedule_file}: собирать нечего", file=sys.stderr)
         return 1
 
+    out_dir = arguments.out or (run_dir / "submission")
+    out_dir = out_dir if out_dir.is_absolute() else ROOT / out_dir
+    target = out_dir / "wells_schedule.inc"
+    if (out_dir.resolve() == run_dir.resolve()
+            or target.resolve() == schedule_file.resolve()
+            or (target.exists() and target.samefile(schedule_file))):
+        print("ОТКАЗ: выходной файл совпадает с расписанием исходного прогона; "
+              "укажите отдельный каталог --out", file=sys.stderr)
+        return 1
+
     config = config_module.load(arguments.config)
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:
         print(refusal, file=sys.stderr)
         return 1
     control_start = config.case.control_start
-    out_dir = arguments.out or (run_dir / "submission")
-    out_dir = out_dir if out_dir.is_absolute() else ROOT / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     source = schedule_file.read_text(encoding="utf-8", errors="replace")
@@ -201,7 +209,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"отказ: {failure}", file=sys.stderr)
         return 1
 
-    target = out_dir / "wells_schedule.inc"
     target.write_text(tail, encoding="utf-8", newline="\n")
 
     parsed = deck_module.parse_schedule_text(tail)

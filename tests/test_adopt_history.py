@@ -12,6 +12,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from aios.deck import parse_schedule_text
 from aios.deckfiles import layout
 
@@ -243,6 +245,67 @@ def _deck_with(tmp_path, schedule_text):
     (deck / "M.data").write_text(MINIMAL_DECK, encoding="utf-8")
     (deck / "M_sch.inc").write_text(schedule_text, encoding="utf-8")
     return deck
+
+
+@pytest.mark.parametrize("destination", ["source", "parent", "child", "history"])
+def test_force_refuses_paths_that_overlap_inputs(tmp_path, monkeypatch, capsys, destination):
+    import adopt_history
+
+    deck = _deck_with(tmp_path, DECK_WITH_HORIZON)
+    history_dir = tmp_path / "incoming"
+    history_dir.mkdir()
+    history = history_dir / "history.inc"
+    history.write_text(MONTHLY, encoding="utf-8")
+    targets = {"source": deck, "parent": tmp_path,
+               "child": deck / "copy", "history": history_dir}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("при пересечении путей нельзя ни удалять, ни копировать")
+
+    monkeypatch.setattr(adopt_history.shutil, "rmtree", forbidden)
+    monkeypatch.setattr(adopt_history.shutil, "copytree", forbidden)
+    assert main(["--history", str(history), "--deck", str(deck),
+                 "--out", str(targets[destination]), "--force"]) == 1
+    assert "пересекается" in capsys.readouterr().err
+    assert history.read_text(encoding="utf-8") == MONTHLY
+    assert (deck / "M_sch.inc").read_text(encoding="utf-8") == DECK_WITH_HORIZON
+
+
+def test_history_replaces_nested_schedule_at_its_include_path(tmp_path):
+    deck = _deck_with(tmp_path, DECK_WITH_HORIZON)
+    nested = deck / "schedule"
+    nested.mkdir()
+    (deck / "M_sch.inc").rename(nested / "M_sch.inc")
+    (deck / "M.data").write_text(
+        MINIMAL_DECK.replace("M_sch.inc", "schedule/M_sch.inc"), encoding="utf-8")
+    history = tmp_path / "history.inc"
+    history.write_text(MONTHLY, encoding="utf-8")
+    out = tmp_path / "case"
+
+    assert main(["--history", str(history), "--deck", str(deck), "--out", str(out)]) == 0
+    adopted = layout(out).one("SCHEDULE")
+    assert adopted == out / "schedule" / "M_sch.inc"
+    assert adopted.read_text(encoding="utf-8").startswith(MONTHLY.rstrip())
+    assert "01 MAY 2007" in adopted.read_text(encoding="utf-8")
+    assert not (out / "M_sch.inc").exists()
+    assert (nested / "M_sch.inc").read_text(encoding="utf-8") == DECK_WITH_HORIZON
+
+
+def test_force_still_replaces_a_separate_output_directory(tmp_path):
+    deck = _deck_with(tmp_path, DECK_WITH_HORIZON)
+    history = tmp_path / "history.inc"
+    history.write_text(MONTHLY, encoding="utf-8")
+    out = tmp_path / "case"
+    out.mkdir()
+    marker = out / "old-result.txt"
+    marker.write_text("previous result", encoding="utf-8")
+
+    assert main(["--history", str(history), "--deck", str(deck),
+                 "--out", str(out), "--force"]) == 0
+    assert not marker.exists()
+    assert layout(out).one("SCHEDULE").read_text(encoding="utf-8").startswith(MONTHLY.rstrip())
+    assert history.read_text(encoding="utf-8") == MONTHLY
+    assert (deck / "M_sch.inc").read_text(encoding="utf-8") == DECK_WITH_HORIZON
 
 
 def test_the_deck_horizon_past_their_history_is_kept_not_thrown_away(tmp_path, capsys):
