@@ -154,3 +154,55 @@ def test_refused_history_leaves_no_half_built_deck(tmp_path):
 
     assert code == 1
     assert not out.exists()
+
+
+MINIMAL_DECK = """\
+RUNSPEC
+METRIC
+
+SCHEDULE
+INCLUDE
+'M_sch.inc' /
+"""
+
+MINIMAL_SCHEDULE = """\
+DATES
+ 01 JAN 1990 /
+/
+"""
+
+
+def test_the_printed_config_lines_actually_parse_as_toml(tmp_path, capsys):
+    r"""Напечатанные строки конфигурации вклеиваются в `config.toml` и работают.
+
+    Скрипт печатает три строки, чтобы их скопировали руками, — так задумано: это
+    параметры кейса, а не логика. Но путь печатался через `str(path)`, а на
+    Windows это обратные слэши, и в TOML обратный слэш начинает escape:
+    `model_dir = "C:	mp\case"` даёт табуляцию вместо `	`, а `\c` — ошибку
+    разбора. Вклеенная строка ломала бы конфигурацию в вечер 11.09, причём не
+    при вклеивании, а на первом чтении конфига, — и чинить было бы уже нельзя.
+
+    Каталог кейса нарочно берётся вне репозитория: путь внутри и так уходил
+    через `as_posix()`, дефект жил ровно в ветке «снаружи».
+    """
+    import tomllib
+
+    deck = tmp_path / "deck"
+    deck.mkdir()
+    (deck / "M.data").write_text(MINIMAL_DECK, encoding="utf-8")
+    (deck / "M_sch.inc").write_text(MINIMAL_SCHEDULE, encoding="utf-8")
+    history = tmp_path / "their_history.inc"
+    history.write_text(MONTHLY, encoding="utf-8")
+    out = tmp_path / "case"
+
+    assert main(["--history", str(history), "--deck", str(deck), "--out", str(out)]) == 0
+
+    printed = capsys.readouterr().out
+    lines = [line.strip().split("] ", 1)[1] for line in printed.splitlines()
+             if line.strip().startswith(("[case] ", "[economics] "))]
+    assert len(lines) == 3, printed
+
+    parsed = tomllib.loads("\n".join(lines))
+
+    assert Path(parsed["model_dir"]) == out.resolve()
+    assert parsed["control_start"] == parsed["start_date"] == date(2007, 3, 1)

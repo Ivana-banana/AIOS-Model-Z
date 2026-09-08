@@ -52,11 +52,19 @@ from aios.run import REPLACING_CONTROL_KEYWORDS  # noqa: E402
 
 
 def portable(path: Path) -> str:
-    """Путь от корня репозитория, если он внутри; иначе как есть."""
+    r"""Путь для строки TOML: от корня репозитория, если он внутри; иначе полный.
+
+    **Всегда через `/`, и это не про красоту.** Строку печатают, чтобы её
+    скопировали в `config.toml`, а в TOML обратный слэш — начало escape-
+    последовательности: `"C:\tmp\case"` даёт табуляцию вместо `\t`, а
+    `\c` — ошибку разбора. То есть напечатанное по-виндовому вклеивается в
+    конфигурацию и ломает её ровно в тот вечер, когда чинить уже нельзя.
+    Прямые слэши `pathlib` на Windows понимает.
+    """
     try:
         return path.resolve().relative_to(ROOT).as_posix()
     except ValueError:
-        return str(path)
+        return path.resolve().as_posix()
 
 
 def next_month(day: date) -> date:
