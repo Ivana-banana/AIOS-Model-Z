@@ -209,6 +209,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"отказ: {failure}", file=sys.stderr)
         return 1
 
+    # Invalidate the previous confirmation before replacing any package input.
+    # Every later refusal (or interruption) must leave an unconfirmed package.
+    (out_dir / "npv.json").write_text(
+        json.dumps({"agreed": False, "status": "unconfirmed"}) + "\n",
+        encoding="utf-8",
+    )
     target.write_text(tail, encoding="utf-8", newline="\n")
 
     parsed = deck_module.parse_schedule_text(tail)
