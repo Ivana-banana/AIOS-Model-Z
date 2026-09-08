@@ -2058,3 +2058,31 @@ def test_the_trust_region_is_built_in_the_window_where_it_is_applied():
         "история обязана разбавлять профиль: именно этот сдвиг и раздувал "
         f"расстояние (центр по всей матрице {whole.centre[level]:.3f})"
     )
+
+
+def test_a_holdout_that_matches_nothing_is_refused_not_ignored():
+    """Заморозка, не нашедшая ни одного сценария, — отказ, а не тишина.
+
+    Имя сценария несёт имя пакета: `load_datasets` приписывает «<stem файла>:».
+    Заморозили по `dataset-all-wide.csv`, обучили по умолчанию
+    (`dataset.csv dataset-levels.csv`) — совпадений ноль, все «замороженные»
+    ушли в обучение, а `train_surrogate.py` напечатал «замороженный внешний
+    тест: N сценариев» и отчёт их перечислил. Дальше любое «стало лучше»
+    меряется по строкам, на которых модель обучалась, и заметить это нечем
+    (Н-38).
+    """
+    import pandas as pd
+
+    from aios import neural
+
+    rows = []
+    for scenario in ("пакет:s1", "пакет:s2", "пакет:s3", "пакет:s4"):
+        for month in range(1, 13):
+            rows.append({"scenario": scenario, "well": "1",
+                         "DATA": f"2007-{month:02d}-01", "multiplier": 1.0,
+                         "WLPT_Diff": 100.0, "WOMT_Diff": 20.0, "WWIT_Diff": 0.0,
+                         "WLPR": 10.0, "WWIR": 0.0, "THP": 100.0, "BHP": 80.0})
+    frame = pd.DataFrame(rows)
+
+    with pytest.raises(ValueError, match="ни один замороженный сценарий"):
+        neural.train(frame, seed=20260909, holdout=frozenset({"другой-пакет:s1"}))
