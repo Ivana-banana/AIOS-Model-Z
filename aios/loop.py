@@ -271,6 +271,14 @@ def run_cycle(surrogate: Surrogate,
     shut_wells = {action.well for action in converted}
     actions = [action for action in actions if action.well not in shut_wells] + converted
     steps = apply(tuned, actions)
+    # Замысел кандидата — до планировщика. Расстояние до доверенной области
+    # меряется по нему, а не по приведённому расписанию (Р-190): обучающие точки
+    # области собраны из множителей DoE, то есть тоже из замыслов. Планировщик
+    # режет закачку по годам, у нагнетателей появляется признак «размах»,
+    # которого в обучении не было ни у одного сценария, и расстояние улетает.
+    # `optimise._value_of` так и делает с 03.09, а цикл продолжал мерить после
+    # планировщика — та же функция с двух разных входов (Н-15).
+    intent = list(steps)
 
     # последним слово за планировщиком: скважинные агенты предлагают, глядя каждый
     # на себя, а вода и мощность по жидкости принадлежат объекту целиком
@@ -301,7 +309,7 @@ def run_cycle(surrogate: Surrogate,
     rows = surrogate.predict(steps)
     result = _npv(rows, start_date, norms_file)
     region = getattr(getattr(surrogate, "bundle", None), "trust_region", None)
-    distance = optimise._distance_of(surrogate, steps, region)
+    distance = optimise._distance_of(surrogate, intent, region)
     safe_chdd = trust.safe_value(result.chdd_m, distance, margin)
 
     warnings = list(surrogate.in_training_range(steps))

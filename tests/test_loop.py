@@ -877,3 +877,54 @@ def test_the_case_audit_judges_the_corridor_in_the_same_window_as_the_planner():
     assert not with_history, (
         "аудит судит окном, в котором коридор не приводился: " + "; ".join(with_history)
     )
+
+
+def test_the_cycle_measures_trust_distance_on_the_intent_not_on_the_cut_schedule(
+        norms, monkeypatch):
+    """Расстояние до доверенной области меряется по замыслу, а не после срезки.
+
+    Обучающие точки области собраны из множителей DoE, то есть из **замыслов**.
+    Планировщик режет закачку по годам, у нагнетателей появляется признак
+    «размах», которого в обучении не было ни у одного сценария, — и расстояние
+    улетает в 1,25·10¹⁵ при пороге 18: вне области объявляется любой кандидат,
+    включая стартовый.
+
+    `optimise._value_of` считает по замыслу с 03.09 (Р-190), а цикл продолжал
+    мерить после планировщика — одна и та же функция с двух разных входов
+    (Н-15). Здесь проверяется, что вход у неё один и тот же.
+    """
+    from aios import optimise as optimise_module
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.planner import Limits
+
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("P1", "OPEN", "LRAT", 100.0, 50.0),),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 100.0, 300.0),))
+             for month in range(1, 13)]
+
+    seen: list[tuple] = []
+    original = optimise_module._distance_of
+
+    def spy(surrogate_, measured, region=None):
+        seen.append(tuple(measured))
+        return original(surrogate_, measured, region)
+
+    monkeypatch.setattr(optimise_module, "_distance_of", spy)
+
+    result = loop.run_cycle(
+        _Responsive(), steps, norms,
+        control_start=CONTROL_START, start_date=CONTROL_START,
+        tune_rates=False,
+        limits=Limits(max_field_liquid_m3_per_day=50.0,
+                      enforce_water_balance=True,
+                      water_balance_rule="compensation",
+                      water_tolerance=1.3),
+        fluids=FLUIDS,
+    )
+
+    assert seen, "цикл не спросил расстояние вовсе"
+    assert result.allocations, "срезки не случилось — проверять нечего"
+    assert seen[-1] != tuple(result.steps), (
+        "расстояние померено по расписанию после планировщика: именно это "
+        "объявляло вне области любого кандидата, включая стартовый"
+    )
