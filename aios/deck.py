@@ -392,8 +392,21 @@ def _tokenize(text: str) -> list[tuple[str, bool]]:
         line = strip_comment(line)
         if not line.strip():
             continue
-        for position, token in enumerate(_TOKEN_RE.findall(line)):
+        position = 0
+        for token in _TOKEN_RE.findall(line):
+            # Пробел перед терминатором формат не требует: `50/` и `2*/` —
+            # законная запись Eclipse, а `\S+` втягивал косую черту в значение,
+            # и блок оказывался «не закрыт одиночным /». Разбор на этом отказывал
+            # целиком. Отрезается только **хвостовая** косая черта: внутри токена
+            # она часть пути (`INCLUDE model/sch.inc` без кавычек — законная
+            # форма, её пишет SPE9 из opm-data).
+            if len(token) > 1 and token.endswith("/") and not token.startswith(("'", '"')):
+                tokens.append((token[:-1], position == 0))
+                tokens.append(("/", False))
+                position += 2
+                continue
             tokens.append((token, position == 0))
+            position += 1
     return tokens
 
 
