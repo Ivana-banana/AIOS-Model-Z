@@ -331,7 +331,7 @@ def run_cycle(surrogate: Surrogate,
     )
     # Fail-closed: планировщик прошёл — это ещё не «условия кейса соблюдены».
     # Считается по тому же прогнозу, по которому посчитан ЧДД кандидата.
-    case_left = _case_problems(steps, rows, limits, fluids, allocations)
+    case_left = _case_problems(steps, rows, limits, fluids, allocations, history_rows)
 
     return CycleResult(
         base_chdd_m=base.chdd_m,
@@ -529,7 +529,8 @@ def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                    rows: list[dict[str, Any]],
                    limits: planner.Limits | None,
                    fluids: Fluids | None,
-                   allocations: list[planner.Allocation]) -> list[str]:
+                   allocations: list[planner.Allocation],
+                   history_rows: list[dict[str, Any]] | None = None) -> list[str]:
     """Условия кейса, которые получившееся расписание всё-таки нарушает.
 
     Планировщик приводит расписание к ограничениям объекта, но пройти его и
@@ -563,15 +564,24 @@ def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             if not (declared and check.key in conceded)]
 
     if limits.enforce_water_balance:
+        # То же окно, каким коридор подбирает планировщик и каким судит
+        # подтверждение: накопленное за историю переносится, а не начинается с
+        # нуля (решение владельца 04.09, Р-204). Без переноса аудит судил
+        # управляемые годы в отрыве от истории — и на нетронутой истории Модели Z
+        # находил 16 нарушений там, где их нет, то есть fail-closed объявлял
+        # непригодным любого кандидата, включая бездействие.
+        first_year = min((int(str(row["DATA"])[:4]) for row in rows), default=None)
+        carried = _carried_water(history_rows, first_year, limits, fluids)
         if limits.water_balance_rule == "compensation":
             left += balance.compensation_problems(
-                rows, fluids, limits.water_tolerance, floor=limits.water_tolerance_min)
+                rows, fluids, limits.water_tolerance, floor=limits.water_tolerance_min,
+                carried=carried)
         elif limits.water_balance_rule == "external_water":
             left += balance.external_water_problems(
                 rows, fluids, limits.max_external_water_m3_per_day)
         else:
             left += balance.problems(rows, fluids, limits.water_tolerance,
-                                     floor=limits.water_tolerance_min)
+                                     floor=limits.water_tolerance_min, carried=carried)
 
     # мощность источника действует при любом правиле; при неизвестной мощности
     # функция возвращает справочную строку про пиковый месяц — она не нарушение

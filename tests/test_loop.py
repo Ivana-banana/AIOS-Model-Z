@@ -845,3 +845,35 @@ def test_the_summary_names_the_penalty_that_dwarfs_the_margin():
         raw_chdd_m=2647.2, safe_chdd_m=2647.2 - 927.8, margin=margin)
     assert "штраф за удаление" not in calm.summary()
 
+
+def test_the_case_audit_judges_the_corridor_in_the_same_window_as_the_planner():
+    """Аудит коридора и его приведение обязаны считать одним окном.
+
+    Планировщик подбирает коридор с переносом накопленного за историю (решение
+    владельца 04.09, Р-204), запас под потолком считается так же, и
+    подтверждение судит по всей выгрузке. А `_case_problems` считал управляемые
+    годы **с нуля** — и на нетронутой истории Модели Z находил нарушения там, где
+    их нет. С fail-closed (Р-165) это означает, что непригодным объявляется любой
+    кандидат, включая бездействие, и оператор читает «условия кейса нарушены».
+
+    Замер 09.09 на `runs/base/rows.csv`: 16 нарушений в окне цикла против нуля с
+    переносом и нуля по всей выгрузке; худший год 1,401 в 2011 против 1,239 в
+    2020 при потолке 1,3. Здесь то же самое на синтетике: история закачивает
+    мало, горизонт много, и без переноса горизонт выглядит нарушителем.
+    """
+    from aios import planner as planner_module
+
+    limits = planner_module.Limits(water_tolerance=1.3, enforce_water_balance=True,
+                                   water_balance_rule="compensation")
+    history = [make_row(f"200{year}-01-01", "1", liquid=1000.0) for year in range(1, 7)]
+    history += [make_row(f"200{year}-01-01", "2", injection=100.0) for year in range(1, 7)]
+    horizon = [make_row("2007-01-01", "1", liquid=100.0),
+               make_row("2007-01-01", "2", injection=1000.0)]
+
+    without = loop._case_problems([], horizon, limits, None, [])
+    with_history = loop._case_problems([], horizon, limits, None, [], history)
+
+    assert without, "синтетика подобрана неверно: без переноса нарушения обязаны быть"
+    assert not with_history, (
+        "аудит судит окном, в котором коридор не приводился: " + "; ".join(with_history)
+    )
