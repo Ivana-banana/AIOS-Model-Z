@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 
 from aios.deck import parse_schedule_text
+from aios.deckfiles import layout
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -206,3 +207,111 @@ def test_the_printed_config_lines_actually_parse_as_toml(tmp_path, capsys):
 
     assert Path(parsed["model_dir"]) == out.resolve()
     assert parsed["control_start"] == parsed["start_date"] == date(2007, 3, 1)
+
+
+DECK_WITH_HORIZON = """\
+DATES
+ 01 JAN 2006 /
+/
+
+WCONPROD
+ '1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /
+/
+
+DATES
+ 01 APR 2007 /
+/
+
+WCONPROD
+ '1' 'OPEN' 'LRAT' 1* 1* 1* 25.0 1* 50 1* 1* /
+/
+
+DATES
+ 01 MAY 2007 /
+/
+
+WCONPROD
+ '1' 'OPEN' 'LRAT' 1* 1* 1* 20.0 1* 50 1* 1* /
+/
+"""
+
+
+def _deck_with(tmp_path, schedule_text):
+    """Минимальный дек, у которого SCHEDULE найдётся нашим же разбором."""
+    deck = tmp_path / "deck"
+    deck.mkdir()
+    (deck / "M.data").write_text(MINIMAL_DECK, encoding="utf-8")
+    (deck / "M_sch.inc").write_text(schedule_text, encoding="utf-8")
+    return deck
+
+
+def test_the_deck_horizon_past_their_history_is_kept_not_thrown_away(tmp_path, capsys):
+    """Их история заменяет историческую часть, а не весь файл.
+
+    Команда затирала SCHEDULE дека целиком. Наши режимы вешаются на существующие
+    `DATES` — своих мы не порождаем, — поэтому у кейса, собранного затиранием,
+    управляемых шагов **ноль**: сдавать нечего, а обнаружилось бы это на шаге
+    цикла, уже под таймером 11.09.
+
+    Проверяется то, ради чего команда написана: после приёмки в деке есть шаги
+    за концом их истории, и это шаги поставленного дека.
+    """
+    deck = _deck_with(tmp_path, DECK_WITH_HORIZON)
+    history = tmp_path / "their_history.inc"
+    history.write_text(MONTHLY, encoding="utf-8")   # 01.2007 … 02.2007
+    out = tmp_path / "case"
+
+    assert main(["--history", str(history), "--deck", str(deck), "--out", str(out)]) == 0
+
+    adopted = parse_schedule_text(
+        layout(out).one("SCHEDULE").read_text(encoding="utf-8"))
+    dates = [step.date for step in adopted.steps]
+
+    assert date(2007, 1, 1) in dates and date(2007, 2, 1) in dates, dates
+    managed = [day for day in dates if day >= date(2007, 3, 1)]
+    assert managed == [date(2007, 4, 1), date(2007, 5, 1)], dates
+    # шаг дека 01.2006 — часть его истории, и он вытеснен их историей
+    assert date(2006, 1, 1) not in dates, dates
+    printed = capsys.readouterr().out
+    assert "управление:  2007-04-01 — 2007-05-01" in printed
+    # управлять есть чем, значит предупреждения быть не должно: прежнее условие
+    # `control_start > last` тождественно истинно и печатало его всегда
+    assert "ВНИМАНИЕ" not in printed, printed
+
+
+def test_the_seam_keeps_dates_strictly_increasing(tmp_path):
+    """Шов не даёт повторов и убываний: такой `DATES` симулятор считает ошибкой."""
+    deck = _deck_with(tmp_path, DECK_WITH_HORIZON)
+    history = tmp_path / "their_history.inc"
+    history.write_text(MONTHLY, encoding="utf-8")
+    out = tmp_path / "case"
+
+    assert main(["--history", str(history), "--deck", str(deck), "--out", str(out)]) == 0
+
+    dates = [step.date for step in parse_schedule_text(
+        layout(out).one("SCHEDULE").read_text(encoding="utf-8")).steps]
+
+    assert all(after > before for before, after in zip(dates, dates[1:], strict=False)), dates
+
+
+def test_a_history_covering_the_whole_horizon_says_there_is_nothing_to_manage(
+        tmp_path, capsys):
+    """Предупреждение звучит, только когда управлять действительно нечем.
+
+    Условием было `control_start > last`, а это тождественно истинно:
+    `control_start` и есть следующий месяц за `last`. Предупреждение печаталось
+    всегда — в том числе когда горизонт был, — то есть не отличало опасный
+    случай от обычного и потому не значило ничего.
+    """
+    # дек кончается там же, где их история: управлять нечем
+    deck = _deck_with(tmp_path, MONTHLY)
+    history = tmp_path / "their_history.inc"
+    history.write_text(MONTHLY, encoding="utf-8")
+    out = tmp_path / "case"
+
+    assert main(["--history", str(history), "--deck", str(deck), "--out", str(out)]) == 0
+
+    printed = capsys.readouterr().out
+    assert "ВНИМАНИЕ:" in printed
+    assert "ни в присланной истории, ни в горизонте" in printed
+    assert "управление:" not in printed

@@ -48,7 +48,7 @@ if str(ROOT) not in sys.path:
 from aios import config as config_module  # noqa: E402
 from aios.deck import parse_schedule_text  # noqa: E402
 from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
-from aios.run import REPLACING_CONTROL_KEYWORDS  # noqa: E402
+from aios.run import REPLACING_CONTROL_KEYWORDS, control_tail  # noqa: E402
 
 
 def portable(path: Path) -> str:
@@ -191,8 +191,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"каталог {out_dir} уже есть; повторите с --force", file=sys.stderr)
             return 1
         shutil.rmtree(out_dir)
+    # Их история заменяет **историческую часть**, а не весь файл. Собственный
+    # горизонт дека за концом их истории — это те самые даты, которыми нам
+    # предстоит управлять: наши шаги вешаются на существующие `DATES`, своих мы
+    # не порождаем. Затерев файл целиком, команда оставляла бы кейс, в котором
+    # управлять нечем, — и обнаружилось бы это на шаге цикла, уже под таймером.
+    deck_text = schedule_file.read_text(encoding="utf-8", errors="replace")
+    horizon = control_tail(deck_text, control_start)
+    adopted_text = text.rstrip() + "\n\n" + horizon if horizon.strip() else text
     shutil.copytree(deck_dir, out_dir)
-    (out_dir / schedule_file.name).write_text(text, encoding="utf-8", newline="\n")
+    (out_dir / schedule_file.name).write_text(adopted_text, encoding="utf-8", newline="\n")
 
     # Сборка обязана читаться нашим же разбором дека: подменённый файл мог
     # оказаться не тем, на который смотрит INCLUDE, и узнать об этом надо здесь,
@@ -203,10 +211,21 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         print(f"собранный дек не читается: {error}", file=sys.stderr)
         return 1
-    if adopted.read_text(encoding="utf-8", errors="replace") != text:
+    if adopted.read_text(encoding="utf-8", errors="replace") != adopted_text:
         print(f"INCLUDE в {rebuilt.data_file.name} указывает не на {adopted.name}: "
               "историю подменили не в том файле", file=sys.stderr)
         return 1
+
+    # Шов проверяется разбором, а не доверием к разрезу: повторяющийся или
+    # убывающий `DATES` симулятор считает ошибкой, и узнать об этом надо здесь.
+    spliced = parse_schedule_text(adopted_text)
+    dates = [item.date for item in spliced.steps]
+    if any(after <= before for before, after in zip(dates, dates[1:], strict=False)):
+        print("шов истории и горизонта дека дал неубывающие даты — кейс не собран",
+              file=sys.stderr)
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return 1
+    managed = [item for item in spliced.steps if item.date >= control_start]
 
     step, odd = cadence(parsed.steps)
     producers = len(parsed.producer_wells)
@@ -215,6 +234,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"история:     {history_file}")
     print(f"дек кейса:   {out_dir}")
     print(f"горизонт:    {first} — {last}, шагов {len(parsed.steps)}")
+    if managed:
+        print(f"управление:  {managed[0].date} — {managed[-1].date}, "
+              f"шагов {len(managed)} — взяты из горизонта поставленного дека")
     print(f"шаг:         {step}")
     print(f"фонд:        {len(parsed.wells)} скважин "
           f"(добыча {producers}, закачка {injectors})")
@@ -238,12 +260,19 @@ def main(argv: list[str] | None = None) -> int:
     # Управлять нечем, если история покрывает весь горизонт дека. Это не наша
     # поломка и не их ошибка — это вопрос, который надо задать сразу, а не
     # обнаружить, когда сборка кейса откажет «нет ни одного шага с даты».
-    if control_start > last:
+    #
+    # Условием было `control_start > last`, а это **тождественно истинно**:
+    # `control_start` и есть следующий месяц за `last`. Предупреждение звучало
+    # всегда, в том числе когда горизонт был, — то есть не отличало опасный
+    # случай от обычного и потому не значило ничего. Спрашивается настоящее:
+    # остались ли за концом их истории шаги, которыми можно управлять.
+    if not managed:
         print()
-        print(f"ВНИМАНИЕ: за {last} в присланной истории шагов нет. Управлять "
-              "нечем, пока не назван конец горизонта: наши шаги генерируются на "
-              "даты, а брать их неоткуда. Спросите у трекера, до какой даты идёт "
-              "период управления, — иначе `build_case` откажет, и правильно "
+        print(f"ВНИМАНИЕ: за {last} шагов нет ни в присланной истории, ни в "
+              "горизонте поставленного дека. Управлять нечем: наши режимы "
+              "вешаются на существующие `DATES`, своих мы не порождаем. "
+              "Спросите у трекера, до какой даты идёт период управления и чем "
+              "заданы его шаги, — иначе `build_case` откажет, и правильно "
               "сделает.")
     return 0
 
