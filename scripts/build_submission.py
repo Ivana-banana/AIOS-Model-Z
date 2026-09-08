@@ -134,7 +134,12 @@ def reference_chdd(rows_file: Path, start_year: int, norms_file: Path,
                                encoding="utf-8", errors="replace")
     if completed.returncode != 0:
         raise RuntimeError(
-            f"эталонный расчётчик отказал (код {completed.returncode}):\n{completed.stderr}"
+            f"эталонный расчётчик отказал (код {completed.returncode}):\n"
+            # Причину он печатает в stdout («Ошибка: …», РАСЧЕТ_ЧДД.py), а не в
+            # stderr, и до 09.09 сюда попадала пустая строка: оператор видел
+            # «отказал (код 1):» и ничего больше. Именно эту строку читают на
+            # валидационном кейсе, когда эталон отвергает выгрузку.
+            + "\n".join(part for part in (completed.stdout, completed.stderr) if part.strip())
         )
     raw = json.loads(json_file.read_text(encoding="utf-8"))
     return float(raw["summary"]["totalChddM"]), recorded

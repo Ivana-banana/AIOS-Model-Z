@@ -294,6 +294,37 @@ def test_the_committed_trace_records_a_command_anyone_can_run():
     )
 
 
+def test_a_refusal_of_the_reference_calculator_carries_its_reason(tmp_path):
+    """Отказ эталона обязан доехать до человека вместе с причиной.
+
+    Вендорная точка входа печатает причину в **stdout** (`Ошибка: …`,
+    `РАСЧЕТ_ЧДД.py`), а обе наши обвязки клали в исключение только `stderr`,
+    который при этом пуст. Оператор видел «эталонный расчётчик отказал
+    (код 1):» и пустоту — ни дебита свыше 500, ни дублей скважино-месяцев, ни
+    битой шапки. Читают эту строку на валидационном кейсе, когда эталон
+    отвергает выгрузку и разбираться надо за минуты.
+    """
+    sys.path.insert(0, str(economics.VENDOR_DIR.parent.parent / "scripts"))
+    try:
+        from verify_declared import recompute
+    finally:
+        sys.path.pop(0)
+
+    rows = tmp_path / "rows.csv"
+    rows.write_text(
+        "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
+        "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
+        "2007-01-01,A,0,550,0,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as refusal:
+        recompute(rows, 2007, economics.NORMS_FILE, tmp_path)
+
+    assert "WLPR свыше 500" in str(refusal.value), (
+        "причина отказа эталона потеряна — осталась только строка «отказал»: "
+        + str(refusal.value)
+    )
+
+
 def test_the_declared_run_is_read_from_the_document_without_the_tail_directory():
     """`declared_run()` называет каталог прогона, а не каталог сдаваемого хвоста.
 
