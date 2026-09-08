@@ -815,3 +815,22 @@ def test_an_unknown_month_is_refused_in_words_not_by_keyerror():
 
     with pytest.raises(ValueError, match="неизвестный месяц"):
         deck_module.parse_date_record(("1", "XXX", "2007"))
+
+
+def test_a_dates_record_with_a_time_field_is_read_like_the_deck_reads_it():
+    """`1 'JAN' 2008 12:00:00 /` — законная запись, и её пишет тНавигатор.
+
+    `aios.deck.parse_date_record` смотрит только первые три поля, лишние ей не
+    мешают. Регулярка `run.py` требовала `/` сразу за годом — два разбора
+    отвечали на один вопрос по-разному. После сторожа «ни одна дата не
+    разобрана» (Н-12) это перестало быть тихой потерей вскрытий и стало отказом
+    сборки кейса на деке валидационного случая (Р-43, ревью ночного дифа).
+    """
+    text = ("SCHEDULE\n\nDATES\n 1 'JAN' 2008 12:00:00 /\n/\n\n"
+            "COMPDAT\n 'W1' 1 1 1 2 OPEN 1* 1* 0.146 /\n/\n")
+
+    from aios import deck as deck_module
+
+    assert [one.date for one in deck_module.parse_schedule_text(text).steps] == \
+        [date(2008, 1, 1)]
+    assert list(run.carried_keywords(text, date(2007, 1, 1))) == [date(2008, 1, 1)]

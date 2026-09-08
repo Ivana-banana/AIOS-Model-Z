@@ -219,7 +219,8 @@ def choose_rates(surrogate: Surrogate,
                  norms: Norms,
                  *,
                  start_date: date,
-                 multipliers: tuple[float, ...] = SINGLE_MULTIPLIERS) -> list[RateChoice]:
+                 multipliers: tuple[float, ...] = SINGLE_MULTIPLIERS,
+                 max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> list[RateChoice]:
     """Перебрать множители дебита и выбрать по каждой скважине лучший.
 
     Возвращает решение по каждой добывающей скважине, включая «оставить как
@@ -235,7 +236,8 @@ def choose_rates(surrogate: Surrogate,
 
     scores: dict[float, dict[str, float]] = {}
     for multiplier in multipliers:
-        rows = surrogate.predict(scale(base_steps, multiplier))
+        rows = surrogate.predict(scale(base_steps, multiplier,
+                                       max_liquid_rate=max_liquid_rate))
         scores[multiplier] = discounted_margin_by_well(rows, norms, start_date.year)
 
     wells = sorted(
@@ -278,6 +280,7 @@ def choose_joint_rates(
     weight: float = TRUST_WEIGHT,
     norms_file: Path = economics.NORMS_FILE,
     carried_water: tuple[float, float] | None = None,
+    max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY,
     start: dict[tuple[str, str], float] | None = None,
     seed: int | None = None,
 ) -> list[JointRateChoice]:
@@ -374,7 +377,12 @@ def choose_joint_rates(
     selected = {
         control: (start or {}).get((control[0], control[1]), 1.0) for control in controls
     }
-    current_steps = _scale_individually(base_steps, selected)
+    # Кандидаты собираются тем же потолком кейса, каким цикл соберёт итоговое
+    # расписание. Иначе поиск оценивает скважину на 450 м³/сут, а собранный план
+    # ставит ей 320: множители выбираются по отклику, которого в плане не будет
+    # (вторая половина Н-18, найдена ревью ночного дифа — Р-44).
+    current_steps = _scale_individually(base_steps, selected,
+                                        max_liquid_rate=max_liquid_rate)
     current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids,
                              region, margin, penalty, weight, norms_file, carried_water)
     if current_chdd == float("-inf"):
@@ -399,7 +407,8 @@ def choose_joint_rates(
         best_chdd = current_chdd
         for multiplier in covered:
             candidate_multipliers = selected | {(kind, well, start): multiplier}
-            candidate = _scale_individually(base_steps, candidate_multipliers)
+            candidate = _scale_individually(base_steps, candidate_multipliers,
+                                            max_liquid_rate=max_liquid_rate)
             candidate_chdd = _value_of(surrogate, candidate, start_date, limits, norms,
                                        fluids, region, margin, penalty, weight, norms_file,
                                        carried_water)

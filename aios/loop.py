@@ -245,6 +245,8 @@ def run_cycle(surrogate: Surrogate,
                 # не мешает применить область одной модели к прогнозу другой.
                 # `None` у артефактов до 22.08 — поиск работает как раньше
                 region=getattr(getattr(surrogate, "bundle", None), "trust_region", None),
+                # тот же потолок кейса, каким собирается итоговое расписание
+                max_liquid_rate=rate_ceiling,
                 margin=margin,
                 seed=search_seed,
                 norms_file=norms_file,
@@ -258,6 +260,7 @@ def run_cycle(surrogate: Surrogate,
             # «прирост» сравнивал две разные точки отсчёта (2.1 #8).
             choices = optimise.choose_rates(
                 surrogate, origin, norms, start_date=start_date,
+                max_liquid_rate=rate_ceiling,
                 **({} if multipliers is None else {"multipliers": multipliers}),
             )
             frame = list(origin)

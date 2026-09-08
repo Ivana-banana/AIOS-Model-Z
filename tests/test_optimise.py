@@ -1433,6 +1433,29 @@ def test_the_rate_ceiling_comes_from_the_case_pump_table_not_from_the_literal():
 
     assert applied[0].producers[0].liquid_rate == 320.0
 
+    # И поиск обязан собирать кандидатов тем же потолком: иначе он оценивает
+    # скважину на 450 м³/сут, а собранный план ставит ей 320 — множители
+    # выбираются по отклику, которого в плане не будет (Р-44).
+    surrogate = DeclineSurrogate.fit(history("1", 0.5, 0.01), fluids=FLUIDS)
+    seen: list[float] = []
+    original = optimise._scale_individually
+
+    def spy(base, multipliers_, max_liquid_rate=MAX_LIQUID_RATE_M3_PER_DAY):
+        seen.append(max_liquid_rate)
+        return original(base, multipliers_, max_liquid_rate)
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(optimise, "_scale_individually", spy):
+        optimise.choose_joint_rates(
+            surrogate, plan(["1"], months=12), start_date=START,
+            multipliers=(1.0, 1.5), max_liquid_rate=320.0,
+        )
+
+    assert seen and set(seen) == {320.0}, (
+        f"поиск собирал кандидатов не потолком кейса: {sorted(set(seen))}"
+    )
+
 
 def test_the_search_fits_the_same_corridor_the_cycle_applies(norms, monkeypatch):
     """Поиск обязан приводить кандидата тем же коридором, что и цикл.
