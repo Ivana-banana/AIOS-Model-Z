@@ -37,7 +37,7 @@
 | `git status --short --branch` | `## main...origin/main`, других строк нет |
 | `python -m pytest -q` | 1 437 тестов, 0 падений, 0 ошибок, 6 пропусков |
 | `python -m ruff check .` | `All checks passed!` |
-| `python scripts/check_release_tag.py` | `[ГОТОВО]`, тег `submit-2026-09-08` совпадает с заявкой |
+| `python scripts/check_release_tag.py` | `[ГОТОВО]`, тег `submit-2026-09-02` совпадает с заявкой (действующий **на тот день**; 08.09 форма сдачи сменилась и тег перевыпущен) |
 | `python scripts/verify_declared.py --run runs/matched-0995` | **«нет выгрузки … пересчитывать нечего»** |
 | `python scripts/check_package.py` | 10 из 10, `пакет готов` |
 | `python scripts/check_submission.py runs/matched-0995/submission/wells_schedule.inc` | `файл пригоден к отправке` |
