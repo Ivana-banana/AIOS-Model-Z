@@ -1432,3 +1432,41 @@ def test_the_rate_ceiling_comes_from_the_case_pump_table_not_from_the_literal():
     applied = optimise.apply_choices(steps, choices, max_liquid_rate=320.0)
 
     assert applied[0].producers[0].liquid_rate == 320.0
+
+
+def test_the_search_fits_the_same_corridor_the_cycle_applies(norms, monkeypatch):
+    """Поиск обязан приводить кандидата тем же коридором, что и цикл.
+
+    `_value_of` считает ЧДД расписания, **приведённого** к ограничениям («сначала
+    срезка, потом деньги»), но звал `planner.enforce` без переноса накопленного
+    за историю, тогда как цикл приводит с ним (Р-204). Каждый кандидат
+    ранжировался по числу, которого в цикле не будет: на базовой точке это
+    −128,3 млн руб. и 264 лишние срезки, а знак разницы зависит от истории
+    кейса, а не от кандидата (Н-39).
+    """
+    from aios import planner as planner_module
+
+    norms_value = norms
+    seen: list[object] = []
+    original = planner_module.enforce
+
+    def spy(steps, forecast, norms_, limits_, fluids_, carried_water=None):
+        seen.append(carried_water)
+        return original(steps, forecast, norms_, limits_, fluids_,
+                        carried_water=carried_water)
+
+    monkeypatch.setattr(optimise.planner, "enforce", spy)
+
+    surrogate = DeclineSurrogate.fit(history("1", 0.5, 0.01), fluids=FLUIDS)
+    optimise._value_of(
+        surrogate, plan(["1"], months=12), START,
+        planner.Limits(enforce_water_balance=True,
+                       water_balance_rule="compensation",
+                       water_tolerance=1.3),
+        norms_value, FLUIDS, carried_water=(1000.0, 900.0),
+    )
+
+    assert seen == [(1000.0, 900.0)], (
+        "поиск привёл кандидата без переноса истории — то есть не тем коридором, "
+        f"каким приведёт цикл: {seen}"
+    )

@@ -224,6 +224,14 @@ def run_cycle(surrogate: Surrogate,
             choices = optimise.choose_joint_rates(
                 surrogate, base_steps, start_date=start_date,
                 limits=limits, norms=norms, fluids=fluids,
+                # Тот же перенос истории, с каким приводит цикл: иначе поиск
+                # ранжирует кандидатов по числу, которого в цикле не будет
+                # (Н-39).
+                carried_water=_carried_water(
+                    history_rows,
+                    min((one.date.year for one in base_steps), default=None),
+                    limits, fluids,
+                ),
                 # набор множителей задаётся снаружи: узкий набор держит поиск
                 # ближе к обучающим сценариям, широкий уводит из области
                 # доверия — и то и другое надо уметь померить (Б31)

@@ -277,6 +277,7 @@ def choose_joint_rates(
     penalty: float = TRUST_PENALTY,
     weight: float = TRUST_WEIGHT,
     norms_file: Path = economics.NORMS_FILE,
+    carried_water: tuple[float, float] | None = None,
     start: dict[tuple[str, str], float] | None = None,
     seed: int | None = None,
 ) -> list[JointRateChoice]:
@@ -375,7 +376,7 @@ def choose_joint_rates(
     }
     current_steps = _scale_individually(base_steps, selected)
     current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids,
-                             region, margin, penalty, weight, norms_file)
+                             region, margin, penalty, weight, norms_file, carried_water)
     if current_chdd == float("-inf"):
         # Стартовая точка сама вне доверенной области — ранжировать нечем и не от
         # чего. Продолжать нельзя не из осторожности, а арифметически: разность
@@ -400,7 +401,8 @@ def choose_joint_rates(
             candidate_multipliers = selected | {(kind, well, start): multiplier}
             candidate = _scale_individually(base_steps, candidate_multipliers)
             candidate_chdd = _value_of(surrogate, candidate, start_date, limits, norms,
-                                       fluids, region, margin, penalty, weight, norms_file)
+                                       fluids, region, margin, penalty, weight, norms_file,
+                                       carried_water)
             if candidate_chdd > best_chdd + 1e-9:
                 best_multiplier = multiplier
                 best_steps = candidate
@@ -427,6 +429,7 @@ def _value_of(
     penalty: float = TRUST_PENALTY,
     weight: float = TRUST_WEIGHT,
     norms_file: Path = economics.NORMS_FILE,
+    carried_water: tuple[float, float] | None = None,
 ) -> float:
     """Чего кандидат стоит — уже с учётом общего ресурса, если он задан.
 
@@ -439,7 +442,13 @@ def _value_of(
     if limits is None:
         value = _chdd(forecast, start_date, norms_file)
     else:
-        fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids)
+        # Перенос накопленного за историю — тот же, с каким приводит цикл
+        # (Р-204). Без него поиск ранжировал кандидатов по числу, которого в
+        # цикле не будет: на базовой точке это −128,3 млн руб. и 264 лишние
+        # срезки, а знак разницы зависит от истории кейса, а не от кандидата
+        # (Н-39).
+        fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids,
+                                             carried_water=carried_water)
         value = _chdd(surrogate.predict(fitted), start_date, norms_file)
     # Расстояние меряется по **замыслу** кандидата, а не по расписанию после
     # планировщика, и это не мелочь: обучающие точки области собраны из
