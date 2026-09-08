@@ -734,3 +734,32 @@ def test_a_drop_exactly_at_the_tolerance_is_not_reported():
     ]
     assert any("уменьшилось" in one for one in summary.sanity_problems(bigger))
 
+
+def test_a_non_numeric_value_is_named_and_not_taken_for_a_zero():
+    """NaN — отсутствие данных, а не ноль, и различать их обязаны мы.
+
+    Эталонный расчётчик подставляет ноль молча (`chdd_model.to_number`:
+    `number if math.isfinite(number) else 0.0`), а всякое сравнение с NaN ложно,
+    поэтому остальные санити-чеки её не видят. Замер ревизии 09.09: одна NaN в
+    `WOMT_Diff` из трёх месяцев — минус 34 % ЧДД при пустом списке нарушений и
+    пустых `diagnostics.warnings`. Ровно тот класс, который CLAUDE.md требует
+    ловить явно: отсутствие данных неотличимо от простоя (Н-33).
+    """
+    good = make_row("2007-01-01", "1", wlpr=10.0, womr=5.0, liquid=10.0, oil=5.0)
+    broken = {**good, "WOMT_Diff": float("nan")}
+
+    assert summary.sanity_problems([good]) == []
+
+    problems = summary.sanity_problems([broken])
+
+    assert problems, "NaN прошла все проверки молча"
+    assert "нечисловое WOMT_Diff" in problems[0]
+    assert "скв. 1" in problems[0] and "2007-01-01" in problems[0]
+
+
+def test_an_infinite_value_is_caught_too():
+    """Бесконечность расчётчик обнуляет тем же правилом, что и NaN."""
+    row = {**make_row("2007-01-01", "1", wlpr=10.0, liquid=10.0),
+           "WLPR": float("inf")}
+
+    assert any("нечисловое WLPR" in one for one in summary.sanity_problems([row]))

@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -259,6 +260,14 @@ def case_problems(rows: list[dict[str, Any]],
     return problems
 
 
+#: Числовые колонки контракта «симулятор → экономика». Имя `well` и дата в счёт
+#: не идут: нечисловыми они не бывают, а вот всё остальное — бывает.
+NUMERIC_COLUMNS = (
+    "WLPT", "WLPR", "WOMT", "WOMR", "WWIR", "WWIT", "THP", "BHP", "WEFF",
+    "WLPT_Diff", "WOMT_Diff", "WWIT_Diff",
+)
+
+
 def sanity_problems(rows: list[dict[str, Any]],
                     max_liquid_rate: float = 500.0,
                     min_reservoir_pressure: float | None = None,
@@ -280,6 +289,20 @@ def sanity_problems(rows: list[dict[str, Any]],
     for row in rows:
         well = row["well"]
         where = f"{row['DATA']} скв. {well}"
+
+        # Нечисловая величина — не «ноль», а отсутствие данных, и различать их
+        # обязаны мы: эталонный расчётчик молча подставляет ноль
+        # (`chdd_model.to_number`: `number if math.isfinite(number) else 0.0`), а
+        # всякое сравнение с NaN ложно, поэтому проверки ниже её не видят. Замер
+        # ревизии: одна NaN в `WOMT_Diff` из трёх месяцев — минус 34 % ЧДД при
+        # пустом списке нарушений и пустых `diagnostics.warnings` (Н-33).
+        for column in NUMERIC_COLUMNS:
+            value = row.get(column)
+            if isinstance(value, (int, float)) and not math.isfinite(float(value)):
+                problems.append(
+                    f"{where}: нечисловое {column} = {value!r} — расчётчик молча "
+                    "считает такую величину нулём"
+                )
 
         for column in ("WLPT_Diff", "WOMT_Diff", "WWIT_Diff"):
             if row[column] < 0:

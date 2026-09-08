@@ -138,6 +138,46 @@ def test_downsize_needs_a_drop_of_more_than_100_below_the_lower_bound():
     assert below.raw["annual"][0]["pumpInstallCounts"] == {"80": 1}
 
 
+def test_the_downsize_boundary_is_exactly_the_threshold_not_a_hair_off():
+    """Сама граница: «более чем» — значит ровно на пороге замены НЕТ.
+
+    Прежний тест брал 200 (падение 10) и 50 (падение 160), то есть проверял
+    стороны, а не точку. Вся суть края — в слове «более чем»: подмена `>` на
+    `>=` в эталоне (обновлённый архив организаторов, чужая сборка вендора)
+    проходила всю сюиту. Цена подмены на 110 м³/сут — лишняя замена ЭЦН,
+    2,75 млн руб. CAPEX плюс операционные, и заметить её было бы нечем.
+
+    Порог читается у методики, а не пишется литералом: организаторы меняют
+    нормативы, и тест обязан идти за ними.
+    """
+    import chdd_model
+
+    threshold = chdd_model.METHODOLOGY_LOCKS["downsizeThreshold"]
+    lower_bound = 210.0  # нижняя граница насоса, поставленного при 300 м³/сут
+
+    high = make_row(months(2014, 3)[0], "A", wlpr=300, womr=50, liquid=9000, oil=1500)
+
+    def with_rate(rate: float):
+        return npv([
+            high,
+            make_row(months(2014, 3)[1], "A", wlpr=rate, womr=30, liquid=6000, oil=900),
+            make_row(months(2014, 3)[2], "A", wlpr=rate, womr=30, liquid=6000, oil=900),
+        ])
+
+    on_the_line = with_rate(lower_bound - threshold)          # падение ровно 100
+    just_below = with_rate(lower_bound - threshold - 0.001)   # падение 100,001
+
+    assert on_the_line.pump_changes == 0, (
+        f"падение ровно на {threshold:g} м³/сут засчитано заменой — методика "
+        "требует «более чем»"
+    )
+    assert on_the_line.capex_m == pytest.approx(0.0)
+    assert just_below.pump_changes == 1, (
+        "падение чуть больше порога заменой не засчитано — тест перестал "
+        "различать стороны границы"
+    )
+
+
 def test_liquid_rate_above_500_is_rejected_by_the_reference_calculator():
     """Дебит жидкости свыше 500 м³/сут методика не допускает — расчёт падает."""
     rows = [make_row(data, "A", wlpr=550, womr=90, liquid=16500, oil=2700) for data in months(2014, 3)]
