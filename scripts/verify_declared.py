@@ -158,23 +158,6 @@ def recompute(rows_file: Path, start_year: int, norms_file: Path,
     return float(raw["summary"]["totalChddM"]), recorded
 
 
-def charge_initial_pump(norms_file: Path) -> bool | None:
-    """Значение флага `chargeInitialPump` из нормативов — или None, если его нет.
-
-    Флаг решает, платим ли мы за ЭЦН, уже стоящий в скважине на начало расчёта.
-    На заявке это 92,9 млн руб. разницы (`BLOCKED.md`, п. 0.1), и до 04.09 след
-    её не фиксировал: два расчёта одного расписания с разными значениями флага
-    давали одинаково выглядящий машинный след (С9).
-    """
-    assumptions, _ = economics.load_norms(norms_file)
-    value = assumptions.get("chargeInitialPump")
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in ("да", "true", "yes", "1")
-    return None
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run", type=Path, default=Path("runs/matched-0995"),
@@ -237,6 +220,7 @@ def main() -> int:
         "startYear": start_year,
         "vendorVersion": economics.VENDOR_VERSION,
         "normsSha256": digest(norms_file, "sha256"),
+        "chargeInitialPump": economics.charge_initial_pump(norms_file),
         "rowsMd5": digest(rows_file),
         "scheduleMd5": digest(schedule_file) if schedule_file.is_file() else None,
         "command": " ".join(command),

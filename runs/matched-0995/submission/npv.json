@@ -10,6 +10,7 @@
   "startYear": 2007,
   "vendorVersion": "7.0.2-negative-row-filter",
   "normsSha256": "4f96a304db486f158994173be6e86b45d63858b8d851470cab8168c86b366358",
+  "chargeInitialPump": false,
   "rowsMd5": "765a211f037a29bf0cea0675ab2ea683",
   "scheduleMd5": "a7132dad996a86a30766d06f5ba63c7b",
   "sourceScheduleMd5": "41d813345e95f9d484c792ee6312a270",

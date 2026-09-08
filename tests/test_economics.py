@@ -294,6 +294,52 @@ def test_the_committed_trace_records_a_command_anyone_can_run():
     )
 
 
+def test_the_pump_charge_flag_is_read_from_the_norms_book():
+    """Развилка на 92,9 млн руб. читается из книги организаторов, а не из кода.
+
+    Флаг решает, платим ли мы за ЭЦН, уже стоящий в скважине на начало расчёта.
+    В поставке он «НЕТ»; кейс организаторов может прийти с «ДА», и тогда деньги
+    другие.
+    """
+    assert economics.charge_initial_pump() is False
+
+
+def test_the_machine_trace_records_the_pump_charge_flag(tmp_path):
+    """След обязан различать два расчёта одного расписания с разными флагами.
+
+    С9 ревизии 03.09 помечен закрытым, но именно эта его половина сделана не
+    была: `charge_initial_pump()` лежала в `verify_declared.py` мёртвой — ноль
+    вызовов по всему дереву, — и ни один `npv.json` поля не содержал. Два
+    расчёта одного и того же расписания с «ДА» и «НЕТ» давали одинаково
+    выглядящий след при разнице в 92,9 млн руб.
+    """
+    import json
+    import subprocess
+
+    rows = tmp_path / "rows.csv"
+    rows.write_text(
+        "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
+        "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
+        "2007-01-01,1,10,10,5,5,0,0,100,80,1,10,5,0\n"
+        "2007-02-01,1,20,10,10,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+
+    root = economics.VENDOR_DIR.parent.parent
+    done = subprocess.run(
+        [sys.executable, str(root / "scripts" / "verify_declared.py"),
+         "--run", str(tmp_path), "--claimed", "0"],
+        cwd=root, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=600)
+
+    assert (tmp_path / "npv.json").is_file(), done.stderr[-500:]
+    trace = json.loads((tmp_path / "npv.json").read_text(encoding="utf-8"))
+
+    assert "chargeInitialPump" in trace, (
+        "в машинном следе нет флага, решающего 92,9 млн руб. — два расчёта "
+        "одного расписания с разными нормативами неразличимы"
+    )
+    assert trace["chargeInitialPump"] is False
+
+
 def test_a_refusal_of_the_reference_calculator_carries_its_reason(tmp_path):
     """Отказ эталона обязан доехать до человека вместе с причиной.
 

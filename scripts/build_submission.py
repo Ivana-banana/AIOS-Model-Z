@@ -315,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         "startYear": control_start.year,
         "vendorVersion": economics.VENDOR_VERSION,
         "normsSha256": digest(config.economics.norms_file, "sha256"),
+        "chargeInitialPump": economics.charge_initial_pump(config.economics.norms_file),
         "rowsMd5": digest(rows_file),
         "scheduleMd5": digest(target),
         "sourceScheduleMd5": digest(schedule_file),
