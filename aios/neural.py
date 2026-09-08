@@ -932,7 +932,7 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     )
     return NeuralBundle(
         tuple(controls.columns), models, start_month, month_span,
-        _envelope(controls), report, levels=levels, control_center=centre,
+        _envelope(controls, train_scenarios), report, levels=levels, control_center=centre,
         trust_region=_trust_region(controls, train_scenarios, control_start),
     )
 
@@ -1232,12 +1232,25 @@ def _pivot_controls(
     return pivoted.reindex(full_index).fillna(1.0)
 
 
-def _envelope(controls: pd.DataFrame) -> TrainingEnvelope:
+def _envelope(controls: pd.DataFrame,
+              train_scenarios: frozenset[str] | set[str] | None = None) -> TrainingEnvelope:
     """Область применимости снимается с той же матрицы, что уходит в признаки.
 
     Строк здесь ровно «сценарий × месяц» (у Модели Z это 12 × 370), а не
     «скважина × месяц», поэтому перевод в словари ничего не стоит.
+
+    **Только обучающие сценарии** — по той же причине, по какой их одних берёт
+    доверенная область: модель отложенных строк не видела ни разу
+    (`train_rows = rows[rows["scenario"].isin(train_scenarios)]`). Пока область
+    снималась со всех, `covers_control` отвечал «покрыто» на множитель,
+    встречавшийся только в отложенном прогоне, — а оптимизатор целенаправленно
+    тянет решение к краю диапазона, то есть ровно туда, где это переоценивает
+    покрытие (Н-35). `None` означает «делить не на что»: так зовут разбор и
+    тесты, и поведение там прежнее.
     """
+    if train_scenarios is not None:
+        chosen = controls.index.get_level_values("scenario").isin(set(train_scenarios))
+        controls = controls[chosen]
     return TrainingEnvelope.fit(controls.to_dict("records"))
 
 

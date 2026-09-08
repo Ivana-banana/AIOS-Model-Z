@@ -2060,6 +2060,15 @@ def test_the_rehearsal_refuses_an_export_the_reference_calculator_cannot_price(t
 
     if not (ROOT / "config-rehearsal.toml").is_file():
         pytest.skip("нет конфигурации репетиции")
+    # Репетиция читает дек, а он в git не ведётся и распаковывается отдельным
+    # шагом инструкции: без него команда честно отказывает «Дек не читается», и
+    # проверять на этом отказе физическую годность выгрузки нечего. Пропуск с
+    # названной причиной, а не красный тест на клоне проверяющего.
+    from aios import config as config_module
+
+    config = config_module.load(ROOT / "config-rehearsal.toml")
+    if not config.case.model_dir.is_dir():
+        pytest.skip(f"дек не распакован: {config.case.model_dir}")
 
     done = subprocess.run(
         [system.executable, str(SCRIPTS / "rehearse_case.py"),

@@ -518,7 +518,12 @@ def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
     import re
 
     submission = _read("docs/submission.md")
-    declared = re.search(r"`(runs/[\w.-]+/wells_schedule\.inc)`", submission)
+    # Путь берётся тем же выражением, что и в `check_package.py`, — многоуровневым.
+    # Прежнее `runs/[\w.-]+/wells_schedule\.inc` не умело перешагнуть второй
+    # слэш, и с 08.09, когда заявка стала хвостом в подкаталоге `submission/`,
+    # сторож молча сторожил **исходный** файл прогона вместо сдаваемого: он
+    # тоже назван в документе, и регулярка находила его (Н-37).
+    declared = re.search(r"`(runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc)`", submission)
     assert declared, "в docs/submission.md не найден сдаваемый файл"
     path = declared.group(1)
 
@@ -527,7 +532,11 @@ def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
     # мест пять, а не три: демонстрация тоже показывает файл, и на защите
     # показывают именно её (Б36)
     # в показе прогон назван каталогом, а не файлом — сравниваем по имени прогона
-    name = path.rsplit("/", 2)[-2]
+    # в показе прогон назван каталогом; у хвоста каталог прогона — на уровень выше
+    run = path.rsplit("/", 1)[0]
+    name = run.rsplit("/", 1)[-1]
+    if name == "submission":
+        name = run.rsplit("/", 2)[-2]
     assert name in _read("docs/presentation.md"), "шаг демозапуска ведёт не туда"
     assert name in _read("docs/demo.md"), "сценарий показа ведёт не туда"
     assert path in _read("docs/submission-day.md"), "паспорт отправки ведёт не туда"
@@ -538,7 +547,11 @@ def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
     # инструкции буквально, получил бы файл, которого мы не заявляем. Это ровно
     # тот механизм расхождения с пересчётом организаторов, о котором предупреждает
     # первый абзац самого документа.
+    # Кейс собирается в каталоге прогона, а сдаётся хвост из его подкаталога
+    # `submission/` — то же правило, что у `check_release_tag.reproduction_problem`.
     run = path.rsplit("/", 1)[0]
+    if run.endswith("/submission"):
+        run = run[: -len("/submission")]
     commands = submission[submission.index("## 3."):]
     commands = commands[:commands.index("## 4.")]
     assert f"{run}/RUN.DATA" in commands, (

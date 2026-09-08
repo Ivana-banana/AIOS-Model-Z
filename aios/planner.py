@@ -2153,9 +2153,17 @@ def _fit_injection_to_water_corridor(
         return steps, []
 
     planned_total = sum(one["planned"] for one in years.values())
-    base_total = sum(one["base"] for one in years.values())
-    if planned_total <= 0 or base_total <= 0:
+    if planned_total <= 0:
         return steps, []
+    # `base_total <= 0` из условия убрано: горизонт без единой строки отбора —
+    # это не «сверять нечего», а «возмещать нечего», и погодовая ветка ниже
+    # умеет отвечать на него нулевым множителем с обоснованием. Пока ранний
+    # выход срабатывал, закачка оставалась нетронутой: расписание тратило OPEX
+    # на воду без выручки, планировщик не печатал ни одного решения, а
+    # fail-closed потом отвергал кандидата по аудиту. Отбор закрывают
+    # ограничения, стоящие раньше коридора (max_active_wells, минимальный дебит,
+    # обязательные остановки, горизонтный бюджет по жидкости), так что случай не
+    # экзотический (Н-36).
 
     factors: dict[int, float] = {}
     reasons: dict[int, str] = {}
