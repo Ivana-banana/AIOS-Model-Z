@@ -1009,3 +1009,36 @@ def test_a_fit_that_did_not_converge_says_so(norms, monkeypatch):
     assert any("не сошлось" in one for one in result.warnings), (
         "приведение не сошлось, а цикл об этом молчит: " + "; ".join(result.warnings[:5])
     )
+
+
+def test_a_concession_covers_the_monthly_quota_too_not_only_the_yearly_one():
+    """Когда исчерпаны обе корзины, уступка обязана быть объявлена по обеим.
+
+    Планировщик называл только первую (`full[0]`, а `buckets()` ставит год перед
+    месяцем). `casecheck.announced_for` искал «на месяц …», не находил — и
+    `run_cycle --confirm` печатал «УСЛОВИЯ КЕЙСА НАРУШЕНЫ» с кодом 2 на плане,
+    чьё превышение планировщик объявил вслух. До Н-19 это правило жило только в
+    репетиции; перенос его в fail-closed сделал дефект отказом (Р-45).
+    """
+    from aios import planner as planner_module
+
+    limits = planner_module.Limits(max_events_per_year=1, max_events_per_month=1)
+    steps = [
+        ScheduleStep(date(2019, month, 1),
+                     (ProducerControl("1", "OPEN" if month % 2 else "SHUT", "LRAT",
+                                      30.0 if month % 2 else None, 50.0),), ())
+        for month in range(1, 5)
+    ]
+    conceded = [
+        planner_module.Allocation(
+            well="1", resource=f"квота мероприятий, {where}", before=0.0, after=0.0,
+            reason=f"остановка оставлен вопреки квоте 1 на {where}: он порождён "
+                   "ограничением объекта",
+        )
+        for where in ("год 2019", "месяц 2019-02")
+    ]
+
+    assert loop._case_problems(steps, [], limits, None, []), "синтетика без нарушений"
+    assert not loop._case_problems(steps, [], limits, None, conceded), (
+        "объявленная уступка по обеим корзинам всё равно считается нарушением"
+    )

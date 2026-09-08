@@ -1793,9 +1793,17 @@ def test_a_conceded_event_spends_every_quota_bucket(norms):
     _, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
     conceded = [one for one in decisions if "вопреки квоте" in one.reason]
 
-    assert len(conceded) == 2, "две уступки из трёх мероприятий: первое прошло по квоте"
-    assert any("месяц 2027-02" in one.reason or "год 2027" in one.reason
-               for one in conceded)
+    assert {one.well for one in conceded} == {"B", "C"}, (
+        "две уступки из трёх мероприятий: первое прошло по квоте"
+    )
+    # По каждой исчерпанной корзине — своё объявление. Раньше называлась только
+    # первая (год), и месячное нарушение оставалось необъявленным: приёмка ищет
+    # «на месяц …», не находит и отвергает кандидата, чьё превышение планировщик
+    # объявил вслух (Р-45).
+    for well in ("B", "C"):
+        buckets = {one.resource for one in conceded if one.well == well}
+        assert buckets == {"квота мероприятий, год 2027",
+                           "квота мероприятий, месяц 2027-02"}, buckets
 
 
 def test_a_postponed_event_is_reported_once_not_every_month(norms):

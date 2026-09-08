@@ -1834,14 +1834,20 @@ def _fit_events_to_quota(
             if (well, step.date) in (protected or set()):
                 for name, _ in step_buckets:
                     spent[name] = spent.get(name, 0) + 1
-                name, limit = full[0]
-                decisions.append(Allocation(
-                    well=well, resource=f"квота мероприятий, {name}",
-                    before=0.0, after=0.0,
-                    reason=(f"{kind} оставлен вопреки квоте {limit} на {name}: он "
-                            f"порождён ограничением объекта, и его отмена нарушила бы "
-                            f"это ограничение. Мероприятий уже {spent[name]}"),
-                ))
+                # Уступка объявляется по КАЖДОЙ исчерпанной корзине, а не только
+                # по первой. Корзин две — год и месяц, — и когда исчерпаны обе,
+                # объявление только про год оставляло месячное нарушение
+                # неучтённым: `casecheck.announced_for` ищет «на месяц …» и не
+                # находит, а fail-closed отвергает кандидата, чьё превышение
+                # планировщик объявил вслух (Р-45, ревью ночного дифа).
+                for name, limit in full:
+                    decisions.append(Allocation(
+                        well=well, resource=f"квота мероприятий, {name}",
+                        before=0.0, after=0.0,
+                        reason=(f"{kind} оставлен вопреки квоте {limit} на {name}: он "
+                                f"порождён ограничением объекта, и его отмена нарушила бы "
+                                f"это ограничение. Мероприятий уже {spent[name]}"),
+                    ))
                 continue
             cancelled.add(well)
             asked = next((c for c in step.producers if c.well == well), None) \
