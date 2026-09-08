@@ -1341,7 +1341,16 @@ def _fit_injection_to_annual_budget(
         return steps, []
 
     decisions: list[Allocation] = []
-    reported: set[int] = set()
+    # Ключ — год И скважина. Раньше здесь стояло `reported: set[int]`, то есть
+    # решение выпускалось **одно на год**: от имени первой попавшейся скважины и
+    # с её собственной уставкой в `before`/`after`, — а срезка шла всем. На
+    # сдаваемом расписании это 19 решений «скв. 1» при 71 действительно урезанной
+    # скважине, и `explain()` печатал «урезано 1 скважин, суммарно 564 м³/сут»
+    # при фактических 307 362 — занижение в 545 раз. Число уходило не только в
+    # текст: `explain.py` кладёт его в слой интерпретируемости, а страница цикла
+    # печатает «скважин: 1» (Н-31). Дедупликация по году остаётся: внутри года
+    # множитель один, и повторять решение каждый месяц незачем.
+    reported: set[tuple[int, str]] = set()
     result: list[ScheduleStep] = []
     for step in steps:
         factor = budget_m3[step.date.year] / over[step.date.year] \
@@ -1355,8 +1364,8 @@ def _fit_injection_to_annual_budget(
                 injectors.append(control)
                 continue
             reduced = control.rate * factor
-            if step.date.year not in reported:
-                reported.add(step.date.year)
+            if (step.date.year, control.well) not in reported:
+                reported.add((step.date.year, control.well))
                 decisions.append(Allocation(
                     well=control.well, resource=f"{reason}, {step.date.year}",
                     before=control.rate, after=reduced,
@@ -1399,7 +1408,16 @@ def _fit_liquid_to_annual_volume(
         return steps, []
 
     decisions: list[Allocation] = []
-    reported: set[int] = set()
+    # Ключ — год И скважина. Раньше здесь стояло `reported: set[int]`, то есть
+    # решение выпускалось **одно на год**: от имени первой попавшейся скважины и
+    # с её собственной уставкой в `before`/`after`, — а срезка шла всем. На
+    # сдаваемом расписании это 19 решений «скв. 1» при 71 действительно урезанной
+    # скважине, и `explain()` печатал «урезано 1 скважин, суммарно 564 м³/сут»
+    # при фактических 307 362 — занижение в 545 раз. Число уходило не только в
+    # текст: `explain.py` кладёт его в слой интерпретируемости, а страница цикла
+    # печатает «скважин: 1» (Н-31). Дедупликация по году остаётся: внутри года
+    # множитель один, и повторять решение каждый месяц незачем.
+    reported: set[tuple[int, str]] = set()
     result: list[ScheduleStep] = []
     for step in steps:
         factor = budget_m3[step.date.year] / over[step.date.year] \
@@ -1413,8 +1431,8 @@ def _fit_liquid_to_annual_volume(
                 producers.append(control)
                 continue
             reduced = control.liquid_rate * factor
-            if step.date.year not in reported:
-                reported.add(step.date.year)
+            if (step.date.year, control.well) not in reported:
+                reported.add((step.date.year, control.well))
                 decisions.append(Allocation(
                     well=control.well, resource=f"{reason}, {step.date.year}",
                     before=control.liquid_rate, after=reduced,

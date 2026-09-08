@@ -2374,3 +2374,54 @@ def test_a_recount_after_a_cancelled_event_keeps_the_idle_well_idle():
         "считается вернувшейся из-под закачки"
     )
 
+
+def test_the_annual_volume_cut_names_every_well_it_cut(norms):
+    """Решение выписывается каждой урезанной скважине, а не одной за весь год.
+
+    Годовой и горизонтный объём режут **весь фонд** одним множителем, а решение
+    выпускалось одно на год: от имени первой попавшейся скважины и с её
+    собственной уставкой в `before`/`after`. На сдаваемом расписании это 19
+    решений «скв. 1» при 71 действительно урезанной скважине, и `explain()`
+    печатал «урезано 1 скважин, суммарно 564 м³/сут» при фактических
+    307 362 — занижение в 545 раз. Число уходит не только в текст:
+    `aios/explain.py` кладёт его в слой интерпретируемости, а страница цикла
+    печатает «скважин: 1» (Н-31).
+
+    Дедупликация по году остаётся: внутри года множитель один, и повторять
+    решение каждый месяц незачем.
+    """
+    steps = [ScheduleStep(date(2007, month, 1),
+                          tuple(prod(f"p{number}", 100.0) for number in range(20)),
+                          tuple(inj(f"i{number}", 100.0) for number in range(10)))
+             for month in range(1, 13)]
+    forecast = [make_row(f"2007-{month:02d}-01", f"p{number}", wlpr=100.0,
+                         liquid=3000.0, oil=300.0)
+                for month in range(1, 13) for number in range(20)]
+    forecast += [make_row(f"2007-{month:02d}-01", f"i{number}", wwir=100.0,
+                          injection=3000.0)
+                 for month in range(1, 13) for number in range(10)]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(enforce_water_balance=False,
+                       max_field_liquid_m3_per_year=500_000.0,
+                       max_field_injection_m3_per_year=200_000.0),
+        FLUIDS,
+    )
+
+    assert len({one.well for one in decisions}) == 30, (
+        f"решения выписаны не всем урезанным: {len(decisions)} штук на 30 скважин"
+    )
+    # по одному решению на скважину за год, а не по одному на каждый месяц
+    assert len(decisions) == 30
+
+    produced_cut = (sum(control.liquid_rate for control in steps[0].producers)
+                    - sum(control.liquid_rate or 0.0 for control in result[0].producers))
+    injected_cut = (sum(control.rate for control in steps[0].injectors)
+                    - sum(control.rate or 0.0 for control in result[0].injectors))
+
+    assert sum(one.cut for one in decisions) == pytest.approx(
+        produced_cut + injected_cut, rel=1e-6), (
+        "сумма по решениям расходится с фактической срезкой — отчёт врёт о том, "
+        "что сделал планировщик"
+    )
