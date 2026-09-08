@@ -372,7 +372,15 @@ def parse_date_record(record: tuple[str | None, ...]) -> date:
     if len(record) < 3 or any(part is None for part in record[:3]):
         raise ValueError(f"Некорректная запись DATES: {record!r}")
     day, month, year = record[0], record[1], record[2]
-    return date(int(str(year)), _MONTHS[str(month).upper()[:3]], int(str(day)))
+    name = str(month).upper()[:3]
+    if name not in _MONTHS:
+        # Голый KeyError('XXX') отсюда уезжал трассировкой во все точки входа,
+        # читающие дек: ни какого месяца не хватает, ни где он встретился.
+        raise ValueError(
+            f"неизвестный месяц в записи DATES: {month!r}. "
+            "Допустимы " + ", ".join(sorted(_MONTHS)) + f"; запись: {record!r}"
+        )
+    return date(int(str(year)), _MONTHS[name], int(str(day)))
 
 
 def format_date_record(value: date) -> str:

@@ -32,7 +32,11 @@ from aios.schedule import render as render_steps
 
 _INCLUDE_RE = re.compile(r"(INCLUDE\s*\n\s*)'([^']+)'", re.IGNORECASE)
 _DATES_LINE_RE = re.compile(r"^\s*DATES\s*$", re.IGNORECASE)
-_RECORD_RE = re.compile(r"^\s*(\d+)\s+([A-Za-z]{3})\s+(\d{4})\s*/")
+# Кавычки вокруг любого поля даты — законная форма Eclipse (`1 'JAN' 2007 /`),
+# и `aios.deck` её читает. Здесь их не было, и на таком деке `carried_keywords`
+# не опознавал ни одной даты: все вскрытия молча выпадали из переноса.
+_RECORD_RE = re.compile(
+    r"^\s*['\"]?(\d+)['\"]?\s+['\"]?([A-Za-z]{3})['\"]?\s+['\"]?(\d{4})['\"]?\s*/")
 
 
 
@@ -289,6 +293,7 @@ def carried_keywords(schedule_text: str, control_start: date) -> dict[date, str]
     """
     carried: dict[date, list[str]] = {}
     current: date | None = None
+    dates_seen = 0
     lines = schedule_text.splitlines()
     index = 0
 
@@ -301,6 +306,7 @@ def carried_keywords(schedule_text: str, control_start: date) -> dict[date, str]
         block, index = _read_block(lines, index)
 
         if name == "DATES":
+            dates_seen += 1
             for line in block[1:]:
                 record = _RECORD_RE.match(strip_comment(line))
                 if record:
@@ -312,6 +318,16 @@ def carried_keywords(schedule_text: str, control_start: date) -> dict[date, str]
 
         carried.setdefault(current, []).append("\n".join(block))
 
+    # Пустой перенос при непрочитанной ни одной дате — не «нечего переносить», а
+    # неразобранный дек: ровно так выглядела потеря всех COMPDAT на закавыченном
+    # месяце. Молчать здесь нельзя — цена молчания уже измерена: 22 скважины
+    # дают ноль за весь горизонт, а симулятор сообщает об этом предупреждением.
+    if dates_seen and current is None:
+        raise ValueError(
+            f"в SCHEDULE есть {dates_seen} блок(ов) DATES, но ни одна дата не "
+            "разобрана — перенос вскрытий вышел бы пустым, а скважины получили "
+            "бы режим без единого соединения с пластом"
+        )
     return {step_date: "\n\n".join(blocks) for step_date, blocks in carried.items()}
 
 
