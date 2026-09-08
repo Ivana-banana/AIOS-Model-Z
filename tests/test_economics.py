@@ -434,3 +434,39 @@ def test_paths_inside_the_repository_are_recorded_relative_to_it():
     assert portable(outside) == str(outside), (
         "путь вне репозитория подменён относительным — команда возьмёт другой файл"
     )
+
+
+def test_a_run_that_is_not_the_declared_one_leaves_its_trace_alone(tmp_path):
+    """Сверка чужого прогона не затирает его машинный след.
+
+    Паспорт дня отправки велит прогнать `verify_declared` по обоим прогонам.
+    Команда писала след безусловно — то есть на базовом прогоне записывала в его
+    `npv.json` число ЗАЯВКИ: `claimedM` 11 851,8 → 13 133,8, `agreed` true →
+    false. А след базы — половина заявляемой тройки (заявленное, базовое,
+    прирост) и лежит в git ровно затем, чтобы прирост проверялся на чистом
+    клоне (Р-234). Найдено ревью ночного дифа 09.09.
+    """
+    import json
+    import subprocess
+
+    run = tmp_path / "чужой"
+    run.mkdir()
+    (run / "rows.csv").write_text(
+        "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
+        "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
+        "2007-01-01,1,10,10,5,5,0,0,100,80,1,10,5,0\n"
+        "2007-02-01,1,20,10,10,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+    before = {"run": "чужой", "chddM": 1.0, "claimedM": 1.0, "agreed": True}
+    (run / "npv.json").write_text(json.dumps(before), encoding="utf-8")
+
+    root = economics.VENDOR_DIR.parent.parent
+    done = subprocess.run(
+        [sys.executable, str(root / "scripts" / "verify_declared.py"), "--run", str(run)],
+        cwd=root, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=600)
+
+    assert done.returncode == 1
+    assert "НЕ ТОТ ПРОГОН" in done.stderr
+    assert json.loads((run / "npv.json").read_text(encoding="utf-8")) == before, (
+        "след чужого прогона переписан числом заявки"
+    )

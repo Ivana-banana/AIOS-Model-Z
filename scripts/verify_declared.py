@@ -231,8 +231,15 @@ def main() -> int:
         "scheduleMd5": digest(schedule_file) if schedule_file.is_file() else None,
         "command": " ".join(command),
     }
-    (run_dir / "npv.json").write_text(
-        json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # След пишется только тогда, когда сверялся ТОТ прогон. Иначе команда,
+    # прогнанная по чужому прогону (а паспорт дня отправки велит гонять и
+    # базовый), затирала его машинный след числом заявки: `claimedM` 11 851,8 →
+    # 13 133,8, `agreed` true → false. След базы — половина заявляемой тройки
+    # (заявленное, базовое, прирост) и лежит в git ровно затем, чтобы прирост
+    # можно было проверить на чистом клоне (Р-234). Найдено ревью ночного дифа.
+    if wrong_run is None:
+        (run_dir / "npv.json").write_text(
+            json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print(f"прогон:      {run_dir}")
     print(f"выгрузка:    rows.csv, md5 {record['rowsMd5']}")
@@ -243,7 +250,10 @@ def main() -> int:
     print(f"пересчёт:    {recomputed:,.3f} млн руб.")
     print(f"заявлено:    {claimed:,.3f} млн руб. ({source})")
     print(f"расхождение: {difference:,.6f} млн руб.")
-    print(f"след:        {(run_dir / 'npv.json')}")
+    if wrong_run is None:
+        print(f"след:        {(run_dir / 'npv.json')}")
+    else:
+        print("след:        не записан — сверялся не заявленный прогон")
     print()
     if not agreed:
         if wrong_run:
