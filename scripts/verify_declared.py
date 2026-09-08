@@ -171,16 +171,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = build_parser().parse_args()
+    # Конфигурация проверяется ПЕРВОЙ: без неё не выполнить ничего, а её путь
+    # печатают руками. Обратный порядок означал, что на чистом клоне (где нет
+    # ни одной выгрузки) команда отвечала «нет выгрузки» на битый --config —
+    # и обход точек входа краснел на клоне, хотя на машине разработки был
+    # зелёным. Ровно эта же ошибка была у обоих прежних сторожей класса.
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+
     run_dir = arguments.run if arguments.run.is_absolute() else ROOT / arguments.run
     rows_file = run_dir / "rows.csv"
     if not rows_file.is_file():
         print(f"нет выгрузки {rows_file}: пересчитывать нечего", file=sys.stderr)
         return 1
 
-    refusal = config_module.refusal(arguments.config)
-    if refusal:
-        print(refusal, file=sys.stderr)
-        return 1
     config = config_module.load(arguments.config)
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:

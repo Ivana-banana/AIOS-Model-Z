@@ -119,6 +119,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     arguments = parser.parse_args(argv)
 
+    # Конфигурация проверяется ПЕРВОЙ: без неё не выполнить ничего, а её путь
+    # печатают руками. Обратный порядок означал, что на чистом клоне (где нет
+    # ни одной выгрузки) команда отвечала «нет выгрузки» на битый --config —
+    # и обход точек входа краснел на клоне, хотя на машине разработки был
+    # зелёным. Ровно эта же ошибка была у обоих прежних сторожей класса.
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+
     factors = [int(value) for value in arguments.factors.split(",")]
     if any(factor < 1 for factor in factors):
         print("кратность не бывает меньше единицы", file=sys.stderr)
@@ -129,10 +139,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"нет выгрузки {source}: сначала посчитайте прогон", file=sys.stderr)
         return 1
 
-    refusal = config_module.refusal(arguments.config)
-    if refusal:
-        print(refusal, file=sys.stderr)
-        return 1
     config = config_module.load(arguments.config)
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:
