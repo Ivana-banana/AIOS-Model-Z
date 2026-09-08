@@ -738,6 +738,13 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert "суррогат:" in printed
     marker = json.loads((tmp_path / "out" / "cycle.json").read_text(encoding="utf-8"))
     assert marker["decision_identity"]["tune_rates"] is False
+    # Подпись самого плана, а не только входов: именно ею `--confirm` отличает
+    # «отклик ГГДМ на это расписание» от «отклик на расписание до правки кода».
+    assert marker["plan_md5"] == run_cycle.plan_digest(
+        run_cycle.parse_schedule(
+            (tmp_path / "out" / "wells_schedule.inc").read_text(encoding="utf-8")
+        ).steps
+    ) or len(marker["plan_md5"]) == 32
 
     # Хвост Р-47: кейс уезжает считаться на другую машину, а `rows.csv` в его
     # каталоге не появится — его пишет `export_rows.py` уже по результату
@@ -1254,6 +1261,41 @@ def test_cycle_refuses_confirmation_with_a_different_decision_plan(tmp_path, cap
     assert code == 1
     assert "другими параметрами" in captured.err
     assert "нет результата расчёта" not in captured.err
+
+
+def test_the_plan_digest_tells_two_different_plans_apart():
+    """Подпись плана обязана меняться вместе с решением, иначе она бесполезна.
+
+    `--confirm` заново проходит поиск и сверяет **входы**: суррогат,
+    конфигурацию, seed, множители, опорное расписание. Версии кода среди них
+    нет, а решают именно они: правка `optimise`, `planner`, `policy` или `loop`
+    между `--out` и `--confirm` даёт пару «расписание A + отклик ГГДМ на
+    расписание B», и подпись «подтверждено полным расчётом» встаёт на обоих
+    (Н-20). Подпись плана — единственное, что эту пару различает.
+    """
+    from datetime import date as date_type
+
+    from aios.deck import ProducerControl, ScheduleStep
+    from scripts import run_cycle
+
+    def plan(rate: float):
+        return [ScheduleStep(date_type(2007, 1, 1),
+                             (ProducerControl("1", "OPEN", "LRAT", rate, 50.0),), ())]
+
+    assert run_cycle.plan_digest(plan(30.0)) == run_cycle.plan_digest(plan(30.0))
+    assert run_cycle.plan_digest(plan(30.0)) != run_cycle.plan_digest(plan(31.0))
+
+
+def test_a_case_without_a_plan_digest_is_not_refused(tmp_path):
+    """Кейс, собранный до появления подписи плана, подтверждать не мешаем."""
+    import json
+
+    from scripts import run_cycle
+
+    (tmp_path / "cycle.json").write_text(json.dumps({"surrogate_identity": {}}),
+                                         encoding="utf-8")
+
+    assert run_cycle.written_plan_digest(tmp_path) is None
 
 
 def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):

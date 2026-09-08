@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 from calendar import monthrange
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -317,6 +318,24 @@ def _events_per_period(steps: list[ScheduleStep], limit: int, *, period: str) ->
     name = "max_events_per_year" if period == "year" else "max_events_per_month"
     return LimitCheck(key=name, limit=float(limit), value=float(best),
                       where=where, unit="мероприятий")
+
+
+def announced_for(check: LimitCheck, decisions: Iterable[Any]) -> bool:
+    """Объявил ли планировщик уступку **в том же периоде**, где нарушение.
+
+    Совпадения по виду условия мало: годовая и месячная квоты считаются по
+    разным периодам, и уступка в одном году ничего не говорит о другом. Пока
+    цикл спрашивал только «была ли уступка вообще», одна объявленная уступка
+    гасила квоту целиком: 22 мероприятия против предела 1 в 2019 проходили
+    fail-closed, если уступка объявлена хоть в каком-нибудь году (Н-19).
+
+    Правило одно на цикл и на репетицию: два ответа на один вопрос разошлись бы
+    молча, а здесь цена расхождения — пропущенное нарушение условия кейса.
+    """
+    period = "год" if check.key.endswith("_per_year") else "месяц"
+    needle = f"на {period} {check.where}"
+    return any("вопреки квоте" in decision.reason and needle in decision.reason
+               for decision in decisions)
 
 
 def _active_wells(steps: list[ScheduleStep], limit: int) -> LimitCheck:

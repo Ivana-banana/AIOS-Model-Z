@@ -109,15 +109,8 @@ def report(title: str, checks: list[casecheck.LimitCheck]) -> None:
 
 
 def _announced_for(check: casecheck.LimitCheck, decisions) -> bool:
-    """Объявил ли планировщик уступку **в том же периоде**, где нарушение.
-
-    Совпадения по виду условия мало: годовая и месячная квоты считаются по
-    разным периодам, и уступка в одном году ничего не говорит о другом.
-    """
-    period = "год" if check.key.endswith("_per_year") else "месяц"
-    needle = f"на {period} {check.where}"
-    return any("вопреки квоте" in decision.reason and needle in decision.reason
-               for decision in decisions)
+    """Уступка в том же периоде. Правило общее с циклом — `casecheck`."""
+    return casecheck.announced_for(check, decisions)
 
 
 def verdict(conceded: list[str], declared: int) -> list[str]:

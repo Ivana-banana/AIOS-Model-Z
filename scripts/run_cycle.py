@@ -45,6 +45,7 @@ from aios.margin import Norms  # noqa: E402
 from aios.model import SurrogateLoadError, for_cycle  # noqa: E402
 from aios.run import build_case  # noqa: E402
 from aios.schedule import liquid_limit  # noqa: E402
+from aios.schedule import render as render_schedule  # noqa: E402
 
 
 def surrogate_identity(path: str | None, name: str) -> dict[str, str]:
@@ -110,6 +111,22 @@ def decision_identity(*, source: Path, config_path: str | Path, tune_rates: bool
     }
 
 
+def plan_digest(steps) -> str:
+    """`md5` самого плана — того расписания, которое цикл только что решил.
+
+    `--confirm` заново проходит весь поиск, чтобы восстановить прогноз, и
+    сверяет входы: суррогат, конфигурацию, seed, набор множителей, опорное
+    расписание. Версии **кода** среди входов нет, а решают именно они: любая
+    правка `optimise`, `planner`, `policy` или `loop` между `--out` и
+    `--confirm` даёт пару «расписание A + отклик ГГДМ на расписание B». Подпись
+    «подтверждено полным расчётом» при этом стоит на обоих (Н-20).
+
+    Считается по тексту, а не по объектам: тот же рендер с обеих сторон, значит
+    округление одинаковое, и сравниваются решения, а не представление чисел.
+    """
+    return hashlib.md5(render_schedule(steps).encode("utf-8")).hexdigest()
+
+
 def written_decision_identity(case_dir: Path) -> dict[str, object] | None:
     """Входы, записанные новым маркером; старый маркер остаётся допустимым."""
     marker = case_dir / "cycle.json"
@@ -120,6 +137,18 @@ def written_decision_identity(case_dir: Path) -> dict[str, object] | None:
     except (OSError, ValueError):
         return None
     return identity if isinstance(identity, dict) else None
+
+
+def written_plan_digest(case_dir: Path) -> str | None:
+    """`md5` плана, записанный маркером кейса. `None` — маркер старый."""
+    marker = case_dir / "cycle.json"
+    if not marker.is_file():
+        return None
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8")).get("plan_md5")
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, str) else None
 
 
 def confirmation_command(*, case_dir: str | Path, source: Path,
@@ -379,6 +408,20 @@ def main(argv: list[str] | None = None) -> int:
                   "Передайте тот же --surrogate-model, которым кейс собирался.",
                   file=sys.stderr)
             return 1
+        recorded_plan = written_plan_digest(confirmed_dir)
+        current_plan = plan_digest(result.steps)
+        if recorded_plan is not None and recorded_plan != current_plan:
+            print("подтверждается не то расписание, которое считалось:",
+                  file=sys.stderr)
+            print(f"  в кейсе:        план {recorded_plan}", file=sys.stderr)
+            print(f"  в этой команде: план {current_plan}", file=sys.stderr)
+            print("между сборкой кейса и подтверждением изменились решения — "
+                  "чаще всего это правка optimise/planner/policy/loop, которой "
+                  "нет среди сверяемых входов. Отклик ГГДМ относится к прежнему "
+                  "расписанию, и подписывать им новое нельзя: пересоберите кейс "
+                  "и посчитайте заново.", file=sys.stderr)
+            return 1
+
         rows = summary.monthly_rows(confirmed_dir / case_name, fluids=config.fluids, well_fluids=deck_fluids.by_well)
         if not rows:
             print(f"нет выгрузки в {confirmed_dir}", file=sys.stderr)
@@ -508,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
                 search_seed=search_seed,
                 base_schedule=arguments.base_schedule,
             ),
+            "plan_md5": plan_digest(result.steps),
             "multipliers": list(multipliers) if multipliers else None,
             "tune_rates": not arguments.no_tune_rates,
             # Система отсчёта прогноза. Без неё сравнение «обещал против факта»

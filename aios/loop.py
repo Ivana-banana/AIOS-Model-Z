@@ -574,10 +574,15 @@ def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     """
     if limits is None:
         return []
+    # Уступка засчитывается только в ТОМ периоде, где она объявлена. Пока
+    # спрашивалось «была ли уступка вообще», одна объявленная гасила квоту
+    # целиком: 22 мероприятия против предела 1 в 2019 проходили fail-closed,
+    # если планировщик уступил хоть в каком-нибудь году (Н-19). Правило одно
+    # с репетицией кейса и живёт рядом с самой проверкой.
     conceded = ("max_events_per_year", "max_events_per_month")
-    declared = any("вопреки квоте" in one.reason for one in allocations)
     left = [str(check) for check in casecheck.violations(casecheck.check(steps, rows, limits))
-            if not (declared and check.key in conceded)]
+            if not (check.key in conceded
+                    and casecheck.announced_for(check, allocations))]
 
     if limits.enforce_water_balance:
         # То же окно, каким коридор подбирает планировщик и каким судит

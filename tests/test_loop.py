@@ -928,3 +928,41 @@ def test_the_cycle_measures_trust_distance_on_the_intent_not_on_the_cut_schedule
         "расстояние померено по расписанию после планировщика: именно это "
         "объявляло вне области любого кандидата, включая стартовый"
     )
+
+
+def test_a_concession_in_one_year_does_not_excuse_a_quota_breach_in_another():
+    """Уступка засчитывается в том периоде, где объявлена, а не во всех сразу.
+
+    Цикл спрашивал «была ли уступка вообще» и выбрасывал из списка все проверки
+    квоты мероприятий. Одна объявленная уступка гасила квоту целиком: 22
+    мероприятия против предела 1 в 2019 проходили fail-closed, если планировщик
+    уступил хоть в каком-нибудь году (Н-19). Репетиция кейса умела считать
+    правильно с 05.09 — теперь правило у них общее.
+    """
+    from aios import planner as planner_module
+
+    limits = planner_module.Limits(max_events_per_year=1)
+    steps = [
+        ScheduleStep(date(2019, month, 1),
+                     (ProducerControl("1", "OPEN" if month % 2 else "SHUT", "LRAT",
+                                      30.0 if month % 2 else None, 50.0),), ())
+        for month in range(1, 13)
+    ]
+    elsewhere = planner_module.Allocation(
+        well="1", resource="квота мероприятий, год 2021", before=0.0, after=0.0,
+        reason="остановка оставлен вопреки квоте 1 на год 2021: он порождён "
+               "ограничением объекта",
+    )
+    here = planner_module.Allocation(
+        well="1", resource="квота мероприятий, год 2019", before=0.0, after=0.0,
+        reason="остановка оставлен вопреки квоте 1 на год 2019: он порождён "
+               "ограничением объекта",
+    )
+
+    assert loop._case_problems(steps, [], limits, None, []), (
+        "синтетика подобрана неверно: без уступки нарушение обязано быть"
+    )
+    assert loop._case_problems(steps, [], limits, None, [elsewhere]), (
+        "уступка в другом году погасила нарушение — это и был дефект"
+    )
+    assert not loop._case_problems(steps, [], limits, None, [here])
