@@ -31,7 +31,7 @@ from typing import Any
 
 from aios.deck import ScheduleStep
 from aios.margin import counted_by_methodology
-from aios.planner import Limits, events_of, fund_states
+from aios.planner import Limits, events_of, expand_deltas, fund_states
 
 
 @dataclass(frozen=True)
@@ -73,8 +73,19 @@ def check(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     Возвращает по одной записи на объявленный ключ — в том числе на соблюдённый:
     «условие проверено и держится» такой же результат приёмки, как нарушение, и
     именно его требует протокол.
+
+    **Шаги разворачиваются в состояние фонда, а не читаются как записи.** В деке
+    запись действует до следующей записи по той же скважине: шаг, где скважина не
+    упомянута, означает «режим не менялся», а не «скважина не работает». Пока
+    развёртки здесь не было, объектные пределы считались по составу шага —
+    расписание, где 2030-01 назначает двум скважинам по 200 м³/сут, а 2030-02
+    третьей ещё 200, давало «400 при пределе 500 — соблюдено» вместо настоящих
+    600, и годовой объём занижался на 38 %. `planner.enforce` разворачивает свой
+    вход с 02.09 (там же в докстринге: «три high из ревизии — одна и та же ошибка
+    в шести функциях»), а приёмка кейса — нет; внутри этого модуля `_active_wells`
+    уже считал по фонду и потому в том же вызове честно видел три скважины.
     """
-    steps = list(steps)
+    steps = expand_deltas(list(steps))
     checks: list[LimitCheck] = []
 
     if limits.max_field_liquid_m3_per_day is not None:

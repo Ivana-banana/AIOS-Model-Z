@@ -595,3 +595,31 @@ def test_a_zero_cap_reports_the_first_offender():
     )
     assert breach.value == 100.0, f"в отчёт попал расход не первой скважины: {breach.value}"
 
+
+def test_object_limits_are_read_from_the_fund_state_not_from_step_records():
+    """Шаг без скважины означает «режим не менялся», а не «скважина не работает».
+
+    Объектные пределы считались по составу шага: расписание, где 2030-01
+    назначает двум скважинам по 200 м³/сут, а 2030-02 третьей ещё 200, давало
+    «400 при пределе 500 — соблюдено» вместо настоящих 600, и годовой объём
+    занижался на 38 %. `planner.enforce` разворачивает свой вход с 02.09 — там
+    же в докстринге сказано, что это «одна и та же ошибка в шести функциях», —
+    а приёмка кейса не разворачивала. Внутри того же вызова `max_active_wells`
+    считал по фонду и честно видел три скважины: два ответа на один вопрос.
+    """
+    steps = [
+        ScheduleStep(date(2030, 1, 1),
+                     (ProducerControl("W1", "OPEN", "LRAT", 200.0, 50.0),
+                      ProducerControl("W2", "OPEN", "LRAT", 200.0, 50.0)), ()),
+        ScheduleStep(date(2030, 2, 1),
+                     (ProducerControl("W3", "OPEN", "LRAT", 200.0, 50.0),), ()),
+    ]
+
+    found = {one.key: one for one in casecheck.check(
+        steps, [], planner.Limits(max_field_liquid_m3_per_day=500.0, max_active_wells=2))}
+
+    assert found["max_field_liquid_m3_per_day"].value == 600.0, (
+        "объектный предел посчитан по записям шага, а не по действующему фонду"
+    )
+    assert not found["max_field_liquid_m3_per_day"].satisfied
+    assert found["max_active_wells"].value == 3.0

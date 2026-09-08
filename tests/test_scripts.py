@@ -740,11 +740,9 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert marker["decision_identity"]["tune_rates"] is False
     # Подпись самого плана, а не только входов: именно ею `--confirm` отличает
     # «отклик ГГДМ на это расписание» от «отклик на расписание до правки кода».
-    assert marker["plan_md5"] == run_cycle.plan_digest(
-        run_cycle.parse_schedule(
-            (tmp_path / "out" / "wells_schedule.inc").read_text(encoding="utf-8")
-        ).steps
-    ) or len(marker["plan_md5"]) == 32
+    # Что она различает разные планы — отдельным тестом; здесь достаточно, что
+    # она вообще записана: без неё сверять при подтверждении будет нечего.
+    assert len(marker["plan_md5"]) == 32, marker
 
     # Хвост Р-47: кейс уезжает считаться на другую машину, а `rows.csv` в его
     # каталоге не появится — его пишет `export_rows.py` уже по результату

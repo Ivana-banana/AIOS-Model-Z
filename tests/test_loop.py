@@ -966,3 +966,46 @@ def test_a_concession_in_one_year_does_not_excuse_a_quota_breach_in_another():
         "уступка в другом году погасила нарушение — это и был дефект"
     )
     assert not loop._case_problems(steps, [], limits, None, [here])
+
+
+def test_a_fit_that_did_not_converge_says_so(norms, monkeypatch):
+    """Выход по исчерпанию проходов обязан быть назван, а не молчалив.
+
+    Чередование «объёмный предел режет закачку — нижняя граница коридора
+    добирает её обратно» не сходится в принципе: чем кончится, решает чётность
+    числа проходов, а не сходимость. Фаззер ревизии (400 сценариев) нашёл и
+    случай, недопустимый при сегодняшних трёх проходах. Само нарушение назовёт
+    `_case_problems`; здесь называется его причина — иначе оператор ищет её в
+    кандидате, а она в противоречии условий кейса.
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.planner import Limits
+
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("P1", "OPEN", "LRAT", 100.0, 50.0),),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 100.0, 300.0),))
+             for month in range(1, 13)]
+
+    # приведение, которое каждый проход меняет расписание и потому не сходится
+    def never_settles(current, forecast, norms_, limits_, fluids_, carried_water=None):
+        changed = [
+            ScheduleStep(one.date,
+                         tuple(ProducerControl(c.well, c.status, c.mode,
+                                               (c.liquid_rate or 0.0) + 1.0, c.bhp)
+                               for c in one.producers),
+                         one.injectors)
+            for one in current
+        ]
+        return changed, []
+
+    monkeypatch.setattr(loop.planner, "enforce", never_settles)
+
+    result = loop.run_cycle(
+        _Responsive(), steps, norms,
+        control_start=CONTROL_START, start_date=CONTROL_START,
+        tune_rates=False, limits=Limits(), fluids=FLUIDS,
+    )
+
+    assert any("не сошлось" in one for one in result.warnings), (
+        "приведение не сошлось, а цикл об этом молчит: " + "; ".join(result.warnings[:5])
+    )

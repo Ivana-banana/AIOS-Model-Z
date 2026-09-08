@@ -302,7 +302,7 @@ def run_cycle(surrogate: Surrogate,
             limits, fluids,
         )
         step("приведение к ограничениям объекта")
-        steps, allocations = _enforce_to_fixed_point(
+        steps, allocations, converged = _enforce_to_fixed_point(
             surrogate, steps, norms, limits, fluids, carried
         )
 
@@ -321,6 +321,19 @@ def run_cycle(surrogate: Surrogate,
     safe_chdd = trust.safe_value(result.chdd_m, distance, margin)
 
     warnings = list(surrogate.in_training_range(steps))
+    if limits is not None and not converged:
+        # Выход по исчерпанию проходов не помечался ничем, и расписание уезжало
+        # молча. А чередование «объёмный предел режет — нижняя граница коридора
+        # добирает» не сходится в принципе: чем кончится, решает чётность числа
+        # проходов, а не сходимость (фаззер ревизии, 400 сценариев). Само
+        # нарушение назовёт `_case_problems`; здесь называется его причина,
+        # иначе оператор ищет её в кандидате, а она в противоречии условий.
+        warnings.insert(0, (
+            f"приведение к ограничениям не сошлось за {MAX_ENFORCE_PASSES} прохода: "
+            "срезка и добор чередуются. Итог зависит от числа проходов, а не от "
+            "сходимости — проверьте, не противоречат ли объёмный предел закачки и "
+            "нижняя граница коридора компенсации друг другу"
+        ))
     warnings.extend(_baseline_outside_the_corridor(base_rows, limits, fluids,
                                                    history_rows))
     # Причины, по которым кандидат обязан пойти на полный расчёт, до 03.09
@@ -526,6 +539,7 @@ def _enforce_to_fixed_point(surrogate: Surrogate,
     """
     decisions: list[planner.Allocation] = []
     current = list(steps)
+    converged = False
     for _ in range(MAX_ENFORCE_PASSES):
         fitted, made = planner.enforce(
             current, surrogate.predict(current), norms, limits, fluids,
@@ -536,9 +550,10 @@ def _enforce_to_fixed_point(surrogate: Surrogate,
         # бы отчитаться пустотой о расписании, которое на самом деле урезано.
         decisions.extend(made)
         if fitted == current:
+            converged = True
             break
         current = fitted
-    return current, decisions
+    return current, decisions, converged
 
 
 def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
