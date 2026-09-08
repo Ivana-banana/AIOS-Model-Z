@@ -38,6 +38,7 @@ from aios.deck import ScheduleStep, parse_schedule
 from aios.margin import Norms, screen
 from aios.model import SurrogateLoadError, for_cycle
 from aios.run import build_case
+from aios.schedule import liquid_limit
 from aios.surrogate import fold_warnings
 from aios.web.charts import Series, bar_chart, line_chart
 
@@ -799,6 +800,11 @@ def create_app(root: Path | None = None) -> FastAPI:
                 history=rows,
                 reference_steps=reference_steps,
                 fluids=configuration.fluids,
+                # Предел дебита кейса — тот же, каким его меряет командная
+                # строка. Без него страница показывала бы «нарушений нет» ровно
+                # на том прогнозе, который CLI помечает (Р-47).
+                max_liquid_rate=liquid_limit(
+                    economics.load_norms(configuration.economics.norms_file)[1]),
             )
         except SurrogateLoadError as error:
             raise HTTPException(409, str(error)) from error

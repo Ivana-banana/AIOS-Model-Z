@@ -255,8 +255,14 @@ def _trace_problem(schedule: Path, declared: str | None) -> str | None:
     """
     trace = schedule.parent / "npv.json"
     if not trace.is_file():
+        # Каталог прогона, а не каталог сдаваемого хвоста: `--run submission`
+        # указывал бы на путь, которого нет. То же правило, что у
+        # `check_release_tag.reproduction_problem` (Р-50, ревью ночного дифа).
+        run = schedule.parent
+        if run.name == "submission":
+            run = run.parent
         return (f"нет машинного следа {trace}: запустите "
-                f"python scripts/verify_declared.py --run {schedule.parent.name}")
+                f"python scripts/verify_declared.py --run {run.name}")
     try:
         record = json.loads(trace.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:

@@ -701,3 +701,30 @@ def test_an_addressed_cap_beats_the_type_wide_ceiling_in_the_check_too():
     assert found["well_caps_m3_per_day"].satisfied, (
         "адресный потолок соблюдён, а проверка говорит обратное"
     )
+
+
+def test_a_step_crossing_the_new_year_is_split_between_both_years():
+    """Шаг длиннее месяца переходит через новый год — и объём делится.
+
+    Запись с 2007-12-01 до 2008-03-01 держится 91 сутки: 31 в 2007-м и 60 в
+    2008-м. Пока весь срок относился к году НАЧАЛА, годовая корзина 2008-го
+    оказывалась короче на квартал, и годовой предел объявлялся соблюдённым при
+    превышении — та же ложь, что в Н-24, только сдвинутая на границу года
+    (Р-48, ревью ночного дифа).
+    """
+    steps = [
+        ScheduleStep(date(2007, 12, 1),
+                     (ProducerControl("1", "OPEN", "LRAT", 1000.0, 50.0),), ()),
+        ScheduleStep(date(2008, 3, 1),
+                     (ProducerControl("1", "OPEN", "LRAT", 1000.0, 50.0),), ()),
+    ]
+
+    assert casecheck._days_by_year(steps) == [{2007: 31, 2008: 60}, {2008: 31}]
+
+    found = {one.key: one for one in casecheck.check(
+        steps, [], planner.Limits(max_field_liquid_m3_per_year=50_000.0))}
+
+    # 2008-й: 60 суток первого шага + 31 второго = 91 000 м³, а не 31 000
+    assert found["max_field_liquid_m3_per_year"].value == 91_000.0
+    assert found["max_field_liquid_m3_per_year"].where == "2008"
+    assert not found["max_field_liquid_m3_per_year"].satisfied

@@ -344,10 +344,14 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         raise SystemExit(128 + number)
 
+    # `getattr`, а не `hasattr(signal, number.name)`: кортеж собирается целиком
+    # до того, как условие вообще посмотрят, и на платформе без `SIGHUP`
+    # (Windows) обработчик падал бы `AttributeError` при сборке кортежа — то
+    # есть страховка ронялa бы прогон вместо того, чтобы его спасать (Р-46).
     previous = {
         number: signal.signal(number, _restore_and_exit)
-        for number in (signal.SIGTERM, signal.SIGHUP)
-        if hasattr(signal, number.name)
+        for number in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None))
+        if number is not None
     }
 
     survived: list[Mutation] = []

@@ -27,6 +27,7 @@ from __future__ import annotations
 from calendar import monthrange
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from aios.deck import ScheduleStep
@@ -177,10 +178,11 @@ def _field_rate(steps: list[ScheduleStep], limit: float, *, key: str,
 
     volume: dict[int, float] = {}
     days: dict[int, int] = {}
-    for step, span in zip(steps, _spans(steps), strict=True):
-        volume[step.date.year] = volume.get(step.date.year, 0.0) + \
-            sum(_rates(step, producers=producers).values()) * span
-        days[step.date.year] = days.get(step.date.year, 0) + span
+    for step, parts in zip(steps, _days_by_year(steps), strict=True):
+        rate = sum(_rates(step, producers=producers).values())
+        for year, span in parts.items():
+            volume[year] = volume.get(year, 0.0) + rate * span
+            days[year] = days.get(year, 0) + span
     best, where = 0.0, "—"
     for year, total in volume.items():
         rate = total / days[year]
@@ -246,12 +248,37 @@ def _spans(steps: list[ScheduleStep]) -> list[int]:
     return spans
 
 
+def _days_by_year(steps: list[ScheduleStep]) -> list[dict[int, int]]:
+    """Сутки каждого шага, разложенные по календарным годам.
+
+    Шаг длиннее месяца переходит через новый год: запись с 2007-12-01 до
+    2008-03-01 держится 91 сутки, из них 31 в 2007-м и 60 в 2008-м. Пока весь
+    срок относился к году **начала**, годовая корзина 2008-го оказывалась
+    короче на квартал — и годовой предел объявлялся соблюдённым при превышении.
+    Та же ложь, что в Н-24, только сдвинутая на границу года (Р-48, ревью
+    ночного дифа).
+    """
+    by_step: list[dict[int, int]] = []
+    for step, span in zip(steps, _spans(steps), strict=True):
+        parts: dict[int, int] = {}
+        left, moment = span, step.date
+        while left > 0:
+            end_of_year = date(moment.year, 12, 31)
+            days = min(left, (end_of_year - moment).days + 1)
+            parts[moment.year] = parts.get(moment.year, 0) + days
+            left -= days
+            moment = date(moment.year + 1, 1, 1)
+        by_step.append(parts)
+    return by_step
+
+
 def _annual_volume(steps: list[ScheduleStep], limit: float, *, key: str,
                    producers: bool) -> LimitCheck:
     volume: dict[int, float] = {}
-    for step, span in zip(steps, _spans(steps), strict=True):
-        volume[step.date.year] = volume.get(step.date.year, 0.0) + \
-            sum(_rates(step, producers=producers).values()) * span
+    for step, parts in zip(steps, _days_by_year(steps), strict=True):
+        rate = sum(_rates(step, producers=producers).values())
+        for year, span in parts.items():
+            volume[year] = volume.get(year, 0.0) + rate * span
     best, where = 0.0, "—"
     for year, total in volume.items():
         if total > best:

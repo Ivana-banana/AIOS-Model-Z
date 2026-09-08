@@ -2021,13 +2021,19 @@ def _fit_injection_to_external_water(
     planned = 0.0
     stamps: set[str] = set()
     for row in forecast:
+        # То же правило, что в коридоре компенсации и в аудите: строка с любым
+        # отрицательным приращением выброшена методикой целиком — **вместе со
+        # своим месяцем**. Календарь считался до фильтра, и в году, где все
+        # строки двух месяцев выброшены, планировщик делил на 365 суток, а
+        # аудит (`balance.by_year` добавляет месяц ПОСЛЕ фильтра) — на ~304:
+        # потребность выходила на пятую часть ниже, планировщик недорезал, и
+        # fail-closed отвергал кандидата, которого сам только что пропустил
+        # (Р-49, ревью ночного дифа).
+        if not counted_by_methodology(row):
+            continue
         stamp = str(row.get("DATA", ""))[:7]
         if len(stamp) == 7:
             stamps.add(stamp)
-        # То же правило, что в коридоре компенсации и в аудите: строка с любым
-        # отрицательным приращением выброшена методикой целиком.
-        if not counted_by_methodology(row):
-            continue
         oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
         if liquid_t > 0 and 0 <= oil_t <= liquid_t:
             produced += (liquid_t - oil_t) * 1000.0 / fluids.water_density
