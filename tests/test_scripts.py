@@ -1829,18 +1829,26 @@ def test_no_entry_point_answers_missing_norms_with_a_traceback(name: str, tmp_pa
     """
     import subprocess
 
-    schedule = ROOT / "runs" / "matched-0995" / "submission" / "wells_schedule.inc"
-    if "{schedule}" in NORMS_ENTRY_POINTS[name] and not schedule.is_file():
-        pytest.skip("нет сдаваемого расписания")
-
+    # Расписание и выгрузка — **синтетические**, а не из `runs/`. Каталог
+    # прогонов под `.gitignore`, на чистом клоне его нет, и первая редакция
+    # этого сторожа брала оттуда сдаваемый файл: `check_submission.py`
+    # пропускался, а `build_submission.py` отказывал раньше нормативов словами
+    # «нет расписания» — то есть падал. На машине разработки обход был зелёный,
+    # на клоне красный. Ровно та болезнь, которую он проверяет, только в нём
+    # самом; ровно так же ошиблась и первая редакция сторожа дека (Р-248).
     run = tmp_path / "run"
     run.mkdir()
     (run / "rows.csv").write_text(
         "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
         "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
-        "2007-01-01,P1,0,10,0,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
-    if schedule.is_file():
-        (run / "wells_schedule.inc").write_bytes(schedule.read_bytes())
+        "2007-01-01,1,0,10,0,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+    schedule = run / "wells_schedule.inc"
+    schedule.write_text(
+        "DATES\n 01 JAN 2007 /\n/\n\n"
+        "WCONPROD\n '1' 'OPEN' 'LRAT' 1* 1* 1* 30.0 1* 50 1* 1* /\n/\n\n"
+        "DATES\n 01 FEB 2007 /\n/\n\n"
+        "WCONPROD\n '1' 'OPEN' 'LRAT' 1* 1* 1* 25.0 1* 50 1* 1* /\n/\n",
+        encoding="utf-8")
 
     places = {"rows": str(run / "rows.csv"), "run": str(run),
               "out": str(tmp_path / "out"), "schedule": str(schedule)}
