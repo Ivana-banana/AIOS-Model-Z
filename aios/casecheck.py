@@ -98,6 +98,7 @@ def check(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                                   average=limits.field_limits_are_annual_average))
     if limits.max_well_liquid_m3_per_day is not None:
         checks.append(_well_rate(steps, limits.max_well_liquid_m3_per_day,
+                                 addressed=frozenset(limits.well_caps_m3_per_day or {}),
                                  key="max_well_liquid_m3_per_day", producers=True))
     if limits.max_well_injection_m3_per_day is not None:
         checks.append(_well_rate(steps, limits.max_well_injection_m3_per_day,
@@ -189,10 +190,24 @@ def _field_rate(steps: list[ScheduleStep], limit: float, *, key: str,
 
 
 def _well_rate(steps: list[ScheduleStep], limit: float, *, key: str,
-               producers: bool) -> LimitCheck:
+               producers: bool, addressed: frozenset[str] = frozenset()) -> LimitCheck:
+    """Потолок по типу — для скважин, у которых нет своего.
+
+    `addressed` — скважины, названные в `well_caps_m3_per_day`. Проект решил
+    (`docs/decisions.md`, «адресный список сильнее потолка по типу»), что у
+    скважины бывает свой паспорт насоса и он побеждает; планировщик так и
+    делает — `cap_for` возвращает адресное значение, даже когда оно выше. А
+    приёмка применяла потолок по типу ко всем без исключения, и кейс, назвавший
+    и общий паспорт, и адресное исключение над ним, объявлял недопустимым любого
+    кандидата, включая бездействие (фаззер ревизии, 4 попадания из 400).
+
+    Названные скважины проверяет `_well_caps` — своим, адресным числом.
+    """
     best, where = 0.0, "—"
     for step in steps:
         for well, rate in _rates(step, producers=producers).items():
+            if well in addressed:
+                continue
             if rate > best:
                 best, where = rate, f"скв. {well}, {_stamp(step)}"
     return LimitCheck(key=key, limit=limit, value=best, where=where, unit="м³/сут")

@@ -672,3 +672,32 @@ def test_a_monthly_schedule_is_measured_month_by_month_as_before():
         steps, [], planner.Limits(max_field_liquid_m3_per_year=1_000_000.0))}
 
     assert found["max_field_liquid_m3_per_year"].value == 100.0 * 365
+
+
+def test_an_addressed_cap_beats_the_type_wide_ceiling_in_the_check_too():
+    """Адресный потолок сильнее потолка по типу — и у планировщика, и у приёмки.
+
+    Проект решил это осознанно (`docs/decisions.md`: «адресный список сильнее
+    потолка по типу: у скважины бывает свой паспорт насоса»), и планировщик так
+    и делает: `cap_for` возвращает адресное значение, даже когда оно выше. А
+    приёмка применяла потолок по типу ко всем без исключения — кейс, назвавший и
+    общий паспорт, и адресное исключение над ним, объявлял недопустимым любого
+    кандидата, включая бездействие (фаззер ревизии, 4 попадания из 400).
+    """
+    steps = [ScheduleStep(date(2007, 1, 1),
+                          (ProducerControl("1", "OPEN", "LRAT", 58.6, 50.0),
+                           ProducerControl("2", "OPEN", "LRAT", 58.6, 50.0)), ())]
+    limits = planner.Limits(max_well_liquid_m3_per_day=45.7,
+                            well_caps_m3_per_day={"1": 58.6})
+
+    found = {one.key: one for one in casecheck.check(steps, [], limits)}
+
+    assert found["max_well_liquid_m3_per_day"].where.startswith("скв. 2"), (
+        "потолок по типу применён к скважине с собственным паспортом"
+    )
+    assert not found["max_well_liquid_m3_per_day"].satisfied, (
+        "скважина без адресного потолка обязана остаться под проверкой"
+    )
+    assert found["well_caps_m3_per_day"].satisfied, (
+        "адресный потолок соблюдён, а проверка говорит обратное"
+    )
