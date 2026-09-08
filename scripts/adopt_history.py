@@ -162,6 +162,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"нет файла истории {history_file}", file=sys.stderr)
         return 1
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     deck_dir = arguments.deck or config.case.model_dir
     out_dir = arguments.out if arguments.out.is_absolute() else ROOT / arguments.out

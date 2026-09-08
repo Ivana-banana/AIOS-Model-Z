@@ -97,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
         print("повторов должно быть хотя бы один", file=sys.stderr)
         return 1
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     rows_path = Path(arguments.rows) if arguments.rows else config.case.run_dir / "rows.csv"
     if not rows_path.is_file():

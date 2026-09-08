@@ -294,6 +294,49 @@ def test_the_committed_trace_records_a_command_anyone_can_run():
     )
 
 
+def test_the_declared_run_is_read_from_the_document_without_the_tail_directory():
+    """`declared_run()` называет каталог прогона, а не каталог сдаваемого хвоста.
+
+    Паспорт дня отправки велит прогнать `verify_declared` по обоим прогонам —
+    заявленному и базовому. На базовом сверять нечего: у него своё число, и до
+    09.09 скрипт отвечал на это «РАСХОЖДЕНИЕ … отправлять пакет нельзя» —
+    то есть пугал провалом заявки там, где сверялся другой сценарий.
+
+    С 08.09 документ называет файл в подкаталоге `submission/`, а прогоном
+    остаётся каталог уровнем выше: `--run` принимает именно его.
+    """
+    sys.path.insert(0, str(economics.VENDOR_DIR.parent.parent / "scripts"))
+    try:
+        from verify_declared import declared_run
+    finally:
+        sys.path.pop(0)
+
+    tail = "| сдаваемый файл | `runs/matched-0995/submission/wells_schedule.inc`, `md5 a7` |"
+    flat = "| сдаваемый файл | `runs/matched-100/wells_schedule.inc`, `md5 a7` |"
+
+    assert declared_run(tail) == "runs/matched-0995"
+    assert declared_run(flat) == "runs/matched-100"
+    assert declared_run("документ без заявленного файла") is None
+
+
+def test_the_current_submission_names_the_run_that_verify_declared_defaults_to():
+    """Умолчание `--run` и заявленный прогон — одно и то же.
+
+    Иначе команда из README сверяет не тот прогон и объявляет расхождение
+    заявки на ровном месте.
+    """
+    sys.path.insert(0, str(economics.VENDOR_DIR.parent.parent / "scripts"))
+    try:
+        from verify_declared import ROOT, build_parser, declared_run
+    finally:
+        sys.path.pop(0)
+
+    document = (ROOT / "docs" / "submission.md").read_text(encoding="utf-8")
+    default = build_parser().get_default("run")
+
+    assert declared_run(document) == default.as_posix()
+
+
 def test_paths_inside_the_repository_are_recorded_relative_to_it():
     """`portable()` укорачивает свои пути и не трогает чужие.
 

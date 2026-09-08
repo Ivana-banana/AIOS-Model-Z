@@ -1757,6 +1757,114 @@ def test_every_deck_reading_script_is_either_swept_or_named():
         + ", ".join(sorted(unaccounted)))
 
 
+#: Все точки входа, принимающие `--config`. Аргументы — ровно те, без которых
+#: argparse не пускает дальше; существовать им не нужно, потому что отказ по
+#: конфигурации стоит **первым** действием `main`.
+CONFIG_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
+    "adopt_history.py": ("--history", "{history}"),
+    "benchmark_scale.py": (),
+    "build_case.py": (),
+    "build_dataset.py": (),
+    "build_doe.py": (),
+    "build_matched_case.py": ("{out}", "--rows", "{rows}"),
+    "build_scaled_case.py": ("{out}",),
+    "build_submission.py": (),
+    "calibrate_search.py": ("--model", "{model}"),
+    "check_submission.py": ("{schedule}",),
+    "collect_pairs.py": ("--model", "{model}", "--runs", "{run}"),
+    "explain_quality.py": (),
+    "export_rows.py": (),
+    "forecast_speed.py": (),
+    "pack_npv.py": ("{run}",),
+    "pressure_check.py": ("{run}", "--model", "{model}"),
+    "pressure_share.py": ("--rows", "{rows}"),
+    "profiles.py": ("{run}",),
+    "rehearse_case.py": ("--rows", "{rows}"),
+    "run_all.py": (),
+    "run_cycle.py": (),
+    "shapley_plan.py": ("build", "{out}", "--rows", "{rows}"),
+    "surrogate_warnings.py": ("--model", "{model}"),
+    "train_surrogate.py": (),
+    # Без пары «модель + расписание» отказывает раньше конфигурации, своими
+    # словами: «нечего делать: задайте --dataset либо --model и --schedule».
+    "trust_gate.py": ("--model", "{model}", "--schedule", "{schedule}"),
+    "verify_declared.py": (),
+}
+
+#: Чем ломается конфигурация. Три случая, а не один: пропавший файл, опечатка в
+#: TOML и недостающая секция — три разные трассировки из трёх разных мест.
+BROKEN_CONFIGS = {
+    "нет файла": None,
+    "не TOML": "[case\nmodel_dir = \n",
+    "нет секции": '[case]\nmodel_dir = "x"\n',
+}
+
+
+@pytest.mark.parametrize("name", sorted(CONFIG_ENTRY_POINTS))
+@pytest.mark.parametrize("breakage", sorted(BROKEN_CONFIGS))
+def test_no_entry_point_answers_a_broken_config_with_a_traceback(
+        name: str, breakage: str, tmp_path: Path):
+    """Промах мимо конфигурации — отказ словами, а не трассировкой.
+
+    Третий случай той же болезни: дек (Р-248, десять точек входа), нормативы
+    (Р-252, девять) и теперь сама конфигурация — все 26 точек входа отвечали
+    трассировкой. Пропавший файл давал четыре кадра `FileNotFoundError`,
+    опечатка в TOML — кадры `tomllib`, недостающая секция — `KeyError`.
+
+    Промахнуться здесь вероятнее всего на валидационном кейсе: `--config`
+    печатают руками, и печатают в тот вечер, когда читать трассировку некогда.
+
+    Сторож ничем не зависит от рабочего дерева: аргументы синтетические, файлы
+    создаются в `tmp_path`. Обе прежние редакции сторожей этого класса ошиблись
+    ровно на этом — брали расписание и суррогат из `runs/` и `artifacts/`,
+    и на чистом клоне краснели сами.
+    """
+    import subprocess
+
+    broken = tmp_path / "config.toml"
+    if BROKEN_CONFIGS[breakage] is None:
+        broken = tmp_path / "нет-такого.toml"
+    else:
+        broken.write_text(BROKEN_CONFIGS[breakage], encoding="utf-8")
+
+    run = tmp_path / "run"
+    run.mkdir()
+    for stub in ("rows.csv", "wells_schedule.inc", "surrogate.joblib", "history.inc"):
+        (run / stub).write_text("", encoding="utf-8")
+
+    places = {"rows": str(run / "rows.csv"), "run": str(run),
+              "out": str(tmp_path / "out"), "model": str(run / "surrogate.joblib"),
+              "schedule": str(run / "wells_schedule.inc"),
+              "history": str(run / "history.inc")}
+    arguments = [one.format(**places) for one in CONFIG_ENTRY_POINTS[name]]
+
+    done = subprocess.run(
+        [sys.executable, str(SCRIPTS / name), *arguments, "--config", str(broken)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT, timeout=600)
+
+    assert "Traceback" not in done.stderr, (
+        f"scripts/{name} отвечает трассировкой на конфигурацию «{breakage}»:"
+        f"\n{done.stderr[-800:]}")
+    assert done.returncode != 0, (
+        f"scripts/{name} с нечитаемой конфигурацией вернул 0 — тихий успех")
+    assert "Конфигурация не читается" in done.stderr, (
+        f"scripts/{name} отказывает, но не говорит, чего не хватает:"
+        f"\n{done.stderr[-800:]}")
+
+
+def test_every_script_taking_a_config_is_swept():
+    """Новая точка входа с `--config` не проскочит мимо обхода молча."""
+    taking = {path.name for path in sorted(SCRIPTS.glob("*.py"))
+              if '"--config"' in path.read_text(encoding="utf-8")}
+
+    unaccounted = taking - set(CONFIG_ENTRY_POINTS)
+
+    assert not unaccounted, (
+        "скрипты принимают --config, но не попали в обход: "
+        + ", ".join(sorted(unaccounted)))
+
+
 #: Точки входа, доходящие до чтения нормативов. Аргументы подобраны так, чтобы
 #: скрипт дошёл до нормативов на любой машине, включая чистый клон.
 NORMS_ENTRY_POINTS: dict[str, tuple[str, ...]] = {

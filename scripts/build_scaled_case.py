@@ -54,6 +54,10 @@ def main(argv: list[str] | None = None) -> int:
         print("множители не бывают отрицательными", file=sys.stderr)
         return 1
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:

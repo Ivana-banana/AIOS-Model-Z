@@ -269,6 +269,10 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
 
     from aios.neural import NeuralBundle, NeuralSurrogate
 
+    refusal = config_module.refusal(config_path)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(config_path)
     if not model.is_file():
         # артефакт лежит в `artifacts/`, а этот каталог в git не ведётся: промах

@@ -190,6 +190,10 @@ def main(argv: list[str] | None = None) -> int:
             print(refusal, file=sys.stderr)
             return 1
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     base_dir = Path(arguments.base) if arguments.base else config.case.run_dir
     steps = plan(

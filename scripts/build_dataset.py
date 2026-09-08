@@ -55,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     root = Path(arguments.run_root)
     manifest_path = root / "doe.json"

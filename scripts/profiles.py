@@ -99,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=ROOT / "config.toml")
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     rows_csv = arguments.run_dir / "rows.csv"
     if rows_csv.is_file():

@@ -158,6 +158,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     started = time.monotonic()
+    refusal = config_module.refusal(args.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(Path(args.config))
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:

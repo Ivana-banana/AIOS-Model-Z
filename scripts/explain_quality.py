@@ -144,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="сколько пакетов брать при --live; 0 — все")
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:

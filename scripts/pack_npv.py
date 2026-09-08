@@ -41,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="ЧДД базового сценария, млн руб., для колонки «к базовому»")
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     manifest_path = arguments.run_root / "doe.json"
     if not manifest_path.is_file():

@@ -70,6 +70,10 @@ def active_groups(groups: list[groups_module.Group]) -> list[groups_module.Group
 
 
 def build(arguments) -> int:
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:

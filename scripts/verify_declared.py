@@ -81,6 +81,21 @@ def digest(path: Path, algorithm: str = "md5") -> str:
     return accumulator.hexdigest()
 
 
+def declared_run(text: str) -> str | None:
+    """Каталог прогона, который документ называет заявленным.
+
+    Нужен ровно затем, чтобы отличить «число не воспроизводится» от «сверяется
+    не тот прогон»: по паспорту дня отправки `verify_declared` гоняют по обоим
+    прогонам подряд, и на базовом он до 09.09 кричал «отправлять пакет нельзя»
+    — притом что базовый и не обязан давать заявленное число.
+    """
+    match = re.search(r"`(runs/[\w.-]+(?:/[\w.-]+)*)/wells_schedule\.inc`", text)
+    if match is None:
+        return None
+    path = match.group(1)
+    return path[: -len("/submission")] if path.endswith("/submission") else path
+
+
 def portable(path: Path) -> str:
     """Путь так, как его напишет любая машина: от корня репозитория, через `/`.
 
@@ -174,6 +189,10 @@ def main() -> int:
         print(f"нет выгрузки {rows_file}: пересчитывать нечего", file=sys.stderr)
         return 1
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:
@@ -184,12 +203,16 @@ def main() -> int:
 
     claimed = arguments.claimed
     source = "аргумент --claimed"
+    wrong_run: str | None = None
     if claimed is None:
         submission = (arguments.submission if arguments.submission.is_absolute()
                       else ROOT / arguments.submission)
-        claimed = parse_declared(submission.read_text(encoding="utf-8")) \
-            if submission.is_file() else None
+        text = submission.read_text(encoding="utf-8") if submission.is_file() else ""
+        claimed = parse_declared(text) if text else None
         source = portable(submission)
+        declared = declared_run(text)
+        if declared is not None and portable(run_dir) != declared:
+            wrong_run = declared
     if claimed is None:
         print(f"заявленное число не найдено в {source}", file=sys.stderr)
         return 1
@@ -228,6 +251,12 @@ def main() -> int:
     print(f"след:        {(run_dir / 'npv.json')}")
     print()
     if not agreed:
+        if wrong_run:
+            print(f"НЕ ТОТ ПРОГОН: заявлен {wrong_run}, а сверяется "
+                  f"{portable(run_dir)}. Это не расхождение заявки: у базового "
+                  "и любого другого сценария своё число. Чтобы сверить его, "
+                  "назовите его ключом --claimed.", file=sys.stderr)
+            return 1
         print("РАСХОЖДЕНИЕ: заявленное число не воспроизводится этой выгрузкой. "
               "Отправлять пакет нельзя — сначала разберите, откуда взялось число.",
               file=sys.stderr)

@@ -204,6 +204,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="seed порядка координат совместного поиска; по умолчанию [run].seed")
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     multipliers = None
     if arguments.multipliers:

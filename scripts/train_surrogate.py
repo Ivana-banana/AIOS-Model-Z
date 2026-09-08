@@ -58,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     settings = config_module.load(arguments.config)
     frame = load_datasets(arguments.dataset)
     frozen = holdout_module.load(Path(arguments.holdout))
