@@ -55,7 +55,11 @@ from aios import (  # noqa: E402
 )
 from aios import schedule as schedule_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import find_data_file, layout  # noqa: E402
+from aios.deckfiles import (  # noqa: E402
+    find_data_file,
+    layout,
+    norms_refusal,  # noqa: E402
+)
 from aios.run import build_case  # noqa: E402
 from aios.schedule import assert_valid  # noqa: E402
 
@@ -97,6 +101,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     config = config_module.load(arguments.config)
+    refusal = norms_refusal(config.economics.norms_file)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     model_dir = config.case.model_dir
     try:
         find_data_file(model_dir)

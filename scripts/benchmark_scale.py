@@ -42,7 +42,7 @@ if str(ROOT) not in sys.path:
 from aios import config as config_module  # noqa: E402
 from aios import economics, loop  # noqa: E402
 from aios.deck import ScheduleStep, parse_schedule  # noqa: E402
-from aios.deckfiles import layout  # noqa: E402
+from aios.deckfiles import layout, norms_refusal  # noqa: E402
 from aios.margin import Norms  # noqa: E402
 from aios.surrogate import DeclineSurrogate  # noqa: E402
 
@@ -130,6 +130,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     config = config_module.load(arguments.config)
+    refusal = norms_refusal(config.economics.norms_file)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     with source.open(encoding="utf-8") as handle:
         rows = _numeric(list(csv.DictReader(handle)))
 

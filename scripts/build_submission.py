@@ -62,7 +62,11 @@ from aios import deck as deck_module  # noqa: E402
 from aios import economics  # noqa: E402
 from aios import run as run_module  # noqa: E402
 from aios import schedule as schedule_module  # noqa: E402
-from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
+from aios.deckfiles import (  # noqa: E402
+    layout,
+    missing_deck_refusal,
+    norms_refusal,  # noqa: E402
+)
 
 
 def meaningful_lines(text: str) -> list[str]:
@@ -181,6 +185,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     config = config_module.load(arguments.config)
+    refusal = norms_refusal(config.economics.norms_file)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     control_start = config.case.control_start
     out_dir = arguments.out or (run_dir / "submission")
     out_dir = out_dir if out_dir.is_absolute() else ROOT / out_dir

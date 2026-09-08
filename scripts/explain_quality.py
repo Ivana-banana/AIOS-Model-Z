@@ -38,6 +38,7 @@ from aios import explain as explain_module  # noqa: E402
 from aios import explain_quality as quality  # noqa: E402
 from aios import loop, margin  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
+from aios.deckfiles import norms_refusal  # noqa: E402
 from aios.model import for_cycle  # noqa: E402
 from aios.web.app import read_rows_csv  # noqa: E402
 
@@ -144,6 +145,10 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     config = config_module.load(arguments.config)
+    refusal = norms_refusal(config.economics.norms_file)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     rows_path = arguments.rows or (config.case.run_dir / "rows.csv")
     schedule_path = arguments.schedule or (config.case.run_dir / "wells_schedule.inc")
 

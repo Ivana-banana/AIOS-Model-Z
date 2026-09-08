@@ -40,7 +40,11 @@ from aios import economics, optimise, shapley  # noqa: E402
 from aios import groups as groups_module  # noqa: E402
 from aios import schedule as schedule_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
+from aios.deckfiles import (  # noqa: E402
+    layout,
+    missing_deck_refusal,
+    norms_refusal,  # noqa: E402
+)
 from aios.run import build_case  # noqa: E402
 from aios.schedule import assert_valid  # noqa: E402
 
@@ -67,6 +71,10 @@ def active_groups(groups: list[groups_module.Group]) -> list[groups_module.Group
 
 def build(arguments) -> int:
     config = config_module.load(arguments.config)
+    refusal = norms_refusal(config.economics.norms_file)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     model_dir = config.case.model_dir
     try:
         schedule = parse_schedule(layout(model_dir).one("SCHEDULE"))
@@ -146,6 +154,10 @@ def collect(arguments) -> int:
     root = Path(arguments.out)
     plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
     config = config_module.load(arguments.config)
+    refusal = norms_refusal(config.economics.norms_file)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
 
     known: list[shapley.Coalition] = []
     pending: list[str] = []

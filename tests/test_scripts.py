@@ -1755,3 +1755,124 @@ def test_every_deck_reading_script_is_either_swept_or_named():
     assert not unaccounted, (
         "скрипты читают дек, но не попали ни в обход, ни в список названных: "
         + ", ".join(sorted(unaccounted)))
+
+
+#: Точки входа, доходящие до чтения нормативов. Аргументы подобраны так, чтобы
+#: скрипт дошёл до нормативов на любой машине, включая чистый клон.
+NORMS_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
+    "benchmark_scale.py": ("--rows", "{rows}"),
+    "build_matched_case.py": ("{out}", "--rows", "{rows}"),
+    "build_scaled_case.py": ("{out}",),
+    "build_submission.py": ("--run", "{run}", "--out", "{out}"),
+    "check_submission.py": ("{schedule}",),
+    "explain_quality.py": (),
+    "rehearse_case.py": ("--rows", "{rows}"),
+    "shapley_plan.py": ("build", "{out}", "--rows", "{rows}"),
+    "verify_declared.py": ("--run", "{run}", "--claimed", "0"),
+}
+
+#: Тоже поминают нормативы, но до чтения не доходят — проверено, а не заявлено.
+NORMS_READERS_NOT_SWEPT = {
+    "build_doe.py": "нормативы берёт только для таблицы ЭЦН уже после сборки "
+                    "плана; без выгрузок останавливается раньше",
+    "check_package.py": "не принимает --config: путь нормативов читает из "
+                        "config.toml репозитория и сверяет sha256, отказывая словами",
+    "collect_pairs.py": "требует --model и падает раньше на чтении .UNSMRY",
+    "compare_reference.py": "не принимает --config: сверяется с опубликованной "
+                            "книгой организаторов, а не с нормативами кейса",
+    "export_rows.py": "останавливается раньше: нет результата расчёта .UNSMRY",
+    "pack_npv.py": "не принимает --config; собирает уже посчитанные следы",
+    "run_cycle.py": "нормативы не читает вовсе — поминает их в тексте подсказки",
+}
+
+
+def _config_without_norms(tmp_path: Path) -> Path:
+    """Конфиг, в котором сломаны **только** нормативы.
+
+    Та же ловушка, что и у дека (Р-248): наивная подмена ломает заодно все
+    относительные пути, и скрипт отказывает раньше — на деке, которого он не
+    касался. Поэтому все существующие пути разворачиваются в абсолютные, и
+    ломается ровно один ключ.
+    """
+    import re
+
+    def absolute(match: re.Match[str]) -> str:
+        key, value = match.group(1), match.group(2)
+        target = ROOT / value
+        return f'{key}= "{target.as_posix()}"' if target.exists() else match.group(0)
+
+    text = re.sub(r'^(\w+ *)= *"([^"]+)"', absolute,
+                  (ROOT / "config.toml").read_text(encoding="utf-8"), flags=re.M)
+    text = re.sub(r'^norms_file *= *"[^"]+"',
+                  f'norms_file = "{(ROOT / "vendor" / "НЕТ_ТАКОГО.xlsx").as_posix()}"',
+                  text, flags=re.M)
+    broken = tmp_path / "config.toml"
+    broken.write_text(text, encoding="utf-8")
+    return broken
+
+
+@pytest.mark.parametrize("name", sorted(NORMS_ENTRY_POINTS))
+def test_no_entry_point_answers_missing_norms_with_a_traceback(name: str, tmp_path: Path):
+    """Нормативы не по тому пути — отказ словами, а не трассировкой.
+
+    Родня сторожа дека, и болезнь ровно та же (Р-248). Нашлось 08.09 сквозной
+    репетицией вечера 11.09: **девять** точек входа падали трассировкой
+    `FileNotFoundError: Файл нормативов не найден`, и среди них
+    `check_submission.py` — команда из паспорта дня отправки — и
+    `rehearse_case.py`, команда окна 15:00–17:00.
+
+    Промах мимо нормативов на валидационном кейсе — не экзотика: путь живёт в
+    `[economics].norms_file`, относительные пути считаются от каталога самой
+    конфигурации, а нормативы приходят от организаторов и лежат там, где они их
+    положили. Ошибиться здесь можно ровно в тот вечер, когда читать
+    трассировку некогда.
+    """
+    import subprocess
+
+    schedule = ROOT / "runs" / "matched-0995" / "submission" / "wells_schedule.inc"
+    if "{schedule}" in NORMS_ENTRY_POINTS[name] and not schedule.is_file():
+        pytest.skip("нет сдаваемого расписания")
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "rows.csv").write_text(
+        "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
+        "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
+        "2007-01-01,P1,0,10,0,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+    if schedule.is_file():
+        (run / "wells_schedule.inc").write_bytes(schedule.read_bytes())
+
+    places = {"rows": str(run / "rows.csv"), "run": str(run),
+              "out": str(tmp_path / "out"), "schedule": str(schedule)}
+    arguments = [one.format(**places) for one in NORMS_ENTRY_POINTS[name]]
+
+    done = subprocess.run(
+        [sys.executable, str(SCRIPTS / name), *arguments,
+         "--config", str(_config_without_norms(tmp_path))],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT, timeout=600)
+
+    assert "Traceback" not in done.stderr, (
+        f"scripts/{name} отвечает трассировкой на нормативы не по тому пути:"
+        f"\n{done.stderr[-800:]}")
+    assert done.returncode != 0, (
+        f"scripts/{name} без нормативов вернул 0 — это тихий успех без нормативов")
+    assert "Нормативы не читаются" in done.stderr, (
+        f"scripts/{name} отказывает, но не говорит, чего не хватает:"
+        f"\n{done.stderr[-800:]}")
+
+
+def test_every_norms_reading_script_is_either_swept_or_named():
+    """Новый скрипт, читающий нормативы, не проскочит мимо обхода молча."""
+    import re
+
+    swept = set(NORMS_ENTRY_POINTS) | set(NORMS_READERS_NOT_SWEPT)
+    readers = {
+        path.name for path in sorted(SCRIPTS.glob("*.py"))
+        if re.search(r"norms_file|load_norms", path.read_text(encoding="utf-8"))
+    }
+
+    assert readers <= swept, (
+        "скрипты читают нормативы и не попали ни в обход, ни в поимённый "
+        f"список: {sorted(readers - swept)}"
+    )

@@ -37,7 +37,11 @@ import pandas as pd  # noqa: E402
 from aios import balance, casecheck, planner, summary  # noqa: E402
 from aios import config as config_module  # noqa: E402
 from aios.deck import parse_schedule  # noqa: E402
-from aios.deckfiles import layout, missing_deck_refusal  # noqa: E402
+from aios.deckfiles import (  # noqa: E402
+    layout,
+    missing_deck_refusal,
+    norms_refusal,  # noqa: E402
+)
 from aios.economics import load_norms  # noqa: E402
 from aios.margin import Norms  # noqa: E402
 
@@ -155,6 +159,10 @@ def main(argv: list[str] | None = None) -> int:
 
     started = time.monotonic()
     config = config_module.load(Path(args.config))
+    refusal = norms_refusal(config.economics.norms_file)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     limits = config.limits
     assumptions, _ = load_norms(config.economics.norms_file)
     norms = Norms.from_assumptions(assumptions)

@@ -48,6 +48,7 @@ if str(ROOT) not in sys.path:
 
 from aios import config as config_module  # noqa: E402
 from aios import economics  # noqa: E402
+from aios.deckfiles import norms_refusal  # noqa: E402
 
 #: Заявленное число в `docs/submission.md`: строка таблицы «**ЧДД** | **5 579,5 млн руб.**».
 #: Пробелы внутри числа — неразрывные и обычные, разделитель дробной части — запятая.
@@ -174,6 +175,10 @@ def main() -> int:
         return 1
 
     config = config_module.load(arguments.config)
+    refusal = norms_refusal(config.economics.norms_file)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     start_year = config.economics.start_date.year
     norms_file = config.economics.norms_file
 
