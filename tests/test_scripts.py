@@ -2032,3 +2032,41 @@ def test_every_norms_reading_script_is_either_swept_or_named():
         "скрипты читают нормативы и не попали ни в обход, ни в поимённый "
         f"список: {sorted(readers - swept)}"
     )
+
+
+def test_the_rehearsal_refuses_an_export_the_reference_calculator_cannot_price(tmp_path):
+    """Нефизичная выгрузка — провал репетиции, а не «нарушений нет».
+
+    `sanity_problems` звался только при объявленном отклике пласта, и из ответа
+    оставлялись строки со словом «пластовое». Всё остальное выбрасывалось:
+    отрицательные приращения, нефть больше жидкости, дебит выше предела ЭЦН.
+    Кейс с `WLPR = 900` проходил репетицию с кодом 0 — притом что эталонный
+    расчётчик на нём просто отказывается считать (`if row["WLPR"] > 500` в
+    `chdd_model`), то есть ЧДД по такому кейсу не существует вовсе.
+    """
+    import csv
+    import subprocess
+    import sys as system
+
+    rows_file = tmp_path / "rows.csv"
+    rows = [{"DATA": f"2007-{month:02d}-01", "well": "1", "WLPT": 0, "WLPR": 900.0,
+             "WOMT": 0, "WOMR": 30.0, "WWIR": 0, "WWIT": 0, "THP": 100, "BHP": 80,
+             "WEFF": 1, "WLPT_Diff": -500.0, "WOMT_Diff": 900.0, "WWIT_Diff": 0.0}
+            for month in range(1, 4)]
+    with rows_file.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    if not (ROOT / "config-rehearsal.toml").is_file():
+        pytest.skip("нет конфигурации репетиции")
+
+    done = subprocess.run(
+        [system.executable, str(SCRIPTS / "rehearse_case.py"),
+         "--config", str(ROOT / "config-rehearsal.toml"), "--rows", str(rows_file)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT, timeout=900)
+
+    assert done.returncode == 1, done.stdout[-600:]
+    assert "ВЫГРУЗКА НЕФИЗИЧНА" in done.stdout, done.stdout[-600:]
+    assert "дебит жидкости 900" in done.stdout, done.stdout[-600:]

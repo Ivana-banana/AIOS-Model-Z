@@ -44,6 +44,7 @@ from aios.deckfiles import (  # noqa: E402
 )
 from aios.economics import load_norms  # noqa: E402
 from aios.margin import Norms  # noqa: E402
+from aios.schedule import liquid_limit  # noqa: E402
 
 #: Ключи, которые проверяются не `casecheck`, а своим механизмом. Список нужен,
 #: чтобы вывод не создавал иллюзию полного покрытия: условие может быть объявлено
@@ -247,6 +248,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {line}")
         print()
 
+    # Физическая годность самой выгрузки — до всяких условий кейса и независимо
+    # от того, объявил ли он давление с обводнённостью. Репетиция звала
+    # `sanity_problems` только при объявленном отклике пласта и оставляла из
+    # ответа одни строки со словом «пластовое» — то есть выбрасывала всё
+    # остальное: отрицательные приращения, нефть больше жидкости, дебит выше
+    # предела ЭЦН. Кейс с `WLPR = 900` проходил репетицию с кодом 0, хотя на нём
+    # эталонный расчётчик просто отказывается считать (`if row["WLPR"] > 500`).
+    # Предел берётся из таблицы ЭЦН нормативов кейса, а не из литерала 500.
+    physical = [line for line in summary.sanity_problems(
+        forecast, max_liquid_rate=liquid_limit(
+            load_norms(config.economics.norms_file)[1]),
+    ) if "пластовое" not in line]
+    print(f"--- физическая годность выгрузки: "
+          f"{'нарушений нет' if not physical else len(physical)} ---")
+    for line in physical[:5]:
+        print(f"  {line}")
+    print()
+
     if (limits.min_reservoir_pressure_atm is not None
             or limits.max_reservoir_pressure_atm is not None
             or limits.max_watercut is not None):
@@ -295,6 +314,12 @@ def main(argv: list[str] | None = None) -> int:
             if "вопреки квоте" in decision.reason:
                 print(f"  {decision}")
         print()
+
+    if physical:
+        print("ВЫГРУЗКА НЕФИЗИЧНА — считать по ней ЧДД нельзя:")
+        for line in physical[:10]:
+            print(f"  {line}")
+        return 1
 
     if left:
         print("НАРУШЕНИЯ ОСТАЛИСЬ ПОСЛЕ СРЕЗКИ — условие объявлено, но не применяется:")
