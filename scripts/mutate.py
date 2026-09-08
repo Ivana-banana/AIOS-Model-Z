@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import random
 import shutil
 import signal
@@ -213,13 +214,40 @@ def _run_tests(tests: list[str], timeout: float) -> bool:
             [sys.executable, "-m", "pytest", "-x", "-q", "-p", "no:warnings",
              "--no-header", *tests],
             capture_output=True, text=True, cwd=ROOT, timeout=timeout,
+            # Метка «этот pytest запущен мутацией». По ней вложенный `mutate.py`
+            # откажется работать — см. CHILD_MARKER.
+            env={**os.environ, CHILD_MARKER: "1"},
         )
     except subprocess.TimeoutExpired:
         return False
     return done.returncode == 0
 
 
+#: Переменная окружения, которой прогон метит запускаемый им `pytest`.
+#:
+#: Без неё инструмент складывается в форк-бомбу одним неверным аргументом:
+#: `--tests tests/test_mutate.py` означает, что на каждую мутацию запускается
+#: `pytest` того самого файла, который запускает `mutate.py` — и так вглубь без
+#: дна. В ночь на 09.09 это дважды уронило графическую сессию машины: 884 живых
+#: процесса, 19,6 ГБ RSS при 15,9 ГБ памяти, а `earlyoom` убивал не виновников
+#: (каждый процесс мелкий), а пользовательскую шину dbus вместе со всем рабочим
+#: столом. Диагноз соседней сессии, замер 01:40.
+#:
+#: Развязать рекурсию в самих тестах мало: аргумент передаёт человек, и ошибиться
+#: он может снова. Здесь стоит замок, который держит независимо от аргументов.
+CHILD_MARKER = "AIOS_MUTATE_CHILD"
+
+
 def main(argv: list[str] | None = None) -> int:
+    if os.environ.get(CHILD_MARKER) == "1":
+        print(
+            "мутационный прогон запущен изнутри мутационного прогона — отказ.\n"
+            "Скорее всего, в --tests передан файл, который сам зовёт mutate.py: "
+            "каждая мутация тогда порождает новый прогон, и так без дна. "
+            "Укажите в --tests тесты подопытного модуля, а не тесты инструмента.",
+            file=sys.stderr)
+        return 1
+
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--module", type=Path, required=True, help="файл, который мутируем")

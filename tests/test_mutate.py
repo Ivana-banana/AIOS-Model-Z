@@ -219,3 +219,39 @@ def test_a_run_killed_by_sigterm_restores_the_module_itself(tmp_path):
     )
     assert not module.with_suffix(".py.mutation-backup").exists(), "бэкап остался лежать рядом"
     assert "прерван сигналом" in (errors or ""), errors[-300:]
+
+
+def test_a_run_started_from_inside_a_run_refuses(tmp_path):
+    """Замок против форк-бомбы: прогон изнутри прогона не запускается.
+
+    `--tests tests/test_mutate.py` означает, что на каждую мутацию запускается
+    `pytest` того самого файла, который запускает `mutate.py`, — и так вглубь
+    без дна. В ночь на 09.09 это дважды уронило графическую сессию машины: 884
+    живых процесса python по 41 МБ, 19,6 ГБ RSS при 15,9 ГБ памяти, а `earlyoom`
+    убивал не виновников (каждый процесс мелкий, oom_score низкий), а
+    пользовательскую шину dbus вместе со всем рабочим столом — снаружи это
+    выглядело как «терминал закрылся сам». Нашла и измерила соседняя сессия.
+
+    Развязать рекурсию в самих тестах мало: аргумент передаёт человек, и
+    ошибиться он может снова. Замок держит независимо от аргументов.
+    """
+    import os
+    import subprocess
+    import sys as system
+
+    module = tmp_path / "жертва.py"
+    module.write_text("def f(a):" + chr(10) + "    return a < 10" + chr(10), encoding="utf-8")
+
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [system.executable, str(root / "scripts" / "mutate.py"),
+         "--module", str(module), "--tests", NEUTRAL_TESTS, "--limit", "1"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=root, timeout=600, env={**os.environ, "AIOS_MUTATE_CHILD": "1"},
+    )
+
+    assert done.returncode == 1, done.stdout[-300:]
+    assert "изнутри мутационного прогона" in done.stderr, done.stderr[-300:]
+    assert not (tmp_path / "жертва.py.mutation-backup").exists(), (
+        "отказ случился после снятия бэкапа — замок стоит слишком поздно"
+    )
