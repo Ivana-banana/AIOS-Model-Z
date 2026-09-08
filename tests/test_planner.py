@@ -325,6 +325,43 @@ def test_injection_inside_the_corridor_is_left_alone(norms):
     assert result == steps
 
 
+def test_the_corridor_ignores_rows_the_methodology_throws_away(norms):
+    """Строку с отрицательным приращением методика выбрасывает целиком — и коридор тоже.
+
+    Планировщик считал отбор только по годным строкам, а закачку — по всем:
+    `bucket["planned"] += max(row["WWIT_Diff"], 0.0)` без фильтра. Аудит
+    (`balance.by_year`, `compensation_problems`) такую строку не видит вовсе.
+    Получалось, что планировщик режет закачку там, где нарушения нет: на
+    синтетике ниже он видел компенсацию 4,28 при потолке 1,30 и резал вчетверо,
+    а аудит на тех же данных не находил ничего.
+
+    У суррогата нефизичных строк бывают тысячи — 22 563 на сценарии с ВНС.
+    """
+    forecast = [
+        produced("2007-01-01", "1", 100.0, 900.0),
+        injected("2007-01-01", "9", 1000.0),
+        # строка, выброшенная методикой целиком: отрицательное приращение нефти
+        {**injected("2007-02-01", "9", 9000.0), "WOMT_Diff": -1.0},
+    ]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 33.0)])]
+
+    assert not balance.compensation_problems(forecast, FLUIDS, ceiling=1.3), (
+        "синтетика подобрана неверно: аудит обязан молчать"
+    )
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3),
+        FLUIDS,
+    )
+
+    assert decisions == [], (
+        "планировщик режет закачку по строке, которой нет в экономике: "
+        + "; ".join(str(one) for one in decisions)
+    )
+    assert result == steps
+
+
 def test_nothing_to_raise_when_there_are_no_injectors(norms):
     """Расписанием такое не лечится — планировщик молчит, ловит аудит по факту."""
     forecast = [produced("2007-01-01", "1", 100.0, 900.0)]

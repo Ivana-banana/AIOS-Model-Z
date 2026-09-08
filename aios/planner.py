@@ -1997,13 +1997,17 @@ def _fit_injection_to_external_water(
     planned = 0.0
     stamps: set[str] = set()
     for row in forecast:
+        stamp = str(row.get("DATA", ""))[:7]
+        if len(stamp) == 7:
+            stamps.add(stamp)
+        # То же правило, что в коридоре компенсации и в аудите: строка с любым
+        # отрицательным приращением выброшена методикой целиком.
+        if not counted_by_methodology(row):
+            continue
         oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
         if liquid_t > 0 and 0 <= oil_t <= liquid_t:
             produced += (liquid_t - oil_t) * 1000.0 / fluids.water_density
         planned += max(row["WWIT_Diff"], 0.0)
-        stamp = str(row.get("DATA", ""))[:7]
-        if len(stamp) == 7:
-            stamps.add(stamp)
 
     if not stamps:
         # Тихо подставить 365 нельзя: на девятнадцатилетнем горизонте это занизило
@@ -2099,6 +2103,13 @@ def _fit_injection_to_water_corridor(
         year = int(stamp[:4])
         bucket = years.setdefault(year, {"base": 0.0, "produced": 0.0, "planned": 0.0})
         stamps_by_year.setdefault(year, set()).add(stamp)
+        # Строка с любым отрицательным приращением методикой выброшена целиком, и
+        # аудит (`balance.by_year`) её не видит. Здесь она в отборе не считалась,
+        # а закачка из неё считалась — планировщик резал закачку там, где аудит
+        # нарушения не находит (замер: срезка в 4 раза при компенсации 1,07 и
+        # потолке 1,3). У суррогата таких строк бывают тысячи.
+        if not counted_by_methodology(row):
+            continue
         oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
         if liquid_t > 0 and 0 <= oil_t <= liquid_t:
             water_m3 = (liquid_t - oil_t) * 1000.0 / fluids.water_density
