@@ -2070,3 +2070,63 @@ def test_the_rehearsal_refuses_an_export_the_reference_calculator_cannot_price(t
     assert done.returncode == 1, done.stdout[-600:]
     assert "ВЫГРУЗКА НЕФИЗИЧНА" in done.stdout, done.stdout[-600:]
     assert "дебит жидкости 900" in done.stdout, done.stdout[-600:]
+
+
+def test_the_trust_gate_reads_a_dataset_without_per_phase_multipliers(tmp_path):
+    """Пакет старого вида читается, а не роняет команду трассировкой.
+
+    Раздельные множители по фазам появились не сразу: `data/dataset-levels.csv`
+    — тот самый пакет, что стоит умолчанием в `train_surrogate.py`, — несёт
+    только общий `multiplier`. `usecols` требовал обе колонки безусловно, и
+    команда падала `ValueError: Usecols do not match columns` — притом что
+    ветка «взять общий множитель» ниже написана ровно под этот случай и была
+    недостижима (Н-30).
+    """
+    import csv
+    import sys as system
+
+    system.path.insert(0, str(SCRIPTS))
+    try:
+        from trust_gate import load_profiles
+    finally:
+        system.path.pop(0)
+
+    old_style = tmp_path / "старый.csv"
+    with old_style.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["scenario", "multiplier", "DATA", "well"])
+        writer.writeheader()
+        for scenario in ("s1", "s2"):
+            for month in (1, 2):
+                writer.writerow({"scenario": scenario, "multiplier": 1.1,
+                                 "DATA": f"2007-{month:02d}-01", "well": "1"})
+
+    profiles = load_profiles([old_style])
+
+    assert set(profiles) == {"старый:s1", "старый:s2"}
+    assert profiles["старый:s1"]["prod:1|уровень"] == pytest.approx(1.1)
+
+
+def test_the_trust_gate_refuses_an_empty_package_in_words(tmp_path):
+    """Пустой пакет — отказ словами, а не трассировка из глубины области.
+
+    Каталог `data/` под `.gitignore` и собирается из `runs/`, поэтому пустой или
+    короткий пакет — обычное состояние чистого клона. Читал трассировку тот, кто
+    просто повторил команду из README.
+    """
+    import csv
+    import subprocess
+    import sys as system
+
+    empty = tmp_path / "пустой.csv"
+    with empty.open("w", encoding="utf-8", newline="") as handle:
+        csv.DictWriter(handle, fieldnames=["scenario", "multiplier", "DATA", "well"]).writeheader()
+
+    done = subprocess.run(
+        [system.executable, str(SCRIPTS / "trust_gate.py"),
+         "--dataset", str(empty), "--out", str(tmp_path / "out.json")],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT, timeout=600)
+
+    assert done.returncode == 1
+    assert "Traceback" not in done.stderr, done.stderr[-400:]
+    assert "сценариев 0" in done.stderr and "build_dataset" in done.stderr
