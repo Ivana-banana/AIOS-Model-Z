@@ -2013,3 +2013,48 @@ def test_the_chosen_model_cannot_be_swapped_after_loading(tmp_path):
     with pytest.raises(dataclasses.FrozenInstanceError):
         selected.joint_rate_search = False
 
+
+def test_the_trust_region_is_built_in_the_window_where_it_is_applied():
+    """Обучающие профили и профиль кандидата считаются одним окном месяцев.
+
+    Профиль кандидата берётся по расписанию периода управления
+    (`optimise._distance_of`), а обучающие профили строились по всей матрице
+    управлений — вместе с историей, где все множители нейтральны. На Модели Z
+    это 145 нейтральных месяцев из 370: уровень сценария с множителем 1,5
+    превращался в (145·1,0 + 225·1,5)/370 ≈ 1,30, а кандидат приходил со своими
+    1,5. Систематический сдвиг раздувал расстояние — равномерный кандидат ×1,1
+    давал 28,58 при пороге 24,13 и выбывал из поиска (Н-26).
+    """
+    from datetime import date as date_type
+
+    import pandas as pd
+
+    from aios import neural
+
+    control_start = date_type(2007, 1, 1)
+    # два года нейтральной истории и два года управления: ровно та пропорция,
+    # что и на Модели Z, где истории 145 месяцев из 370
+    months = pd.date_range("2005-01-01", "2008-12-01", freq="MS")
+    scenarios = {f"s{number}": 1.2 + 0.1 * number for number in range(1, 9)}
+    rows, index = [], []
+    for scenario, multiplier in scenarios.items():
+        for stamp in months:
+            rows.append({"prod:1": multiplier if stamp.date() >= control_start else 1.0})
+            index.append((scenario, stamp))
+    controls = pd.DataFrame(rows, index=pd.MultiIndex.from_tuples(
+        index, names=["scenario", "DATA"]))
+
+    whole = neural._trust_region(controls, set(scenarios))
+    windowed = neural._trust_region(controls, set(scenarios), control_start)
+
+    assert whole is not None and windowed is not None
+    level = windowed.features.index("prod:1|уровень")
+    average = sum(scenarios.values()) / len(scenarios)
+
+    assert windowed.centre[level] == pytest.approx(average, abs=0.01), (
+        "в окне управления центр уровня — среднее самих множителей"
+    )
+    assert whole.centre[level] < average - 0.1, (
+        "история обязана разбавлять профиль: именно этот сдвиг и раздувал "
+        f"расстояние (центр по всей матрице {whole.centre[level]:.3f})"
+    )

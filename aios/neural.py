@@ -933,17 +933,32 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     return NeuralBundle(
         tuple(controls.columns), models, start_month, month_span,
         _envelope(controls), report, levels=levels, control_center=centre,
-        trust_region=_trust_region(controls, train_scenarios),
+        trust_region=_trust_region(controls, train_scenarios, control_start),
     )
 
 
 def _trust_region(controls: pd.DataFrame,
-                  train_scenarios: frozenset[str] | set[str]) -> trust.TrustRegion | None:
+                  train_scenarios: frozenset[str] | set[str],
+                  control_start: date | None = None) -> trust.TrustRegion | None:
     """Доверенная область по **обучающим** сценариям (`Р-72`).
 
     Тестовые сценарии сюда не попадают намеренно: порог `τ` выводится из
     разреженности самой выборки, и подмешать в неё отложенные прогоны значит
     измерить область по данным, которых у модели не было.
+
+    **Окно то же, в котором область потом применяется.** Профиль кандидата
+    считается по расписанию периода управления (`optimise._distance_of`,
+    `scripts/trust_gate.py`), а обучающие профили строились по всей матрице
+    управлений — вместе с историей до `control_start`, где все множители
+    нейтральны. На Модели Z это 145 нейтральных месяцев из 370: уровень
+    сценария с множителем 1,5 превращался в (145·1,0 + 225·1,5)/370 ≈ 1,30, а
+    кандидат приходил со своими 1,5. Систематический сдвиг раздувал расстояние —
+    равномерный кандидат ×1,1 давал 28,58 при пороге 24,13, то есть выбывал из
+    поиска, хотя на полном горизонте те же данные дают 18,60 (Н-26).
+
+    Правка касается только **новых** обучений: у артефакта область уже
+    посчитана и лежит внутри него. Сдаваемый `artifacts/surrogate.joblib` не
+    меняется, `sha256` прежний.
 
     `None` возвращается, когда область не определена: обучающих сценариев не
     больше `k`, либо ни одно управление между ними не менялось. Это не отказ
@@ -952,6 +967,11 @@ def _trust_region(controls: pd.DataFrame,
     """
     chosen = controls.index.get_level_values("scenario").isin(set(train_scenarios))
     frame = controls[chosen]
+    if control_start is not None:
+        months = frame.index.get_level_values("DATA")
+        frame = frame[months >= pd.Timestamp(control_start)]
+    if frame.empty:
+        return None
     profiles = {
         str(name): trust.profile({
             stamp.date(): dict(zip(frame.columns, (float(v) for v in row), strict=True))
