@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import subprocess
 import sys
@@ -105,6 +106,34 @@ def reproduction_problem(manifest: Manifest, submission: str) -> str | None:
     return None
 
 
+def tagged_file_problem(root: Path, tag: str, manifest: Manifest) -> str | None:
+    """Проверить, что заявленный файл лежит в самом теге и это он же.
+
+    До 08.09 сторож сверял только тексты: манифест заявки, сообщение тега и
+    инструкцию воспроизведения. До файла он не доходил — и когда форма сдачи
+    сменилась на хвост за период управления, а исключение `.gitignore` осталось
+    на прежнем пути, тег `submit-2026-09-08` объявил файл, которого в теге нет.
+    Сторож при этом отвечал «манифест и инструкция совпадают» (Н-04).
+    """
+    result = subprocess.run(
+        ["git", "show", f"{tag}:{manifest.schedule}"],
+        cwd=root,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return (
+            f"в теге {tag} нет заявленного файла {manifest.schedule} — "
+            "он не отслеживается git, и клон проверяющего его не получит"
+        )
+    actual = hashlib.md5(result.stdout).hexdigest()
+    if actual != manifest.md5:
+        return (
+            f"файл в теге {tag} не тот, что заявлен: md5 в теге {actual}, "
+            f"в заявке {manifest.md5}"
+        )
+    return None
+
+
 def _tag_message(root: Path, tag: str) -> str:
     result = subprocess.run(
         ["git", "for-each-ref", f"refs/tags/{tag}", "--format=%(objecttype)%00%(contents)"],
@@ -160,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
             if tagged != current
             else reproduction_problem(tagged, tagged_submission)
             or manifest_problem(current, _tag_message(root, tag))
+            or tagged_file_problem(root, tag, current)
         )
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
         print(f"[НЕТ] тег заявки: {error}")
