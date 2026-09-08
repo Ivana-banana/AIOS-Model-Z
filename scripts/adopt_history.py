@@ -166,9 +166,22 @@ def main(argv: list[str] | None = None) -> int:
     deck_dir = arguments.deck or config.case.model_dir
     out_dir = arguments.out if arguments.out.is_absolute() else ROOT / arguments.out
 
+    # --force разрешает заменить результат, но не уничтожить входы или
+    # рекурсивно скопировать дек в самого себя. Проверяем реальные пути,
+    # включая алиасы через символьные ссылки и Windows junction.
+    deck_dir = deck_dir.resolve()
+    out_dir = out_dir.resolve()
+    protected = (deck_dir, history_file.resolve(), arguments.config.resolve(), ROOT.resolve())
+    if (out_dir.is_relative_to(deck_dir)
+            or any(path.is_relative_to(out_dir) for path in protected)):
+        print(f"ОТКАЗ: каталог результата {out_dir} пересекается с исходным деком, "
+              "историей, конфигурацией или корнем проекта", file=sys.stderr)
+        return 1
+
     try:
         deck = layout(deck_dir)
         schedule_file = deck.one("SCHEDULE")
+        schedule_relative = schedule_file.relative_to(deck_dir)
     except ValueError as error:
         print(missing_deck_refusal(deck_dir, error), file=sys.stderr)
         return 1
@@ -186,11 +199,6 @@ def main(argv: list[str] | None = None) -> int:
     first, last = parsed.steps[0].date, parsed.steps[-1].date
     control_start = next_month(last)
 
-    if out_dir.exists():
-        if not arguments.force:
-            print(f"каталог {out_dir} уже есть; повторите с --force", file=sys.stderr)
-            return 1
-        shutil.rmtree(out_dir)
     # Их история заменяет **историческую часть**, а не весь файл. Собственный
     # горизонт дека за концом их истории — это те самые даты, которыми нам
     # предстоит управлять: наши шаги вешаются на существующие `DATES`, своих мы
@@ -199,8 +207,13 @@ def main(argv: list[str] | None = None) -> int:
     deck_text = schedule_file.read_text(encoding="utf-8", errors="replace")
     horizon = control_tail(deck_text, control_start)
     adopted_text = text.rstrip() + "\n\n" + horizon if horizon.strip() else text
+    if out_dir.exists():
+        if not arguments.force:
+            print(f"каталог {out_dir} уже есть; повторите с --force", file=sys.stderr)
+            return 1
+        shutil.rmtree(out_dir)
     shutil.copytree(deck_dir, out_dir)
-    (out_dir / schedule_file.name).write_text(adopted_text, encoding="utf-8", newline="\n")
+    (out_dir / schedule_relative).write_text(adopted_text, encoding="utf-8", newline="\n")
 
     # Сборка обязана читаться нашим же разбором дека: подменённый файл мог
     # оказаться не тем, на который смотрит INCLUDE, и узнать об этом надо здесь,

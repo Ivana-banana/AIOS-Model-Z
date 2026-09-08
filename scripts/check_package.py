@@ -262,6 +262,8 @@ def _trace_problem(schedule: Path, declared: str | None) -> str | None:
     except (OSError, ValueError) as error:
         return f"след {trace} не читается: {error}"
 
+    if record.get("status") == "unconfirmed":
+        return "последняя сборка пакета не подтверждена: повторите build_submission.py"
     if not record.get("agreed"):
         return (f"след говорит о расхождении: пересчёт {record.get('chddM')} против "
                 f"заявленного {record.get('claimedM')}")
