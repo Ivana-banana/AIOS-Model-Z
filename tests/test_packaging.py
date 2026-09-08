@@ -670,7 +670,10 @@ def test_the_clean_clone_check_counts_errors_as_failures(tmp_path):
         'time="1.0" /></testsuites>',
         encoding="utf-8")
 
-    assert check.counts(report) == {"tests": 100, "failures": 3, "skipped": 7}
+    # `broken` пуст: в этом отчёте нет ни одного `testcase`, только сводка сюиты.
+    # Так бывает у обрезанного отчёта, и разбор обязан это пережить.
+    assert check.counts(report) == {"tests": 100, "failures": 3, "skipped": 7,
+                                    "broken": []}
 
 
 def test_the_clean_clone_check_takes_the_deck_step_from_the_readme():
@@ -818,3 +821,67 @@ def test_the_suite_touch_check_reads_the_repository_not_a_guess(tmp_path):
     # подписи нет или коммит не найден — «выяснить не удалось»
     assert check.suite_touched_since(repo, "") is None
     assert check.suite_touched_since(repo, "0" * 40) is None
+
+
+def test_the_clean_clone_check_names_the_tests_that_broke():
+    """Падение названо поимённо, а не только сосчитано.
+
+    08.09 замер сказал «1 падений на чистом клоне» и не сказал какое. Замер
+    стоит семь минут, воспроизведение клона вручную — ещё столько же, а 11.09
+    после 17:00 столько времени нет вовсе. Имена лежат в том же `--junitxml`,
+    откуда берутся числа, — печатать их ничего не стоит.
+    """
+    check = _clean_clone_check()
+
+    measured = {"no-deck": {
+        "tests": 1750, "failures": 1, "skipped": 33,
+        "broken": ["tests.test_scripts::test_no_entry_point_answers_missing_norms"],
+    }}
+    expected = {"tests": 1750, "skipped_with_deck": 22, "skipped_without_deck": 33}
+
+    problems, _notes = check.verdict(measured, expected)
+
+    assert problems, "падение на клоне прошло молча"
+    assert "test_no_entry_point_answers_missing_norms" in problems[0], problems[0]
+
+
+def test_the_clean_clone_check_survives_a_report_without_names():
+    """Нет имён в отчёте — падение всё равно отказ, а не тихий успех.
+
+    Отчёт мог прийти от другой версии pytest или быть обрезан. Отсутствие имён
+    не должно превращать отказ в исключение по дороге к нему.
+    """
+    check = _clean_clone_check()
+
+    measured = {"no-deck": {"tests": 1750, "failures": 2, "skipped": 33}}
+    expected = {"tests": 1750, "skipped_with_deck": 22, "skipped_without_deck": 33}
+
+    problems, _notes = check.verdict(measured, expected)
+
+    assert problems and "падений на чистом клоне" in problems[0]
+    assert "имена не разобраны" in problems[0]
+
+
+def test_the_clean_clone_check_reads_broken_names_out_of_the_junit_report(tmp_path):
+    """Имена берутся из настоящего junit-XML, а не собираются в тесте.
+
+    Проверяется разбор, а не договорённость: XML написан руками в той форме, в
+    какой его пишет pytest, — с `classname` и `name` у каждого `testcase`.
+    """
+    check = _clean_clone_check()
+
+    report = tmp_path / "report.xml"
+    report.write_text(
+        '''<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="pytest" tests="3" failures="1" errors="0" skipped="1">
+<testcase classname="tests.test_a" name="test_ok"/>
+<testcase classname="tests.test_b" name="test_broken"><failure message="нет">упало</failure></testcase>
+<testcase classname="tests.test_c" name="test_skipped"><skipped message="нечего"/></testcase>
+</testsuite></testsuites>''', encoding="utf-8")
+
+    result = check.counts(report)
+
+    assert result["tests"] == 3
+    assert result["failures"] == 1
+    assert result["skipped"] == 1
+    assert result["broken"] == ["tests.test_b::test_broken"]

@@ -76,10 +76,19 @@ def counts(report: Path) -> dict[str, int]:
     """
     root = ET.parse(report).getroot()
     suite = root[0] if root.tag == "testsuites" else root
+    # Имена упавших — из того же XML. Прежде замер печатал «1 падений на чистом
+    # клоне» и не говорил какое: приходилось догадываться и воспроизводить
+    # клон вручную. 11.09 такого времени не будет, а сам замер стоит семь минут.
+    broken = [
+        f"{case.attrib.get('classname', '')}::{case.attrib.get('name', '')}".lstrip(":")
+        for case in suite.iter("testcase")
+        if case.find("failure") is not None or case.find("error") is not None
+    ]
     return {
         "tests": int(suite.attrib["tests"]),
         "failures": int(suite.attrib["failures"]) + int(suite.attrib["errors"]),
         "skipped": int(suite.attrib["skipped"]),
+        "broken": broken,
     }
 
 
@@ -103,9 +112,12 @@ def verdict(measured: dict[str, dict[str, int]], expected: dict[str, int | str],
 
     for stage, result in measured.items():
         if result["failures"]:
+            named = ", ".join(result.get("broken", [])[:5]) or "имена не разобраны"
+            more = ("" if len(result.get("broken", [])) <= 5
+                    else f" и ещё {len(result['broken']) - 5}")
             problems.append(
                 f"{stage}: {result['failures']} падений на чистом клоне — "
-                "проверяющий увидит красное")
+                f"проверяющий увидит красное: {named}{more}")
 
     if "with-deck" in measured and "tests" in expected:
         if measured["with-deck"]["tests"] != expected["tests"]:
