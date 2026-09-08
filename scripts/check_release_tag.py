@@ -10,7 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ACTIVE_TAG = re.compile(r"`(submit-\d{4}-\d{2}-\d{2}(?:\.\d+)?)`")
+# Действующий тег берётся по ЯВНОМУ якорю паспорта, а не по первому упоминанию:
+# в паспорте по делу названы и прежние теги (протокол холостого прогона 04.09,
+# строка про отозванную заявку), и порядок строк действующим тег не делает.
+ACTIVE_TAG = re.compile(
+    r"\*\*Действующий тег заявки — `(submit-\d{4}-\d{2}-\d{2}(?:\.\d+)?)`\*\*")
 
 
 @dataclass(frozen=True)
@@ -144,7 +148,9 @@ def main(argv: list[str] | None = None) -> int:
             passport = (root / "docs" / "submission-day.md").read_text(encoding="utf-8")
             match = ACTIVE_TAG.search(passport)
             if match is None:
-                raise ValueError("в паспорте не найден активный тег submit-<дата>")
+                raise ValueError(
+                    "в паспорте нет строки «**Действующий тег заявки — `submit-<дата>`**»"
+                )
             tag = match.group(1)
         current = declared_manifest(submission)
         tagged_submission = _tag_file(root, tag, "docs/submission.md")

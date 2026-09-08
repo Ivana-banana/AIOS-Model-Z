@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from check_release_tag import (  # noqa: E402
+    ACTIVE_TAG,
     Manifest,
     declared_manifest,
     manifest_problem,
@@ -89,3 +91,30 @@ def test_tag_snapshot_with_the_declared_run_passes():
     assert reproduction_problem(
         MANIFEST, current.read_text(encoding="utf-8")
     ) is None
+
+
+def test_the_active_tag_is_read_from_the_anchor_not_from_the_first_mention():
+    """Действующий тег — тот, что назван якорем, а не тот, что упомянут раньше.
+
+    До 08.09 и скрипт, и сторож слайдов брали **первый** `submit-…` в паспорте.
+    Правило держалось на том, что прежние теги в паспорте не упоминаются выше
+    действующего, — а они упоминаются по делу: протокол холостого прогона 04.09
+    называет тег, действовавший в тот день, и он стоит раньше. Заявка при этом
+    сверялась бы с отозванным состоянием и проходила бы молча.
+    """
+    passport = (Path(__file__).resolve().parent.parent
+                / "docs" / "submission-day.md").read_text(encoding="utf-8")
+
+    anchored = ACTIVE_TAG.findall(passport)
+
+    assert len(anchored) == 1, f"якорь действующего тега назван не раз: {anchored}"
+    mentioned = re.findall(r"submit-\d{4}-\d{2}-\d{2}(?:\.\d+)?", passport)
+    assert mentioned[0] != anchored[0], (
+        "в паспорте больше нет упоминания прежнего тега раньше действующего — "
+        "тест перестал проверять то, ради чего написан"
+    )
+
+
+def test_a_passport_without_the_anchor_is_refused():
+    """Паспорт без якоря — отказ, а не догадка по первому попавшемуся тегу."""
+    assert ACTIVE_TAG.search("тег `submit-2026-09-02` упомянут без якоря") is None
