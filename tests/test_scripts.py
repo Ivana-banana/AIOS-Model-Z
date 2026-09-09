@@ -2139,3 +2139,26 @@ def test_the_trust_gate_refuses_an_empty_package_in_words(tmp_path):
     assert done.returncode == 1
     assert "Traceback" not in done.stderr, done.stderr[-400:]
     assert "сценариев 0" in done.stderr and "build_dataset" in done.stderr
+
+
+def test_run_all_resolves_out_against_the_repository_not_the_caller(tmp_path):
+    """Относительный `--out` разрешается от корня, а не от каталога вызывающего.
+
+    Шаги идут с `cwd=ROOT`, поэтому `run_all.py --out out/here`, запущенный из
+    другого каталога, клал результат в `<repo>/out/here`, а последняя строка
+    печатала `out/here/wells_schedule.inc` — путь, которого у вызывающего нет
+    (Р-66).
+    """
+    import subprocess
+    import sys as system
+
+    done = subprocess.run(
+        [system.executable, str(SCRIPTS / "run_all.py"), "--dry-run",
+         "--out", "out/here"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=tmp_path, timeout=600)
+
+    assert done.returncode == 0, done.stderr[-400:]
+    assert str(ROOT / "out" / "here") in done.stdout, (
+        "путь результата напечатан относительно чужого каталога: " + done.stdout[-400:]
+    )
