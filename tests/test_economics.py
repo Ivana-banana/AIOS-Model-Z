@@ -127,8 +127,14 @@ def test_organisers_own_script_gives_the_same_number(tmp_path, start_year, golde
     if start_year is not None:
         command += ["--start-year", str(start_year)]
 
+    # то же окружение, что у обеих обвязок: под `capture_output` вендор берёт
+    # кодировку локали, и на русской Windows его собственное замечание валит
+    # успешный расчёт (Р-256). Пример организаторов замечаний не печатает, но
+    # правило «кодировку задаёт зовущий» не должно знать исключений: иначе
+    # обязательный тест паритета отказывает по причине, которую не прочесть.
     completed = subprocess.run(
-        command, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=economics.vendor_environment(),
     )
     assert completed.returncode == 0, completed.stderr
 
@@ -389,7 +395,8 @@ def test_a_refusal_of_the_reference_calculator_carries_its_reason(tmp_path):
     assert "WLPR свыше 500" in done.stderr
 
 
-def test_a_warning_of_the_reference_calculator_does_not_become_a_refusal(tmp_path):
+def test_a_warning_of_the_reference_calculator_does_not_become_a_refusal(
+        tmp_path, monkeypatch):
     """Успешный расчёт с замечанием остаётся успешным, а не «отказом».
 
     Замечание эталона про WLPR выше 500 содержит `м³`. Под `capture_output`
@@ -401,7 +408,15 @@ def test_a_warning_of_the_reference_calculator_does_not_become_a_refusal(tmp_pat
     Строка с дебитом 550 стоит **до** стартового года: методику это не
     нарушает (расчёт идёт с 2007), но в замечание она попадает. Ровно так
     выглядит валидационный кейс, где история приходит чужой.
+
+    **Враждебная локаль задаётся здесь, а не ожидается от машины.** Без неё
+    тест зелёный на любой UTF-8-машине — и со снятым фиксом тоже, то есть не
+    сторожит ничего: проверено 09.09 подменой `vendor_environment()` на
+    `dict(os.environ)`. Фикс тем и работает, что кладёт `PYTHONIOENCODING`
+    **поверх** унаследованного, поэтому cp1251 в родителе его не ломает.
     """
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1251")
+
     sys.path.insert(0, str(economics.VENDOR_DIR.parent.parent / "scripts"))
     try:
         from verify_declared import recompute
