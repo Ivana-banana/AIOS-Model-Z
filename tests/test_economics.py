@@ -370,6 +370,23 @@ def test_a_refusal_of_the_reference_calculator_carries_its_reason(tmp_path):
         + str(refusal.value)
     )
 
+    # И до человека она доезжает строкой, а не трассировкой: отказ эталона —
+    # это ответ (дебит свыше 500, дубли скважино-месяцев, битая шапка), а не
+    # поломка. Соседний `build_submission` ловил его с 08.09, `verify_declared`
+    # — нет (Р-72).
+    import subprocess
+
+    root = economics.VENDOR_DIR.parent.parent
+    done = subprocess.run(
+        [sys.executable, str(root / "scripts" / "verify_declared.py"),
+         "--run", str(tmp_path), "--claimed", "1"],
+        cwd=root, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=600)
+
+    assert done.returncode == 1
+    assert "Traceback" not in done.stderr, done.stderr[-400:]
+    assert "WLPR свыше 500" in done.stderr
+
 
 def test_the_declared_run_is_read_from_the_document_without_the_tail_directory():
     """`declared_run()` называет каталог прогона, а не каталог сдаваемого хвоста.

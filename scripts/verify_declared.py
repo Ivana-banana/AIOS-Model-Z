@@ -211,7 +211,15 @@ def main() -> int:
         print(f"заявленное число не найдено в {source}", file=sys.stderr)
         return 1
 
-    recomputed, command = recompute(rows_file, start_year, norms_file, run_dir)
+    # Отказ эталона — это ответ, а не поломка: он бывает на дебите свыше 500,
+    # на дублях скважино-месяцев, на битой шапке. `build_submission` рядом ловит
+    # его строкой «отказ: …» с 08.09, а здесь исключение уходило трассировкой,
+    # хотя причина в нём теперь есть (Р-72).
+    try:
+        recomputed, command = recompute(rows_file, start_year, norms_file, run_dir)
+    except RuntimeError as failure:
+        print(f"отказ: {failure}", file=sys.stderr)
+        return 1
     difference = abs(recomputed - claimed)
     agreed = difference <= ROUNDING_TOLERANCE_M
 
