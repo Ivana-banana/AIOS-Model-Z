@@ -973,6 +973,83 @@ def test_jury_documents_name_the_reference_numbers_the_files_give(published_refe
         assert "1,20 %" in document, f"{name} не называет разрыв симуляторов"
 
 
+def test_the_gap_in_the_declared_window_is_named_where_the_jury_will_ask(
+        published_references):
+    """Разрыв схем В ОКНЕ ЗАЯВКИ назван числами из тех же файлов.
+
+    Числа 5 157,0 и 5 218,9 накоплены с 1991, а заявляется ЧДД за период
+    управления: у эталонного расчётчика окно расчёта и база дисконтирования —
+    один параметр `--start-year`, равный 2007 (Р-249). Годы 1991–2006 в
+    заявляемое число не входят вовсе, и разрыв там втрое больше. Сторож держит
+    в документе защиты именно оконные числа: спросят про них, а не про 1991
+    (Р-267).
+
+    Считаются они здесь, а не переписываются литералом, — иначе документ и
+    файлы организаторов разойдутся молча, как это уже было с порогом шлюза
+    (Р-265).
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from simulator_gap import npv_in_window
+
+    opm, tnavigator = published_references
+    in_window = {
+        "OPM Flow": npv_in_window(opm, 2007),
+        "тНавигатор": npv_in_window(tnavigator, 2007),
+    }
+    share = in_window["тНавигатор"] / in_window["OPM Flow"] - 1
+
+    # окно обязано давать разрыв меньше: годы разбуривания в заявку не входят
+    assert 0 < share < tnavigator.cumulative_chdd_m / opm.cumulative_chdd_m - 1
+
+    document = _read("docs/defence-qa.md")
+    for name, value in in_window.items():
+        assert _ru(value) in document, (
+            f"защита не называет эталон {name} в окне заявки: ожидалось {_ru(value)}"
+        )
+    printed = f"{100 * share:.2f}".replace(".", ",")
+    assert f"{printed} %" in document, (
+        f"защита не называет разрыв схем в окне заявки: ожидалось {printed} %"
+    )
+    # и направление: симулятор проверки даёт больше — это довод, а не деталь
+    assert in_window["тНавигатор"] > in_window["OPM Flow"]
+    assert "в нашу пользу" in document
+
+
+def test_the_conservative_uplift_compares_one_flag_with_itself(published_references):
+    """Прирост против ВАШЕЙ базы считается при одном `chargeInitialPump`.
+
+    Публикация организаторов посчитана при ДА (иначе не сходится счётчик
+    насосов: 145 против 55), а заявка — при НЕТ, как в поставленных нормативах.
+    Поставить 13 133,8 рядом с 11 904,0 и назвать разницу приростом значит
+    выдать цену флага (125,1 млн руб. на базе) за результат работы системы.
+
+    Выравнивание по вашей публикации даёт 13 023,2 против 11 904,0 — это и
+    обязано стоять в защите. Число считается здесь из книги, а не переписано
+    литералом.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from simulator_gap import npv_in_window
+
+    _, tnavigator = published_references
+    their_base = npv_in_window(tnavigator, 2007)
+    ours_with_the_flag = 13_023.2  # docs/experiments.md, «Четыре системы отсчёта»
+
+    uplift = (ours_with_the_flag - their_base) / their_base * 100
+    printed = f"{uplift:.2f}".replace(".", ",")
+
+    document = _read("docs/defence-qa.md")
+    assert f"{printed} %" in document, (
+        f"защита не называет консервативный прирост: ожидалось {printed} %"
+    )
+    # и объясняет, почему нельзя считать иначе
+    assert "смешение флагов" in document
+    assert "13 023,2" in document, "защита не называет заявку в системе отсчёта публикации"
+
+
 def test_withdrawn_oil_gap_is_marked_as_withdrawn_wherever_it_appears():
     """Отозванные «5,0 %» и ориентир 4 771 могут встречаться только как отозванные.
 
