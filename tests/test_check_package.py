@@ -583,3 +583,32 @@ def test_the_gate_refuses_a_schedule_whose_records_lost_their_rate(monkeypatch):
     assert "1 открытых записей без расхода" in problem
     assert "2014-01-01 p" in problem
 
+
+def test_a_check_that_did_not_run_is_not_reported_as_ready(capsys):
+    """«Не выполнена» — это не «претензий нет».
+
+    Сверка сдаваемого файла с деком глушится `except Exception` (нет дека,
+    опечатка в `model_dir`, упавший импорт), и пункт всё равно печатался
+    «ГОТОВО», а команда отвечала «пакет готов». Паспорт дня отправки принимает
+    пакет ровно по этому признаку — «все строки ГОТОВО, последняя строка „пакет
+    готов“», — то есть признак достигался и тогда, когда содержательная половина
+    пункта не состоялась (Р-65).
+
+    Код возврата при этом остаётся нулевым: ничего не сломано, файлы на месте, а
+    проверяющий набирает команду на чистом клоне до распаковки дека — это его
+    обычный первый запуск, и красным он быть не должен.
+    """
+    import check_package
+
+    ready = check_package.Check(number="6", title="результат", ready=True,
+                                detail="файл на месте; сверка записей не выполнена: "
+                                       "ValueError: нет каталога дека")
+    other = check_package.Check(number="7", title="git", ready=True, detail="есть")
+
+    code = check_package.report([ready, other])
+    printed = capsys.readouterr().out
+
+    assert code == 0
+    assert "НЕ ПРОВ" in printed
+    assert "пакет готов" not in printed
+    assert "не выполнено" in printed

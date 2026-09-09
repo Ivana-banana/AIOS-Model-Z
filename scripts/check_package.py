@@ -615,14 +615,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", type=Path, default=Path("artifacts/surrogate.joblib"))
     arguments = parser.parse_args(argv)
 
-    checks = audit(arguments.root, arguments.schedule, arguments.model)
+    return report(audit(arguments.root, arguments.schedule, arguments.model))
+
+
+def report(checks: list[Check]) -> int:
+    """Напечатать итог и вернуть код возврата. Три состояния, а не два."""
+    # «Не выполнена» — это не «претензий нет». Сверка сдаваемого файла с деком
+    # глушится `except Exception` (нет дека, опечатка в model_dir, упавший
+    # импорт), и пункт всё равно печатался «ГОТОВО», а команда отвечала «пакет
+    # готов». Паспорт дня отправки принимает пакет ровно по этому признаку —
+    # «все строки ГОТОВО, последняя строка „пакет готов“», — то есть признак
+    # достигался и тогда, когда содержательная половина пункта не состоялась
+    # (Р-65).
+    unchecked = [item for item in checks
+                 if item.ready and "не выполнена" in item.detail]
     for item in checks:
-        status = "ГОТОВО" if item.ready else "НЕТ"
-        print(f"[{status:6}] {item.number}. {item.title}: {item.detail}")
+        status = ("ГОТОВО" if item.ready else "НЕТ")
+        if item in unchecked:
+            status = "НЕ ПРОВ"
+        print(f"[{status:7}] {item.number}. {item.title}: {item.detail}")
     missing = [item for item in checks if not item.ready]
     print()
-    print("пакет готов" if not missing else f"пакет неполон: {len(missing)} пункт(а)")
-    return 0 if not missing else 1
+    if missing:
+        print(f"пакет неполон: {len(missing)} пункт(а)")
+        return 1
+    if unchecked:
+        # Код возврата остаётся нулевым: ничего не сломано, файлы на месте.
+        # Красным этот случай делать нельзя — проверяющий набирает команду на
+        # чистом клоне до распаковки дека, и это его обычный первый запуск.
+        # Но «пакет готов» здесь не пишется, и паспорт дня отправки этого
+        # признака не увидит.
+        print(f"пакет собран, но {len(unchecked)} проверок(и) не выполнено — "
+              "см. строки [НЕ ПРОВ] выше; на машине с деком прогоните ещё раз")
+        return 0
+    print("пакет готов")
+    return 0
 
 
 if __name__ == "__main__":
