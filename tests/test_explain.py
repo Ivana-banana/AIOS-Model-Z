@@ -767,3 +767,29 @@ def test_an_unknown_provider_is_refused_not_silently_replaced():
     assert result.source == "template-failed"
     assert "yandxe" in (result.failure or ""), "имя опечатки не названо"
     assert "anthropic" in (result.failure or "").lower(), "не сказано, что допустимо"
+
+
+def test_a_text_claiming_a_full_run_that_did_not_happen_is_rejected():
+    """Статус — не число, и барьер чисел его не видел вовсе.
+
+    Ответ, где прирост подписан «подтверждено полным расчётом ГГДМ» при
+    `confirmed = False`, проходил обе проверки: числа в нём могли быть
+    процитированы из фактов, а слово «подтверждено» числом не является. Между тем
+    это ровно то утверждение, из-за которого расхождение заявленного ЧДД с
+    пересчётом организаторов становится дисквалификацией — прогноз суррогата,
+    поданный как факт ГГДМ (Р-51, ревизия ночи 08→09.09).
+    """
+    from aios.explain import Evidence, false_confirmation
+
+    facts = Evidence(subject="остановка скважины 42", observations=(),
+                     numbers={"прирост ЧДД, млн руб.": 681.16}, caveats=(),
+                     confirmed=False)
+
+    assert false_confirmation("Результат подтверждён полным расчётом ГГДМ.", facts)
+    assert false_confirmation("Прирост получен полным расчётом.", facts)
+    assert false_confirmation("Это прогноз суррогата, ГГДМ не считалась.", facts) is None
+
+    # когда расчёт действительно был, называть его — не ложь, а обязанность
+    confirmed = Evidence(subject="x", observations=(), numbers={}, caveats=(),
+                         confirmed=True)
+    assert false_confirmation("Подтверждено полным расчётом ГГДМ.", confirmed) is None

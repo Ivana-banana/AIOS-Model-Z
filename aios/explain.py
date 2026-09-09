@@ -305,6 +305,35 @@ def unverified_numbers(text: str, evidence: Evidence) -> tuple[str, ...]:
     return tuple(dict.fromkeys(unknown))
 
 
+#: Слова, которыми текст объявляет полный расчёт состоявшимся.
+CONFIRMED_WORDS = (
+    "подтвержд", "полным расчётом", "полного расчёта", "полный расчёт",
+    "рассчитано на ггдм", "посчитано на ггдм",
+)
+
+
+def false_confirmation(text: str, evidence: Evidence) -> str | None:
+    """Текст объявляет полный расчёт, которого не было. `None` — не объявляет.
+
+    Статус — не число, и барьер чисел его не видел вовсе: ответ, где прирост
+    подписан «подтверждено полным расчётом ГГДМ» при `confirmed = False`,
+    проходил обе проверки. А это ровно то утверждение, из-за которого расхождение
+    заявленного ЧДД с пересчётом организаторов и становится дисквалификацией:
+    прогноз суррогата, поданный как факт ГГДМ (Р-51).
+
+    Обратную сторону не проверяем: не назвать подтверждение, когда оно есть, —
+    скромность, а не ложь.
+    """
+    if evidence.confirmed:
+        return None
+    lowered = text.lower()
+    for word in CONFIRMED_WORDS:
+        if word in lowered:
+            return (f"текст объявляет полный расчёт («{word}»), а факты говорят "
+                    "«ПРОГНОЗ суррогата, полным расчётом не подтверждено»")
+    return None
+
+
 def _quoted_facts(evidence: Evidence) -> str:
     """Весь текст, который модель видела и может процитировать дословно.
 
@@ -673,6 +702,10 @@ def _talk(evidence: Evidence,
     rejected = literal + tuple(f"{token} ({verdict})"
                                for token, verdict in _broken_tuples(text, evidence)
                                if token not in literal)
+    # Третий барьер — статус: он не число, и первые два его не видят.
+    lie = false_confirmation(text, evidence)
+    if lie is not None:
+        rejected = rejected + (lie,)
     if rejected:
         return Explanation(
             text=template_text(evidence),
