@@ -190,6 +190,81 @@ def test_every_pinned_runtime_package_has_its_licence_text():
             f"нет текста лицензии для {requirement} (ожидался {prefix}*.txt)"
 
 
+#: Метки копилефта, по которым пакет попадает в реестр прав.
+#:
+#: И сокращения, и полные названия: «GNU General Public License v3» — именно так
+#: пишет классификатор `resdata` — подстроки «GPL» не содержит вовсе, а прежний
+#: сторож искал только её. Он ловил копилефт по сокращениям в поле `License`,
+#: и на классификаторах промолчал бы.
+COPYLEFT_MARKS = (
+    "GPL", "MPL", "EPL", "CDDL",
+    "GENERAL PUBLIC LICENSE", "MOZILLA PUBLIC LICENSE",
+    "ECLIPSE PUBLIC LICENSE", "COMMON DEVELOPMENT AND DISTRIBUTION",
+)
+
+
+def declared_licence(meta) -> str:
+    """Как дистрибутив НАЗЫВАЕТ свою лицензию, а не что написано в её тексте.
+
+    Поле `License` бывает двух совершенно разных вещей. У `resdata` это имя
+    (`GPL-3.0`), у `scipy` — весь текст лицензии на 46 КБ, внутри которого
+    стоит ссылка `why-not-lgpl.html`. Поиск подстроки «GPL» по такому полю
+    объявляет копилефтом BSD-пакет: 09.09 `scipy` попал в отказ сторожа
+    и требовал текста лицензии в `LICENSES/`, которого ему не положено.
+
+    Обратная ошибка дороже, поэтому порядок такой: сначала SPDX-выражение
+    (`License-Expression`, современный способ), затем классификаторы `License ::`,
+    и только потом само поле — причём **первой строкой**: у настоящего GPL-блоба
+    там стоит «GNU GENERAL PUBLIC LICENSE», то есть пакет без выражения и без
+    классификатора всё равно опознаётся.
+    """
+    expression = meta.get("License-Expression")
+    if expression:
+        return expression
+    classifiers = [
+        line for line in (meta.get_all("Classifier") or [])
+        if line.startswith("License ::")
+    ]
+    if classifiers:
+        return "; ".join(classifiers)
+    first_line = (meta.get("License") or "").strip().splitlines()
+    return first_line[0] if first_line else ""
+
+
+def test_a_licence_blob_does_not_turn_a_bsd_package_into_copyleft():
+    """`scipy` называется BSD классификатором, а «GPL» стоит в тексте лицензии.
+
+    Форма один в один как у установленного `scipy`: классификатор BSD,
+    `License-Expression` нет, а в поле `License` — весь текст с упоминанием
+    LGPL. Рядом — три формы, которые обязаны остаться копилефтом.
+    """
+    class Meta:
+        def __init__(self, fields, classifiers):
+            self._fields, self._classifiers = fields, classifiers
+
+        def get(self, name):
+            return self._fields.get(name)
+
+        def get_all(self, name):
+            return self._classifiers if name == "Classifier" else []
+
+    scipy_like = Meta(
+        {"License": "Copyright (c) 2001-2002 Enthought, Inc.\n\n"
+                    "please read <http://www.gnu.org/philosophy/why-not-lgpl.html>.\n"},
+        ["License :: OSI Approved :: BSD License"])
+    assert not any(mark in declared_licence(scipy_like).upper() for mark in COPYLEFT_MARKS)
+
+    named = Meta({"License": "GPL-3.0"}, [])
+    expressed = Meta({"License-Expression": "LGPL-3.0-or-later"}, [])
+    classified = Meta(
+        {}, ["License :: OSI Approved :: GNU General Public License v3 (GPLv3)"])
+    blob = Meta({"License": "GNU GENERAL PUBLIC LICENSE\n Version 3\n"}, [])
+    for meta in (named, expressed, classified, blob):
+        assert any(mark in declared_licence(meta).upper() for mark in COPYLEFT_MARKS), (
+            f"копилефт не опознан: {declared_licence(meta)!r}"
+        )
+
+
 def test_every_copyleft_package_of_the_image_is_named_in_the_register():
     """Копилефт из образа обязан быть в реестре и иметь текст лицензии.
 
@@ -222,8 +297,8 @@ def test_every_copyleft_package_of_the_image_is_named_in_the_register():
         except metadata.PackageNotFoundError:
             unknown.append(name)
             continue
-        licence = meta.get("License-Expression") or meta.get("License") or ""
-        if any(mark in licence.upper() for mark in ("GPL", "MPL", "EPL", "CDDL")):
+        licence = declared_licence(meta)
+        if any(mark in licence.upper() for mark in COPYLEFT_MARKS):
             copyleft.append((name, licence, metadata.version(name)))
 
     if unknown:
