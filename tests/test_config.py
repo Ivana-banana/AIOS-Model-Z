@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pathlib
 from datetime import date
 
 import pytest
@@ -422,3 +423,129 @@ def test_a_share_outside_zero_to_one_is_refused(tmp_path):
     good = MINIMAL.replace("water_tolerance = 1.0",
                            "water_tolerance = 1.0\nmax_watercut = 0.9")
     assert config.load(_written(tmp_path, good)).limits.max_watercut == 0.9
+
+
+# ── что нашёл мутационный прогон 06.09 (Р-221) ───────────────────────────────
+
+
+def test_the_loaded_configuration_cannot_be_edited():
+    """Прочитанная конфигурация неизменяема.
+
+    Две мутации `frozen=True` на `False` переживали сюиту. Регламент требует,
+    чтобы результат воспроизводился **из файла конфигурации**; изменяемая
+    конфигурация позволяет поправить seed или базу дисконтирования в середине
+    прогона — молча и без следа в файле, из которого потом будут повторять.
+    """
+    import dataclasses
+
+    from aios import config as config_module
+
+    loaded = config_module.load("config.toml")
+
+    # проверяются и сам `Config`, и вложенный `CaseConfig`: это разные
+    # объявления, и мутация каждого сидит своей строкой
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        loaded.case = None
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        loaded.case.model_dir = pathlib.Path(".")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        loaded.run.seed = 1
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        loaded.economics.start_date = None
+
+
+def test_a_share_is_read_as_a_fraction_and_bounded(tmp_path):
+    """Доля задаётся числом в (0, 1], и единица — законное значение.
+
+    Мутация `<= 1` на `< 1` переживала сюиту: обводнённости ровно 1,0 в
+    фикстурах не было. Единица означает «сто процентов воды» — предел, который
+    кейс вправе назвать, и отвергать его значит отказываться от условия
+    организаторов на разборе конфигурации, до всякого расчёта.
+    """
+    from aios import config as config_module
+
+    base = (tmp_path / "config.toml")
+    template = pathlib.Path("config.toml").read_text(encoding="utf-8")
+
+    for value, ok in ((1.0, True), (0.9, True), (1.5, False), (0.0, False)):
+        base.write_text(
+            template.replace("[policy]",
+                             f"max_watercut = {value}\n\n[policy]", 1),
+            encoding="utf-8")
+        if ok:
+            assert config_module.load(base).limits.max_watercut == pytest.approx(value)
+        else:
+            with pytest.raises(ValueError, match="долей"):
+                config_module.load(base)
+
+
+def test_a_zero_limit_means_no_limit_unless_zero_is_a_limit():
+    """Ноль в пределе кейса — «предела нет», кроме тех ключей, где он предел.
+
+    Мутация `value or None` на `and` переживала сюиту. Разница смысловая: для
+    мощности водозабора ноль означает «величина неизвестна, не режем и говорим
+    об этом», а для отдельных ключей — настоящий ноль. Подмена переворачивает
+    оба случая: заданный предел становится `None`, а незаданный — нулём.
+    """
+    # флаг живёт у счётчиков — квот мероприятий и числа скважин: там ноль
+    # осмыслен сам по себе («мероприятий в этом году не делать»)
+    from aios.config import _optional_count
+
+    section = {"есть": 5, "ноль": 0}
+    source = pathlib.Path("x")
+
+    assert _optional_count(section, "есть", "limits", source) == 5
+    assert _optional_count(section, "ноль", "limits", source) is None, (
+        "ноль без пометки «ноль это предел» обязан читаться как отсутствие предела"
+    )
+    assert _optional_count(section, "нет ключа", "limits", source) is None
+
+    kept = _optional_count(section, "ноль", "limits", source, zero_is_a_limit=True)
+    assert kept == 0, "там, где ноль — предел (квота «не делать»), он обязан дойти нулём"
+
+
+def test_trust_defaults_point_at_the_search_family():
+    """Без секции `[trust]` берутся пары семейства `search`, а не что придётся.
+
+    Мутация подменяла деление на умножение в сборке пути по умолчанию. Файл пар
+    задаёт конформный запас — величину, которая уходит в вердикт шлюза и на
+    страницу; неверный путь означал бы «запас не калиброван» там, где он есть.
+    """
+    from aios.config import _trust_config
+
+    fallback = _trust_config({}, pathlib.Path("корень"), pathlib.Path("x"))
+
+    assert fallback.pairs_family == "search"
+    assert fallback.pairs_file == pathlib.Path("корень") / "docs/data/margin-pairs-search.csv", (
+        f"путь по умолчанию собран неверно: {fallback.pairs_file}"
+    )
+
+
+def test_a_named_water_source_capacity_reaches_the_limits(tmp_path):
+    """Названная мощность водозабора доходит до ограничений, а не теряется.
+
+    Мутация `or None` на `and` переживала сюиту: заданное значение превращалось
+    бы в `None`, а незаданный ноль — в ноль. То есть кейс, назвавший мощность
+    источника, считался бы кейсом без неё — и коридор баланса воды перестал бы
+    её учитывать молча.
+    """
+    from aios import config as config_module
+
+    template = pathlib.Path("config.toml").read_text(encoding="utf-8")
+    named = tmp_path / "config.toml"
+    named.write_text(
+        template.replace("max_external_water_m3_per_day = 0",
+                         "max_external_water_m3_per_day = 500", 1),
+        encoding="utf-8")
+
+    limits = config_module.load(named).limits
+
+    assert limits.max_external_water_m3_per_day == pytest.approx(500.0), (
+        f"названная мощность водозабора не дошла: "
+        f"{limits.max_external_water_m3_per_day}"
+    )
+
+    # а ноль по-прежнему означает «величина неизвестна», а не «источника нет»
+    zeroed = tmp_path / "zero.toml"
+    zeroed.write_text(template, encoding="utf-8")
+    assert config_module.load(zeroed).limits.max_external_water_m3_per_day is None
