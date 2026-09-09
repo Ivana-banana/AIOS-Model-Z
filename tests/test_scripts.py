@@ -661,6 +661,28 @@ def test_confirm_refuses_a_loss_making_result(tmp_path, monkeypatch, capsys):
     assert not losing.is_improvement
 
 
+def test_the_case_is_not_built_when_the_case_conditions_are_broken():
+    """Условия кейса — такой же отказ, как нарушение расписания.
+
+    `CycleResult` называет кандидата с непустым `case_problems` непригодным, а
+    гейт сборки смотрел только на `problems`: команда печатала список нарушений,
+    тут же писала «кейс собран», возвращала 0, и `run_all.py` тратил на такой
+    кандидат 12–19 минут ГГДМ. Принцип Р-191 — «единая команда обязана
+    отказывать на плохом кандидате» — был применён только к последнему шагу
+    (Р-69).
+    """
+    from scripts import run_cycle
+
+    source = (SCRIPTS / "run_cycle.py").read_text(encoding="utf-8")
+    gate = source.index("if result.problems:")
+    build = source.index("case = build_case(")
+
+    assert "if result.case_problems:" in source[gate:build], (
+        "между проверкой расписания и сборкой кейса нет гейта по условиям кейса"
+    )
+    assert run_cycle is not None
+
+
 def test_confirm_prints_case_problems_of_the_full_run():
     """Нарушения условий кейса на выгрузке ГГДМ печатаются, а не молчат."""
     from aios import loop

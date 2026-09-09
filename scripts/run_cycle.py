@@ -536,6 +536,18 @@ def main(argv: list[str] | None = None) -> int:
         print("расписание нарушает ограничения — кейс не собираю", file=sys.stderr)
         return 1
 
+    # Условия кейса — такой же отказ, как нарушение расписания. `CycleResult`
+    # называет кандидата с непустым `case_problems` непригодным, но гейт смотрел
+    # только на `problems`: команда печатала список нарушений, тут же писала
+    # «кейс собран», возвращала 0, и `run_all.py` тратил на него 12–19 минут
+    # ГГДМ. Принцип Р-191 («единая команда обязана отказывать на плохом
+    # кандидате») был применён только к последнему шагу (Р-69).
+    if result.case_problems:
+        print("условия кейса нарушены — кейс не собираю:", file=sys.stderr)
+        for line in result.case_problems[:10]:
+            print(f"  {line}", file=sys.stderr)
+        return 1
+
     case = build_case(
         arguments.out,
         config.case.model_dir,
