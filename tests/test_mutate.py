@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(ROOT / "scripts"))
 
 from mutate import apply_one, plan  # noqa: E402
 
@@ -155,7 +157,7 @@ def test_an_interrupted_run_restores_the_module_on_the_next_start(tmp_path):
     module.write_text("def f(a):" + chr(10) + "    return a <= 10" + chr(10),
                       encoding="utf-8")
 
-    root = Path(__file__).resolve().parent.parent
+    root = ROOT
     done = subprocess.run(
         [system.executable, str(root / "scripts" / "mutate.py"),
          "--module", str(module), "--tests", NEUTRAL_TESTS, "--limit", "1"],
@@ -183,11 +185,20 @@ def test_a_run_killed_by_sigterm_restores_the_module_itself(tmp_path):
     заметил `ruff`.
 
     Проверяется делом: настоящий подпроцесс, настоящий сигнал.
+
+    **На Windows тест пропускается, и это не поблажка.** `Popen.send_signal`
+    там зовёт `TerminateProcess`: процесс снимается ядром, обработчик Python не
+    выполняется никогда — перехватить нечего, и никакая правка `mutate.py` этого
+    не изменит. Защита Windows-машины — восстановление «на входе» (тест выше),
+    и оно проверяется на всех платформах.
     """
     import signal
     import subprocess
     import sys as system
     import time
+
+    if system.platform == "win32":
+        pytest.skip("Windows снимает процесс TerminateProcess: обработчика сигнала нет")
 
     module = tmp_path / "жертва.py"
     original = ("# важный комментарий" + chr(10) + "def f(a, b):" + chr(10)
@@ -195,7 +206,7 @@ def test_a_run_killed_by_sigterm_restores_the_module_itself(tmp_path):
                 + "    return a - 1" + chr(10))
     module.write_text(original, encoding="utf-8")
 
-    root = Path(__file__).resolve().parent.parent
+    root = ROOT
     # Тесты нарочно медленные: нужно успеть послать сигнал в середине прогона.
     proc = subprocess.Popen(
         [system.executable, str(root / "scripts" / "mutate.py"),
@@ -242,7 +253,7 @@ def test_a_run_started_from_inside_a_run_refuses(tmp_path):
     module = tmp_path / "жертва.py"
     module.write_text("def f(a):" + chr(10) + "    return a < 10" + chr(10), encoding="utf-8")
 
-    root = Path(__file__).resolve().parent.parent
+    root = ROOT
     done = subprocess.run(
         [system.executable, str(root / "scripts" / "mutate.py"),
          "--module", str(module), "--tests", NEUTRAL_TESTS, "--limit", "1"],
@@ -279,7 +290,7 @@ def test_a_red_suite_refuses_instead_of_reporting_every_mutation_killed(tmp_path
     red = tmp_path / "test_красный.py"
     red.write_text("def test_red():" + chr(10) + "    assert False" + chr(10), encoding="utf-8")
 
-    root = Path(__file__).resolve().parent.parent
+    root = ROOT
     done = subprocess.run(
         [system.executable, str(root / "scripts" / "mutate.py"),
          "--module", str(module), "--tests", str(red), "--limit", "1"],
@@ -291,4 +302,28 @@ def test_a_red_suite_refuses_instead_of_reporting_every_mutation_killed(tmp_path
     assert "красные на неизменённом модуле" in done.stderr, done.stderr[-400:]
     assert "выжило" not in done.stdout, (
         "инструмент всё-таки выдал вердикт по красному набору: " + done.stdout[-400:]
+    )
+
+
+def test_no_module_of_the_repository_is_left_mutated():
+    """В дереве не лежит ни одного бэкапа прерванного мутационного прогона.
+
+    Это защита, которая работает **на любой платформе**, в отличие от
+    восстановления по сигналу: Windows снимает процесс `TerminateProcess`, и
+    перехватить там нечего. Бэкап рядом с модулем означает ровно одно — прогон
+    убили на середине, и модуль сейчас в мутированном виде.
+
+    Поймать это иначе нечем: пережившая мутация тем и определяется, что тесты
+    от неё зелёные. 06.09 и 09.09 такой файл дважды доживал до `ruff`, и оба
+    раза его замечал человек, а не прогон.
+    """
+    left = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in ROOT.rglob("*.mutation-backup")
+        if ".venv" not in path.parts and ".git" not in path.parts
+    )
+
+    assert not left, (
+        "мутационный прогон прерван, модуль остался переписанным — "
+        "восстановите его из бэкапа и удалите бэкап: " + ", ".join(left)
     )
