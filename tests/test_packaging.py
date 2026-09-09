@@ -426,7 +426,12 @@ def test_the_declared_checksum_belongs_to_the_file_we_actually_ship():
 
     actual = hashlib.md5(schedule.read_bytes()).hexdigest()
     recorded = json.loads(trace.read_text(encoding="utf-8"))["scheduleMd5"]
-    declared = re.search(r"`md5 ([0-9a-f]{32})`", document)
+    # Выражение то же, что у `check_package.DECLARED_MD5`, и привязано к строке
+    # сдаваемого файла: рядом в документе назван файл-источник со своим md5, и
+    # «первый md5 в тексте» указывал бы на него (Р-61).
+    declared = re.search(
+        r"`runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc`[^\n]*`md5 ([0-9a-f]{32})`",
+        document)
 
     assert declared, "в docs/submission.md не найден md5 сдаваемого файла"
     assert actual == recorded, (

@@ -173,7 +173,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     steps = [step for step in parse_schedule(schedule_file).steps
              if step.date >= config.case.control_start]
-    forecast = pd.read_csv(args.rows).to_dict("records")
+    # Отказ словами, а не трассировка pandas: выгрузку кейса называет человек,
+    # и промах мимо неё — обычный первый запуск, а не поломка (Р-62).
+    rows_file = Path(args.rows)
+    if not rows_file.is_file():
+        print(f"нет выгрузки {rows_file}: репетиции нечего проверять. "
+              "Ожидается rows.csv из scripts/export_rows.py", file=sys.stderr)
+        return 1
+    try:
+        forecast = pd.read_csv(rows_file).to_dict("records")
+    except (OSError, ValueError) as error:
+        print(f"выгрузка {rows_file} не читается: {error}", file=sys.stderr)
+        return 1
+    if not forecast:
+        print(f"выгрузка {rows_file} пуста: репетиции нечего проверять",
+              file=sys.stderr)
+        return 1
     read_at = time.monotonic()
 
     print(f"конфигурация: {config.source}")

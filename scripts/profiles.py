@@ -112,8 +112,16 @@ def main(argv: list[str] | None = None) -> int:
             for column in ("WLPT_Diff", "WOMT_Diff", "WWIT_Diff", "WLPR", "WWIR"):
                 row[column] = float(row[column])
     else:
-        rows = summary.monthly_rows(arguments.run_dir / config.case.case_name,
-                                    fluids=config.fluids)
+        # Та же болезнь Б31, что чинили в run_cycle и export_rows: без
+        # результата расчёта resdata бросает OSError, а не отказывает словами.
+        # Промах мимо посчитанного прогона — обычный первый запуск (Р-62).
+        case = arguments.run_dir / config.case.case_name
+        if not case.with_suffix(".UNSMRY").is_file():
+            print(f"нет результата расчёта {case}.UNSMRY: сначала посчитайте "
+                  "прогон (scripts/run_flow.sh) или укажите --rows",
+                  file=sys.stderr)
+            return 1
+        rows = summary.monthly_rows(case, fluids=config.fluids)
     if not rows:
         print(f"нет выгрузки в {arguments.run_dir}", file=sys.stderr)
         return 1

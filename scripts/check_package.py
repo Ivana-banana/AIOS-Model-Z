@@ -30,7 +30,14 @@ DECLARED_SCHEDULE = re.compile(r"`(runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc
 #: Путь стал двухуровневым 08.09: сдаваемый файл лежит в `<прогон>/submission/`,
 #: потому что рядом с ним живёт файл с историей, а имя у обоих одно и то же —
 #: `wells_schedule.inc`, и другое имя организаторам отправлять нельзя.
-DECLARED_MD5 = re.compile(r"`md5 ([0-9a-fA-F]{32})`")
+#: Привязан к строке сдаваемого файла, а не «первый md5 в документе». Рядом
+#: живёт файл-источник (371 шаг, свой md5), и стоит упомянуть его выше таблицы —
+#: сверка молча пойдёт по чужому числу. Так же привязаны и соседние выражения:
+#: `DECLARED_MODEL_SHA256` — к строке артефакта, `check_release_tag` — к строке
+#: «| сдаваемый файл |» (Р-61).
+DECLARED_MD5 = re.compile(
+    r"`runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc`[^\n]*`md5 ([0-9a-fA-F]{32})`"
+)
 DECLARED_MODEL = re.compile(r"`(artifacts/[\w.-]+\.joblib)`")
 DECLARED_MODEL_SHA256 = re.compile(
     r"`artifacts/[\w.-]+\.joblib`[^\n]*`sha256 ([0-9a-fA-F]{64})`"
