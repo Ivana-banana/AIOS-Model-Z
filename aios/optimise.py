@@ -184,7 +184,7 @@ class JointRateChoice:
         )
         period = f" с {self.since:%Y-%m-%d}" if self.since is not None else ""
         text = (
-            f"скв. {self.well}{period}: {what}, ЧДД фонда "
+            f"скв. {self.well}{period}: {what}, ЧДД фонда с запасом "
             f"{self.baseline_chdd_m:+.2f} → {self.chosen_chdd_m:+.2f} млн руб."
         )
         if not self.outside_training:
@@ -970,8 +970,14 @@ def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
 
     gain = sum(choice.gain_m for choice in changed)
     stopped = sum(1 for choice in changed if choice.multiplier == 0)
+    # «С запасом» — не украшение: в этих полях лежит значение `_value_of`, то
+    # есть ЧДД приведённого расписания **минус конформный запас** (на замере
+    # ревизии 927,8 млн руб. при ЧДД 11 605,2 → печаталось 10 549,1). Прирост от
+    # этого не страдает — сдвиг сокращается, — а абсолютные числа не сходятся с
+    # `cycle.json:forecast_chdd_m`, и читателю объяснить расхождение было нечем
+    # (Р-68).
     objective = (
-        "прирост ЧДД фонда"
+        "прирост ЧДД фонда с запасом"
         if isinstance(choices[0], JointRateChoice)
         else "прирост дисконтированной маржи"
     )
