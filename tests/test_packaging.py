@@ -401,6 +401,42 @@ def test_every_heavy_tracked_file_has_a_written_reason():
     )
 
 
+def test_the_declared_checksum_belongs_to_the_file_we_actually_ship():
+    """`md5` заявки считается от файла, а не переписывается из документа в документ.
+
+    Все прежние сторожа сверяли **документ с документом**: регуляркой брали
+    строку `md5` из `docs/submission.md` и искали её в трёх других текстах.
+    Сам файл не читал никто. Проверено ревизией в отдельном worktree: к
+    сдаваемому файлу дописана строка, `md5` стал другим — полная сюита осталась
+    зелёной (Р-54).
+
+    Здесь сходятся три источника, и все три лежат в git: сам файл, машинный след
+    рядом с ним и заявка. Пропуск не нужен — на чистом клоне все три на месте.
+    """
+    import hashlib
+    import json
+    import re
+
+    schedule = ROOT / "runs" / "matched-0995" / "submission" / "wells_schedule.inc"
+    trace = schedule.parent / "npv.json"
+    document = (ROOT / "docs" / "submission.md").read_text(encoding="utf-8")
+
+    assert schedule.is_file(), f"нет сдаваемого файла {schedule}"
+    assert trace.is_file(), f"нет машинного следа {trace}"
+
+    actual = hashlib.md5(schedule.read_bytes()).hexdigest()
+    recorded = json.loads(trace.read_text(encoding="utf-8"))["scheduleMd5"]
+    declared = re.search(r"`md5 ([0-9a-f]{32})`", document)
+
+    assert declared, "в docs/submission.md не найден md5 сдаваемого файла"
+    assert actual == recorded, (
+        f"файл и машинный след разошлись: у файла {actual}, в следе {recorded}"
+    )
+    assert actual == declared.group(1), (
+        f"файл и заявка разошлись: у файла {actual}, в документе {declared.group(1)}"
+    )
+
+
 def test_the_file_the_submission_declares_is_tracked_by_git():
     """Файл, который заявка называет своим, обязан лежать в репозитории.
 
