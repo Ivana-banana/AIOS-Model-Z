@@ -1701,6 +1701,7 @@ DECK_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
     "pressure_share.py": ("--rows", "{rows}"),
     "rehearse_case.py": ("--rows", "{rows}"),
     "shapley_plan.py": ("build", "{out}", "--rows", "{rows}"),
+    "simulator_gap.py": ("--rows", "{rows}"),
     "surrogate_warnings.py": ("--model", "{model}"),
     "trust_gate.py": ("--model", "{model}", "--schedule", "{schedule}"),
 }
@@ -1845,6 +1846,7 @@ CONFIG_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
     "run_all.py": (),
     "run_cycle.py": (),
     "shapley_plan.py": ("build", "{out}", "--rows", "{rows}"),
+    "simulator_gap.py": ("--rows", "{rows}"),
     "surrogate_warnings.py": ("--model", "{model}"),
     "train_surrogate.py": (),
     # Без пары «модель + расписание» отказывает раньше конфигурации, своими
