@@ -144,7 +144,8 @@ def recompute(rows_file: Path, start_year: int, norms_file: Path,
         "--json", portable(json_file),
     ]
     completed = subprocess.run(command, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace")
+                               encoding="utf-8", errors="replace",
+                               env=economics.vendor_environment())
     if completed.returncode != 0:
         raise RuntimeError(
             f"эталонный расчётчик отказал (код {completed.returncode}):\n"

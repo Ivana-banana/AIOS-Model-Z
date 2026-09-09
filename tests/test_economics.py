@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 
@@ -386,6 +387,71 @@ def test_a_refusal_of_the_reference_calculator_carries_its_reason(tmp_path):
     assert done.returncode == 1
     assert "Traceback" not in done.stderr, done.stderr[-400:]
     assert "WLPR свыше 500" in done.stderr
+
+
+def test_a_warning_of_the_reference_calculator_does_not_become_a_refusal(tmp_path):
+    """Успешный расчёт с замечанием остаётся успешным, а не «отказом».
+
+    Замечание эталона про WLPR выше 500 содержит `м³`. Под `capture_output`
+    поток подпроцесса не консоль, и на русской Windows Python берёт cp1251, где
+    `³` не существует: `print` замечания падает **после** записи `npv.json`,
+    код возврата становится 1 — и обвязка сообщает «эталонный расчётчик
+    отказал», держа в руках посчитанное число.
+
+    Строка с дебитом 550 стоит **до** стартового года: методику это не
+    нарушает (расчёт идёт с 2007), но в замечание она попадает. Ровно так
+    выглядит валидационный кейс, где история приходит чужой.
+    """
+    sys.path.insert(0, str(economics.VENDOR_DIR.parent.parent / "scripts"))
+    try:
+        from verify_declared import recompute
+    finally:
+        sys.path.pop(0)
+
+    rows = tmp_path / "rows.csv"
+    rows.write_text(
+        "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
+        "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
+        "2006-01-01,A,0,550,0,5,0,0,100,80,1,10,5,0\n"
+        "2007-01-01,A,10,100,5,5,0,0,100,80,1,10,5,0\n"
+        "2007-02-01,A,20,100,10,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+
+    chdd_m, _ = recompute(rows, 2007, economics.NORMS_FILE, tmp_path)
+
+    # число берётся из JSON эталона, а не из нашей арифметики: сверяемся с ним же
+    trace = json.loads((tmp_path / "npv-vendor.json").read_text(encoding="utf-8"))
+    assert chdd_m == pytest.approx(trace["summary"]["totalChddM"], abs=1e-9)
+
+
+def test_the_vendor_is_run_with_a_stdout_it_can_write_to():
+    """Кодировку подпроцессу задаёт тот, кто его зовёт, а не локаль машины.
+
+    Вендор не правится (`CLAUDE.md`), поэтому единственное место, где это
+    лечится, — окружение запуска. Остальное окружение обязано доехать целиком:
+    подпроцесс тем же интерпретатором ищет свои зависимости по `PATH` и
+    `VIRTUAL_ENV`.
+    """
+    environment = economics.vendor_environment()
+
+    assert environment["PYTHONIOENCODING"] == "utf-8"
+    assert all(environment[name] == value for name, value in os.environ.items()
+               if name != "PYTHONIOENCODING"), "окружение машины потеряно"
+
+
+def test_both_wrappers_hand_the_vendor_that_environment():
+    """Обе обвязки зовут эталон одинаково.
+
+    `verify_declared` считает заявленное число, `build_submission` собирает
+    сдаваемый пакет — обе идут в паспорте дня отправки подряд, и разойтись им
+    нельзя: тогда одна и та же выгрузка на одной машине посчиталась бы, а на
+    соседней команде объявилась бы отказом.
+    """
+    root = economics.VENDOR_DIR.parent.parent
+    for name in ("verify_declared.py", "build_submission.py"):
+        source = (root / "scripts" / name).read_text(encoding="utf-8")
+        assert "env=economics.vendor_environment()" in source, (
+            f"{name} зовёт эталон без заданной кодировки вывода"
+        )
 
 
 def test_the_declared_run_is_read_from_the_document_without_the_tail_directory():
