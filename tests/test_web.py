@@ -506,6 +506,29 @@ def test_rows_csv_missing_required_column_is_rejected(project):
     assert "WOMT_Diff" in response.text
 
 
+def test_rows_csv_with_a_short_row_is_rejected(project):
+    """Шапка целая, а строка обрезана — это тоже неполная выгрузка.
+
+    Соседний тест закрывает пропавшую КОЛОНКУ, а короткую строку не проверял
+    никто: `csv.DictReader` отдаёт `None` за недостающие поля, и `or 0.0`
+    делало из них ноль. Обрезанная выгрузка превращалась в месяц без добычи
+    нефти — молча, под подписью «посчитано эталонным расчётчиком организаторов»
+    (Р-53, ревизия ночи 08→09.09).
+    """
+    path = project / "runs" / "base" / "rows.csv"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    # у второй строки отрезаны два последних поля
+    lines[1] = ",".join(lines[1].split(",")[:-2])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="короче шапки"):
+        read_rows_csv(path)
+
+    response = TestClient(create_app(project)).get("/run/base")
+    assert response.status_code == 422
+    assert "короче шапки" in response.text
+
+
 @pytest.fixture
 def two_runs(project):
     """Второй прогон: тот же фонд, но обводнённая скважина остановлена."""

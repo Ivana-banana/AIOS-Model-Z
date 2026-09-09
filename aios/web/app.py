@@ -919,8 +919,21 @@ def read_rows_csv(path: Path) -> list[dict[str, Any]]:
             raise ValueError("; ".join(details))
 
         rows = []
-        for raw in reader:
+        for number, raw in enumerate(reader, start=2):
             row = dict(raw)
+            # Шапка проверяется целиком, а короткая СТРОКА не проверялась вовсе:
+            # `csv.DictReader` отдаёт `None` за недостающие поля, и `or 0.0`
+            # делало из них ноль. Обрезанная выгрузка превращалась в месяц без
+            # добычи нефти — молча, под подписью «посчитано эталонным
+            # расчётчиком организаторов». Расчётчик честен, вход был испорчен
+            # (Р-53).
+            empty = [name for name in NUMERIC_COLUMNS if row.get(name) is None]
+            if empty:
+                raise ValueError(
+                    f"строка {number} короче шапки: нет значений в колонках "
+                    + ", ".join(empty)
+                    + ". Обрезанная выгрузка дала бы нули вместо отказа"
+                )
             for column in NUMERIC_COLUMNS:
                 row[column] = float(row.get(column) or 0.0)
             rows.append(row)
