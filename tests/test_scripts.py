@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from datetime import date
@@ -2183,4 +2184,69 @@ def test_run_all_resolves_out_against_the_repository_not_the_caller(tmp_path):
     assert done.returncode == 0, done.stderr[-400:]
     assert str(ROOT / "out" / "here") in done.stdout, (
         "путь результата напечатан относительно чужого каталога: " + done.stdout[-400:]
+    )
+
+
+def test_the_slide_measurement_finds_a_browser_installed_by_playwright():
+    """Chromium из `playwright install` — тоже браузер, и его надо находить.
+
+    На машине без Chrome и Edge (Windows 10 LTSC такой из коробки) замер слайдов
+    был невозможен вовсе, а он обязателен перед защитой: в печати рамка
+    переполнения скрыта, и лишнее срежется в PDF молча (Р-232). `playwright
+    install chromium` кладёт браузер в профиль пользователя — без прав
+    администратора и не трогая систему.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import measure_slides
+    finally:
+        sys.path.pop(0)
+
+    assert any("chromium-" in pattern for pattern in measure_slides.PLAYWRIGHT_BINARIES)
+    # Маска, а не жёсткий путь: каталог версионирован (`chromium-1200`), и
+    # следующая установка сменит номер.
+    assert all("*" in pattern for pattern in measure_slides.PLAYWRIGHT_BINARIES)
+
+
+def test_an_empty_browser_directory_hides_the_browser_from_the_measurement():
+    """`PLAYWRIGHT_BROWSERS_PATH` уводит поиск браузера — и это нужно клону.
+
+    Число пропусков README сверяется **строго**, а обещано оно проверяющему,
+    который ставит только `requirements-dev.txt`. Инструменты из
+    `requirements-tools.txt` есть у нас и меняют это число: с Chromium на клоне
+    пропусков на один меньше. Поэтому `clean_clone_check` меряет клон с пустым
+    каталогом браузеров — переменной самого playwright, а не своей выдумкой.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import measure_slides
+    finally:
+        sys.path.pop(0)
+
+    kept = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(ROOT / "нет-такого-каталога")
+    try:
+        if any(shutil.which(name) for name in
+               ("google-chrome", "chromium", "chromium-browser", "chrome")):
+            pytest.skip("браузер лежит в PATH: пустой каталог playwright его не прячет")
+        assert measure_slides.browser() is None
+    finally:
+        if kept is None:
+            os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+        else:
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = kept
+
+
+def test_the_clean_clone_measures_the_environment_the_readme_promises():
+    """Клон гоняется без инструментов, которых у проверяющего нет.
+
+    Иначе сторож объявляет враньём документа расхождение, которого документ не
+    допускал: README описывает установку по `requirements-dev.txt`, а меряется
+    машина разработки со всем, что на ней стоит.
+    """
+    source = (SCRIPTS / "clean_clone_check.py").read_text(encoding="utf-8")
+
+    assert "PLAYWRIGHT_BROWSERS_PATH" in source
+    assert "env=environment" in source, (
+        "прогон клона идёт с окружением машины разработки"
     )

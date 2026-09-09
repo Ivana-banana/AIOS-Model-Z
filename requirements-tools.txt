@@ -13,3 +13,8 @@ pymupdf==1.28.2
 # расшифровка записей встреч (scripts/transcribe.py)
 faster-whisper==1.2.1
 av==18.1.0
+
+# замер вёрстки слайдов на машине без Chrome и Edge (scripts/measure_slides.py).
+# Ставит Chromium в профиль пользователя: `python -m playwright install chromium`
+# — без прав администратора и не трогая систему.
+playwright==1.57.0

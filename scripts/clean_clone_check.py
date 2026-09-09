@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -190,12 +191,25 @@ def suite_touched_since(clone: Path, stamp: str) -> bool | None:
 
 
 def run_pytest(clone: Path, report: Path, python: str) -> dict[str, int]:
-    """Прогон изнутри клона — как его запустит проверяющий."""
+    """Прогон изнутри клона — как его запустит проверяющий.
+
+    Среда приравнивается к той, которую README обещает жюри: установка по
+    `requirements-dev.txt`. Инструменты из `requirements-tools.txt` проверяющему
+    не ставятся, а на нашей машине они есть — и меняют число пропусков, которое
+    сверяется строго. Первым таким инструментом стал Chromium для замера слайдов
+    (09.09): с ним на клоне пропусков 21, без него обещанные жюри 22, и
+    расхождение выглядело бы враньём документа, не будучи им.
+
+    Каталог браузеров задаётся пустым через `PLAYWRIGHT_BROWSERS_PATH` — это
+    переменная самого playwright.
+    """
+    environment = dict(os.environ)
+    environment["PLAYWRIGHT_BROWSERS_PATH"] = str(report.parent / "no-browsers")
     subprocess.run(
         [python, "-m", "pytest", "-q", "-p", "no:cacheprovider",
          f"--junitxml={report}"],
         cwd=clone, capture_output=True, text=True, encoding="utf-8",
-        errors="replace",
+        errors="replace", env=environment,
     )
     return counts(report)
 
