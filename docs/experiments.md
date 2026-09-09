@@ -6722,7 +6722,7 @@ python scripts/run_cycle.py --confirm <кейс> --from runs/base \
 | Что запущено | Результат |
 |---|---|
 | `pytest -q` целиком (до правок) | 1 897 пройдено, 8 пропущено, **3 падения** |
-| `pytest -q` целиком (после правок) | падений нет; см. клон ниже |
+| `pytest -q` целиком (после правок) | **1 909 пройдено, 7 пропущено, 0 падений** |
 | `python -m ruff check .` | `All checks passed!` |
 | `python scripts/check_package.py` | 10 из 10, «пакет готов» |
 | `python scripts/check_submission.py …/submission/wells_schedule.inc` | «файл пригоден к отправке», 225 шагов, 103 скважины, отказов нет |
