@@ -2458,3 +2458,41 @@ def test_a_zero_capacity_cut_closes_the_injector_like_every_other_cut(norms):
     assert result[0].injectors[0].status == "SHUT"
     assert result[0].injectors[0].rate is None
     assert validate_schedule(result, {"9"}) == []
+
+
+def test_the_corridor_shutdown_spends_the_event_quota_and_says_so(norms):
+    """Остановка, сделанная коридором воды, квоту расходует — и объявляется.
+
+    Коридор переехал за квоту решением Р-189 (он обязан идти после всех срезок
+    отбора), и с тех пор его собственные остановки квота не видела: множитель 0
+    закрывает нагнетательную, то есть создаёт мероприятие, которого квота не
+    считала и потому не защитила. `casecheck` объявлял 1,00 против предела 0,00,
+    уступки в решениях не было, и fail-closed (Р-165) отвергал кандидата —
+    включая бездействие, — а планировщик о причине молчал.
+
+    Правило Р-139 действует и здесь: мероприятие, порождённое ограничением
+    объекта, не отменяется, но расходует квоту и объявляется уступкой.
+    """
+    forecast = [
+        produced("2007-01-01", "1", 100.0, 900.0), injected("2007-01-01", "9", 900.0),
+        produced("2008-01-01", "1", 100.0, 0.0), injected("2008-01-01", "9", 1000.0),
+    ]
+    steps = [
+        ScheduleStep(date(2007, 1, 1), (prod("1", 30.0),), (inj("9", 30.0),)),
+        ScheduleStep(date(2008, 1, 1), (prod("1", 30.0),), (inj("9", 33.0),)),
+    ]
+    limits = planner.Limits(enforce_water_balance=True, water_tolerance=1.0,
+                            water_tolerance_min=0.0, max_events_per_year=0)
+
+    result, decisions = planner.enforce(steps, forecast, norms, limits, FLUIDS)
+
+    # коридор своё дело сделал: закачки в 2008 нет
+    assert result[1].injectors[0].status == "SHUT"
+    # и его остановка отменена не была — иначе вернулась бы закачка вне коридора
+    assert any("вопреки квоте" in decision.reason for decision in decisions), (
+        "уступка по квоте не объявлена: остановка коридора прошла мимо неё"
+    )
+    conceded = [one for one in decisions if "квота мероприятий" in one.resource]
+    assert conceded and "2008" in conceded[0].resource, (
+        f"уступка объявлена не в том периоде: {[one.resource for one in conceded]}"
+    )
