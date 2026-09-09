@@ -2,6 +2,7 @@
 
 import csv
 import math
+import re
 import statistics
 from pathlib import Path
 
@@ -589,7 +590,16 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     assert "не получен (В-04)" in sheet
     assert "docs/submission-day.md" in _read("README.md")
     assert "все шесть проверок" in _read("README.md")
-    assert "в **отдельной чистой копии** `submit-2026-09-08`" in sheet
+    # Тег берётся из якоря паспорта, а не литералом: замороженное имя тега
+    # означает сторожа, который краснеет на честном перевыпуске, — 09.09 это и
+    # случилось (Р-260). Проверяется связь: путь восстановления обязан звать
+    # ТОТ ЖЕ тег, который паспорт объявил действующим.
+    active = re.search(
+        r"\*\*Действующий тег заявки — `(submit-[\d.-]+)`\*\*", sheet)
+    assert active, "в паспорте нет якоря «Действующий тег заявки»"
+    assert f"в **отдельной чистой копии** `{active.group(1)}`" in sheet, (
+        f"путь восстановления зовёт не действующий тег {active.group(1)}"
+    )
     assert "вернуть в текущий `main`" in sheet
 
 
