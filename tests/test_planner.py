@@ -2433,3 +2433,28 @@ def test_the_annual_volume_cut_names_every_well_it_cut(norms):
         "сумма по решениям расходится с фактической срезкой — отчёт врёт о том, "
         "что сделал планировщик"
     )
+
+
+def test_a_zero_capacity_cut_closes_the_injector_like_every_other_cut(norms):
+    """Ноль закрывает нагнетательную — во всех срезках, а не во всех кроме одной.
+
+    `_fit_injection_to_capacity` собирала запись напрямую, минуя `_injecting`, и
+    при нулевом пределе оставляла открытую скважину с приёмистостью 0 — то есть
+    расписание, которое `schedule.validate` сама же бракует («открытая скважина
+    не может закачивать ноль»). Из `config.toml` ноль недостижим, но `casecheck`
+    и всякий прямой конструктор `Limits` читают его как настоящий предел (Р-60).
+    """
+    from aios.schedule import validate as validate_schedule
+
+    steps = [step(injectors=[inj("9", 33.0)])]
+
+    result, _decisions = planner.enforce(
+        steps, [], norms,
+        planner.Limits(enforce_water_balance=False,
+                       max_field_injection_m3_per_day=0.0),
+        FLUIDS,
+    )
+
+    assert result[0].injectors[0].status == "SHUT"
+    assert result[0].injectors[0].rate is None
+    assert validate_schedule(result, {"9"}) == []

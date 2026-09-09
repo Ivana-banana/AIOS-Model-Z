@@ -1962,12 +1962,14 @@ def _fit_injection_to_capacity(
                         ),
                     )
                 )
-            injectors.append(
-                InjectorControl(
-                    control.well, control.fluid, control.status, control.mode,
-                    reduced, control.bhp,
-                )
-            )
+            # `_injecting`, а не прямая сборка записи: ноль обязан закрывать
+            # скважину. Эта срезка была единственной, где ноль оставлял
+            # нагнетательную открытой, — то есть собирала расписание, которое
+            # `schedule.validate` сама же браковала («открытая скважина не может
+            # закачивать ноль»). Из config.toml ноль недостижим, но `casecheck` и
+            # всякий прямой конструктор `Limits` читают его как настоящий предел
+            # (Р-60).
+            injectors.append(_injecting(control, reduced))
         result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
     return result, decisions
 

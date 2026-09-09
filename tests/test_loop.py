@@ -1042,3 +1042,32 @@ def test_a_concession_covers_the_monthly_quota_too_not_only_the_yearly_one():
     assert not loop._case_problems(steps, [], limits, None, conceded), (
         "объявленная уступка по обеим корзинам всё равно считается нарушением"
     )
+
+
+def test_the_fixed_point_ignores_last_bit_jitter():
+    """Неподвижная точка сравнивается по смыслу, а не побитово.
+
+    Срезка «в точности до предела» пересобирает сумму, и последний бит гуляет:
+    предел снова «нарушен», решение печатается снова. Фаззер ревизии на 400
+    сценариях — неподвижная точка не достигалась в 94 случаях, и во всех 94
+    только дрожание последнего бита, ни одной структурной разницы. Цена: лишний
+    прогон суррогата в четверти случаев, фантомная строка «урезано» в отчёте и
+    ложное предупреждение «приведение не сошлось» (Р-59).
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+
+    base = [ScheduleStep(date(2014, 1, 1),
+                         (ProducerControl("P1", "OPEN", "LRAT", 114.819075, 50.0),),
+                         (InjectorControl("I1", "WATER", "OPEN", "RATE", 33.0, 300.0),))]
+    jitter = [ScheduleStep(date(2014, 1, 1),
+                           (ProducerControl("P1", "OPEN", "LRAT",
+                                            114.819075 + 1e-13, 50.0),),
+                           (InjectorControl("I1", "WATER", "OPEN", "RATE", 33.0, 300.0),))]
+
+    assert loop._settled(jitter, base), "дрожание последнего бита сорвало сходимость"
+
+    # а настоящая разница по-прежнему различается
+    changed = [ScheduleStep(date(2014, 1, 1),
+                            (ProducerControl("P1", "SHUT", "LRAT", None, 50.0),),
+                            (InjectorControl("I1", "WATER", "OPEN", "RATE", 33.0, 300.0),))]
+    assert not loop._settled(changed, base)

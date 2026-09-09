@@ -560,11 +560,53 @@ def _enforce_to_fixed_point(surrogate: Surrogate,
         # проход ничего не режет (потому и последний), и брать его список значило
         # бы отчитаться пустотой о расписании, которое на самом деле урезано.
         decisions.extend(made)
-        if fitted == current:
+        if _settled(fitted, current):
             converged = True
             break
         current = fitted
     return current, decisions, converged
+
+
+def _settled(fitted: list[ScheduleStep], current: list[ScheduleStep]) -> bool:
+    """Совпали ли расписания по смыслу, а не побитово.
+
+    Точное `==` по float не годится: срезка «в точности до предела» пересобирает
+    сумму, и последний бит гуляет — предел снова «нарушен», решение печатается
+    снова. Фаззер ревизии на 400 сценариях: неподвижная точка не достигалась в
+    **94 случаях, и во всех 94 — только дрожание последнего бита**, ни одной
+    структурной разницы (статус скважины нигде не менялся). Цена — лишний прогон
+    суррогата в четверти случаев, фантомная строка «урезано» в отчёте и, после
+    Р-22, ложное предупреждение «приведение не сошлось» (Р-59).
+
+    Допуск относительный: уставки бывают и единицами, и десятками тысяч.
+    """
+    if len(fitted) != len(current):
+        return False
+    for one, other in zip(fitted, current, strict=True):
+        if one.date != other.date:
+            return False
+        if len(one.producers) != len(other.producers) or \
+                len(one.injectors) != len(other.injectors):
+            return False
+        for left, right in zip(one.producers, other.producers, strict=True):
+            if (left.well, left.status, left.mode) != (right.well, right.status, right.mode):
+                return False
+            if not _close(left.liquid_rate, right.liquid_rate):
+                return False
+        for left, right in zip(one.injectors, other.injectors, strict=True):
+            if (left.well, left.status, left.mode, left.fluid) != \
+                    (right.well, right.status, right.mode, right.fluid):
+                return False
+            if not _close(left.rate, right.rate):
+                return False
+    return True
+
+
+def _close(left: float | None, right: float | None) -> bool:
+    """Равны ли уставки с точностью до дрожания последнего бита."""
+    if left is None or right is None:
+        return left is right or left == right
+    return abs(left - right) <= 1e-9 * max(1.0, abs(left), abs(right))
 
 
 def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
