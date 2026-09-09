@@ -42,6 +42,12 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(ROOT / "scripts"))
+
+# имя признака берётся оттуда, где его читают, а не повторяется литералом:
+# разойтись эти две строки не должны, а сверять их вычиткой — не проверка
+import measure_slides  # noqa: E402
 
 
 def readme_expectations(text: str) -> dict[str, int]:
@@ -201,10 +207,15 @@ def run_pytest(clone: Path, report: Path, python: str) -> dict[str, int]:
     расхождение выглядело бы враньём документа, не будучи им.
 
     Каталог браузеров задаётся пустым через `PLAYWRIGHT_BROWSERS_PATH` — это
-    переменная самого playwright.
+    переменная самого playwright. Одного его мало: системный Chrome лежит в
+    `PATH`, и `measure_slides.browser()` находит его первой же строкой, до
+    всякого кэша. Поэтому рядом идёт признак `AIOS_NO_BROWSER` — он прячет
+    браузер откуда угодно, и клон меряет обещанную среду на любой машине
+    проекта, а не только на той, где Chrome не установлен (Р-262).
     """
     environment = dict(os.environ)
     environment["PLAYWRIGHT_BROWSERS_PATH"] = str(report.parent / "no-browsers")
+    environment[measure_slides.NO_BROWSER] = "1"
     subprocess.run(
         [python, "-m", "pytest", "-q", "-p", "no:cacheprovider",
          f"--junitxml={report}"],

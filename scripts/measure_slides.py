@@ -85,8 +85,21 @@ PLAYWRIGHT_BINARIES = (
 )
 
 
+#: Признак «браузера на этой машине считать, что нет».
+#:
+#: `PLAYWRIGHT_BROWSERS_PATH` прячет только кэш playwright и не может спрятать
+#: Chrome, установленный в систему: его находит `shutil.which` первой же
+#: строкой. Значит, клон с системным браузером снова отвечал бы 21 пропуском
+#: против обещанных жюри 22 — ровно тем отказом, который Р-259 и закрывал,
+#: только другим путём (Р-262). Спрятать браузер нечем, кроме явного признака:
+#: подменять `PATH` нельзя — по нему подпроцесс ищет и сам Python.
+NO_BROWSER = "AIOS_NO_BROWSER"
+
+
 def browser() -> str | None:
     """Путь к Chromium-браузеру или None, если его на машине нет."""
+    if os.environ.get(NO_BROWSER):
+        return None
     for name in ("google-chrome", "chromium", "chromium-browser", "chrome"):
         found = shutil.which(name)
         if found:

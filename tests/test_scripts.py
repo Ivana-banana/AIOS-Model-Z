@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 from datetime import date
@@ -2208,7 +2207,27 @@ def test_the_slide_measurement_finds_a_browser_installed_by_playwright():
     assert all("*" in pattern for pattern in measure_slides.PLAYWRIGHT_BINARIES)
 
 
-def test_an_empty_browser_directory_hides_the_browser_from_the_measurement():
+def _measure_slides():
+    """Модуль замера слайдов, импортированный из `scripts/`."""
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import measure_slides
+    finally:
+        sys.path.pop(0)
+    return measure_slides
+
+
+def _fake_chrome(directory: Path, name: str) -> Path:
+    """Исполняемый файл-пустышка: `browser()` проверяет наличие, а не запуск."""
+    directory.mkdir(parents=True, exist_ok=True)
+    binary = directory / name
+    binary.write_text("", encoding="utf-8")
+    binary.chmod(0o755)
+    return binary
+
+
+def test_an_empty_browser_directory_hides_the_browser_from_the_measurement(
+        tmp_path, monkeypatch):
     """`PLAYWRIGHT_BROWSERS_PATH` уводит поиск браузера — и это нужно клону.
 
     Число пропусков README сверяется **строго**, а обещано оно проверяющему,
@@ -2216,25 +2235,59 @@ def test_an_empty_browser_directory_hides_the_browser_from_the_measurement():
     `requirements-tools.txt` есть у нас и меняют это число: с Chromium на клоне
     пропусков на один меньше. Поэтому `clean_clone_check` меряет клон с пустым
     каталогом браузеров — переменной самого playwright, а не своей выдумкой.
-    """
-    sys.path.insert(0, str(SCRIPTS))
-    try:
-        import measure_slides
-    finally:
-        sys.path.pop(0)
 
-    kept = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(ROOT / "нет-такого-каталога")
-    try:
-        if any(shutil.which(name) for name in
-               ("google-chrome", "chromium", "chromium-browser", "chrome")):
-            pytest.skip("браузер лежит в PATH: пустой каталог playwright его не прячет")
-        assert measure_slides.browser() is None
-    finally:
-        if kept is None:
-            os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
-        else:
-            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = kept
+    **Тест не пропускается ни на одной машине.** Прежде он снимался, если
+    браузер лежал в `PATH`, — и на машине с Chrome давал 23 пропуска вместо
+    обещанных 22, то есть ломал ровно ту сверку, которую защищает (Р-262).
+    Две первые ветки поиска гасятся здесь явно, чтобы проверялась третья.
+    """
+    measure_slides = _measure_slides()
+
+    monkeypatch.setenv("PATH", str(tmp_path / "пусто"))
+    monkeypatch.setattr(measure_slides, "BROWSERS", ())
+    monkeypatch.delenv(measure_slides.NO_BROWSER, raising=False)
+
+    cache = tmp_path / "ms-playwright"
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(cache))
+    assert measure_slides.browser() is None, "пустой каталог отдал браузер"
+
+    # и наоборот: переменная действительно ведёт поиск, а не просто гасит его —
+    # иначе «клон ничего не нашёл» ничего бы не доказывало
+    planted = _fake_chrome(cache / "chromium-1200" / "chrome-linux", "chrome")
+    found = measure_slides.browser()
+    assert found in (str(planted), str(planted).replace("/", os.sep)), (
+        f"браузер из указанного каталога не найден: {found}"
+    )
+
+
+def test_the_no_browser_flag_hides_a_browser_installed_in_the_system(
+        tmp_path, monkeypatch):
+    """Системный Chrome прячется признаком, а каталогом playwright — нет.
+
+    `PLAYWRIGHT_BROWSERS_PATH` закрывает только кэш playwright: Chrome,
+    поставленный в систему, лежит в `PATH`, и `browser()` находит его первой же
+    строкой, до всякого кэша. Значит, клон на машине с Chrome снова отвечал бы
+    21 пропуском против обещанных жюри 22 — тем самым отказом, который Р-259
+    закрывал, только другим путём. Подменять `PATH` нельзя: по нему подпроцесс
+    ищет и сам Python.
+    """
+    measure_slides = _measure_slides()
+
+    bin_dir = tmp_path / "bin"
+    _fake_chrome(bin_dir, "chrome.exe" if sys.platform == "win32" else "chromium")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(measure_slides, "BROWSERS", ())
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "нет-каталога"))
+
+    monkeypatch.delenv(measure_slides.NO_BROWSER, raising=False)
+    assert measure_slides.browser() is not None, (
+        "браузер в PATH не найден — проверять нечего"
+    )
+
+    monkeypatch.setenv(measure_slides.NO_BROWSER, "1")
+    assert measure_slides.browser() is None, (
+        "признак не спрятал браузер из PATH: строгая сверка пропусков поедет"
+    )
 
 
 def test_the_clean_clone_measures_the_environment_the_readme_promises():
@@ -2244,9 +2297,14 @@ def test_the_clean_clone_measures_the_environment_the_readme_promises():
     допускал: README описывает установку по `requirements-dev.txt`, а меряется
     машина разработки со всем, что на ней стоит.
     """
+    measure_slides = _measure_slides()
     source = (SCRIPTS / "clean_clone_check.py").read_text(encoding="utf-8")
 
     assert "PLAYWRIGHT_BROWSERS_PATH" in source
     assert "env=environment" in source, (
         "прогон клона идёт с окружением машины разработки"
+    )
+    # признак берётся из модуля замера, а не повторяется здесь литералом
+    assert f"environment[{measure_slides.__name__}.NO_BROWSER]" in source, (
+        "клон не прячет системный браузер — на машине с Chrome сверка поедет"
     )
