@@ -889,3 +889,8 @@ def test_cyclic_refuses_parameters_it_cannot_use():
 
     # без них режим по-прежнему работает
     assert doe.design(steps, samples=4, seed=1, control_kind="cyclic")
+
+    # у переводов под закачку та же болезнь была с `levels`
+    with pytest.raises(ValueError, match="неприменим"):
+        doe.design(steps, samples=4, seed=1, control_kind="conversions",
+                   levels=(0.8, 1.2))

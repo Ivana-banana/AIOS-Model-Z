@@ -269,6 +269,14 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                 "перевод под закачку — разовое событие, делить его на периодов "
                 f"больше одного нечем (запрошено {periods})"
             )
+        if levels is not None:
+            # Уровень сценария — про общий отбор, а перевод задаёт режим
+            # скважины целиком (ноль добычи и закачка). Принимался молча, как и
+            # пять параметров циклического режима (Р-70).
+            raise ValueError(
+                "уровень отбора неприменим к переводу под закачку: режим задан "
+                f"самим переводом (запрошено levels={levels})"
+            )
         return _design_conversions(base_steps, producer_wells,
                                    samples=samples, seed=seed, bounds=bounds, limits=limits)
 
