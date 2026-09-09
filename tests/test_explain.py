@@ -793,3 +793,37 @@ def test_a_text_claiming_a_full_run_that_did_not_happen_is_rejected():
     confirmed = Evidence(subject="x", observations=(), numbers={}, caveats=(),
                          confirmed=True)
     assert false_confirmation("Подтверждено полным расчётом ГГДМ.", confirmed) is None
+
+
+def test_a_cached_answer_goes_through_the_same_barriers(tmp_path):
+    """Инвариант «непроверенное не показывается принятым» держится и на чтении.
+
+    Файл кэша правится руками, приезжает с другой машины и — по плану
+    `BLOCKED.md`, п. 0.2-бис — кладётся в сдаваемый пакет. Барьеры стояли только
+    на записи, поэтому подложенный текст с выдуманным числом отдавался со
+    `source = "cache"` и пустым `rejected_numbers`, то есть под подписью
+    «проверка чисел пройдена» (Р-52).
+    """
+    import json
+
+    from aios.explain import Evidence, Settings, explain
+
+    facts = Evidence(subject="остановка скважины 42", observations=(),
+                     numbers={"прирост ЧДД, млн руб.": 681.16}, caveats=(),
+                     confirmed=False)
+    settings = Settings(enabled=False, cache_dir=tmp_path)
+
+    honest = explain(facts, settings)
+    assert honest.source == "template"
+
+    fingerprint = honest.fingerprint
+    (tmp_path / f"{fingerprint}.json").write_text(json.dumps({
+        "text": "Прирост ЧДД составил 99999.9 млн руб. и подтверждён полным расчётом ГГДМ.",
+        "model": "yandexgpt/latest", "fingerprint": fingerprint,
+    }), encoding="utf-8")
+
+    answer = explain(facts, settings)
+
+    assert answer.source == "cache-rejected", answer.source
+    assert answer.rejected_numbers, "барьеры на чтении кэша молчат"
+    assert "99999.9" in " ".join(answer.rejected_numbers)
