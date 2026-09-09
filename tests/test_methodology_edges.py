@@ -138,6 +138,40 @@ def test_downsize_needs_a_drop_of_more_than_100_below_the_lower_bound():
     assert below.raw["annual"][0]["pumpInstallCounts"] == {"80": 1}
 
 
+def test_the_upsize_boundary_is_the_upper_bound_itself_not_a_hair_above():
+    """Вверх — при ВЫХОДЕ за верхнюю границу, то есть ровно на ней замены нет.
+
+    Прежний тест брал 30 → 300 м³/сут: промах на 270 от границы, и он одинаково
+    проходит и при `>`, и при `>=`. Вся суть края — в слове «выход за», и
+    подмена строгого неравенства на нестрогое (обновлённый архив организаторов,
+    чужие нормативы кейса) сюиту не красила. Замер эталона: 30,0000 — смен 0,
+    30,0001 — смена и 0,75 млн руб. CAPEX (Р-56).
+
+    Граница читается из таблицы ЭЦН нормативов, а не пишется литералом.
+    """
+    from aios import economics as economics_module
+
+    _assumptions, pumps = economics_module.load_norms()
+    installed = min(pumps, key=lambda pump: float(pump["max"]))
+    bound = float(installed["max"])
+
+    high = make_row(months(2014, 3)[0], "A", wlpr=bound, womr=5, liquid=900, oil=150)
+
+    def with_rate(rate: float):
+        return npv([
+            high,
+            make_row(months(2014, 3)[1], "A", wlpr=rate, womr=5, liquid=900, oil=150),
+            make_row(months(2014, 3)[2], "A", wlpr=rate, womr=5, liquid=900, oil=150),
+        ])
+
+    assert with_rate(bound).pump_changes == 0, (
+        f"дебит ровно на верхней границе {bound:g} м³/сут засчитан выходом за неё"
+    )
+    assert with_rate(bound + 0.0001).pump_changes == 1, (
+        "выход за границу заменой не засчитан — тест перестал различать стороны"
+    )
+
+
 def test_the_downsize_boundary_is_exactly_the_threshold_not_a_hair_off():
     """Сама граница: «более чем» — значит ровно на пороге замены НЕТ.
 
