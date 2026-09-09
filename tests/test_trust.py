@@ -394,14 +394,24 @@ def test_the_gate_judges_a_candidate_by_the_region_inside_the_artifact(tmp_path,
 
 
 def test_the_gate_refuses_half_of_the_candidate_mode(tmp_path, capsys):
-    """Один ключ из двух — отказ строкой, а не молчаливая сборка области."""
+    """Один ключ из двух — отказ строкой, а не молчаливая сборка области.
+
+    С 09.09 половины стали разными. `--model` без `--schedule` — законный режим:
+    паспорт шлюза собирается из самого артефакта, и на клоне проверяющего это
+    единственный способ его получить (Р-265). А вот `--schedule` без `--model`
+    судить нечем: область живёт в артефакте.
+    """
     import sys
 
     sys.path.insert(0, str(ROOT / "scripts"))
     import trust_gate
 
-    assert trust_gate.main(["--model", str(tmp_path / "нет.joblib")]) == 1
+    assert trust_gate.main(["--schedule", str(tmp_path / "нет.inc")]) == 1
     assert "оба ключа" in capsys.readouterr().err
+
+    # а промах мимо артефакта в режиме паспорта называется своим именем
+    assert trust_gate.main(["--model", str(tmp_path / "нет.joblib")]) == 1
+    assert "нет обученного суррогата" in capsys.readouterr().err
 
 
 def test_the_gate_refuses_a_pairs_file_that_is_not_there(tmp_path, capsys):
@@ -1172,3 +1182,48 @@ def test_a_package_without_injection_does_not_soften_the_gate():
         f"{scale_before:.5f} → {scale_after:.5f}"
     )
     assert scale_after < 0.01, "масштаб размаха ушёл из порядка обучающих величин"
+
+
+def test_the_passport_is_built_from_the_artifact_without_any_doe_package(tmp_path, capsys):
+    """Паспорт шлюза собирается из суррогата — на клоне, где пакетов DoE нет.
+
+    До 09.09 собрать его можно было только ключом `--dataset`, а каталог `data/`
+    в git не ведётся. Значит, на клоне проверяющего главная страница отвечала
+    «доверенная область не собрана», пока README обещал калиброванный шлюз с
+    числом, — и число это было чужим: порог 21,622 принадлежит области из
+    пакетов DoE, а поиск судит областью из артефакта (Р-265).
+    """
+    import json as json_module
+    import sys
+
+    model = ROOT / "artifacts" / "surrogate.joblib"
+    if not model.is_file():
+        pytest.skip("нет artifacts/surrogate.joblib")
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    out = tmp_path / "trust-gate.json"
+    code = trust_gate.main([
+        "--model", str(model),
+        "--pairs", str(ROOT / "docs/data/margin-pairs-search.csv"),
+        "--out", str(out),
+    ])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert out.is_file(), "паспорт не записан"
+    raw = json_module.loads(out.read_text(encoding="utf-8"))
+
+    import joblib
+
+    bundle = joblib.load(model)
+    assert raw["calibrated"] is True
+    assert raw["threshold_tau"] == pytest.approx(bundle.trust_region.threshold), (
+        "порог в паспорте не тот, которым судит поиск"
+    )
+    assert len(raw["training_scenario_ids"]) == len(bundle.trust_region.scenarios)
+    assert raw["model_hash"], "паспорт не привязан к артефакту хэшем"
+    # аудит сдвинутых режимов строится по профилям DoE — здесь его быть не может,
+    # и интерфейс печатает блок только когда поле есть
+    assert "shift_audit" not in raw

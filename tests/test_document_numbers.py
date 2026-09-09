@@ -1567,3 +1567,68 @@ def test_the_declared_uplift_is_the_difference_of_two_machine_traces():
     assert abs(written - uplift) <= 0.05, (
         f"заявленный прирост {written} не равен разности следов {uplift:.3f}"
     )
+
+
+def test_the_documented_threshold_is_the_one_that_actually_guards():
+    """Порог в README — порог области ИЗ АРТЕФАКТА, а не из чужого набора.
+
+    Сверка с ТЗ 09.09 нашла разъезд, который не видно ни из одного прогона:
+    README печатал «порог 21,62» и ссылался на `artifacts/trust-gate.json`,
+    а поиск и `trust_gate.py --schedule` судят областью внутри
+    `artifacts/surrogate.joblib` — там порог **24,133**. То есть документ
+    описывал шлюз, который ничего не сторожит, и жюри читало число, не
+    относящееся к сдаваемому решению.
+
+    Число берётся из самого артефакта, а не повторяется литералом: тогда
+    переобучение суррогата не может тихо разойтись с документом.
+    """
+    import joblib
+
+    model = ROOT / "artifacts" / "surrogate.joblib"
+    if not model.is_file():
+        pytest.skip("нет artifacts/surrogate.joblib")
+
+    threshold = joblib.load(model).trust_region.threshold
+    shown = f"{threshold:.2f}".replace(".", ",")
+
+    readme = _read("README.md")
+    assert f"порог {shown}" in readme, (
+        f"README не называет действующий порог области: ожидалось «порог {shown}»"
+    )
+    # и 21,62 остаётся в README только как названное чужое число
+    if "21,62" in readme:
+        assert "Не путать" in readme, (
+            "21,62 упомянут в README без оговорки, чем он отличается от действующего"
+        )
+
+
+def test_the_shipped_trust_passport_matches_the_shipped_model():
+    """Паспорт шлюза в репозитории собран из того же артефакта, что мы сдаём.
+
+    Паспорт читает главная страница интерфейса. Пока его не было в git, она
+    отвечала «доверенная область не собрана» на клоне проверяющего — при том
+    что README обещал калиброванный шлюз (Р-265). Теперь он есть, и сторож
+    следит за тем, чтобы он не пережил переобучение молча: `model_hash` в нём
+    обязан быть хэшем сдаваемого суррогата.
+    """
+    import hashlib
+    import json as json_module
+
+    import joblib
+
+    model = ROOT / "artifacts" / "surrogate.joblib"
+    passport = ROOT / "artifacts" / "trust-gate.json"
+    assert passport.is_file(), "паспорт шлюза не в репозитории"
+
+    raw = json_module.loads(passport.read_text(encoding="utf-8"))
+    assert raw["calibrated"] is True, "паспорт есть, но шлюз не калиброван"
+    assert raw["conformal_samples"] == 9
+    assert round(raw["optimism_margin"], 1) == 927.8
+
+    if not model.is_file():
+        pytest.skip("нет artifacts/surrogate.joblib")
+    bundle = joblib.load(model)
+    assert raw["threshold_tau"] == pytest.approx(bundle.trust_region.threshold)
+    assert raw["model_hash"] == hashlib.sha256(model.read_bytes()).hexdigest(), (
+        "паспорт собран не тем суррогатом, который сдаётся"
+    )
