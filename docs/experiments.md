@@ -6811,3 +6811,41 @@ python scripts/verify_declared.py --run runs/base --claimed 11851.8
 
 Заявленное число 13 133,8 здесь **не** пересчитывалось: `runs/matched-0995/rows.csv`
 в git не ведётся и на этой машине его нет.
+
+## 09.09, вечер: сверка с ТЗ запуском (ревизия `docs/tz-compliance.md`)
+
+**Зачем.** Сплошная сверка с `materials/Техническое_задание_хакатона_«AIOS».docx`
+по просьбе владельца. На входе всё зелёное — `pytest`, `ruff`, пакет допуска, —
+поэтому проверялось не «падает ли», а «делает ли то, что обещано».
+
+| Что запущено | Результат |
+|---|---|
+| загрузка `artifacts/surrogate.joblib` | **103 модели `MLPRegressor`**, скрытые (32, 16), `relu`, `adam`, `random_state = 20260817` — требование трека 2 про нейросетевую модель выполняется буквально |
+| подъём UI и обход страниц | 10 маршрутов, четыре страницы 200, отказы объяснены словами |
+| **два прогона цикла подряд с тем же seed** | `wells_schedule.inc` совпал побайтово (`md5 8fcba2ab8912…`), `cycle.json` и `explanation.json` тоже; `RUN.DATA` разошёлся ровно в двух строках `INCLUDE` — путях собственного каталога |
+| `scripts/benchmark_scale.py --rows runs/base/rows.csv` | фонд ×1…×8 (103 → 824 скважины): цикл 3,25 → 29,42 с, экономика 1,23 → 12,57 с, суррогат 0,20 → 1,99 с; один полный расчёт ГГДМ — 11–13 мин |
+| `scripts/trust_gate.py --model … --schedule runs/matched-0995/wells_schedule.inc` | `d = 127.488 при пороге 24.133 — ВНЕ области`, запас 927,8 млн руб. |
+| `scripts/verify_declared.py --run runs/base --claimed 11851.8` | 11 851,811 против 11 851,8 |
+| `git ls-files` обходом | 348 файлов, 53,1 МБ; записи встреч не отслеживаются |
+
+**Команды воспроизведения:**
+
+```bash
+python scripts/run_cycle.py --config config-rehearsal.toml --from runs/base --out <кат-1>
+python scripts/run_cycle.py --config config-rehearsal.toml --from runs/base --out <кат-2>
+python scripts/benchmark_scale.py --rows runs/base/rows.csv
+python scripts/trust_gate.py --model artifacts/surrogate.joblib \
+    --schedule runs/matched-0995/wells_schedule.inc \
+    --pairs docs/data/margin-pairs-search.csv
+```
+
+**Что нашла ревизия — Р-265.** Порог шлюза в README (21,62) принадлежал области
+из пакетов DoE, а поиск судит областью из артефакта (24,133); и сам паспорт
+`artifacts/trust-gate.json` в репозиторий не входил, поэтому на клоне
+проверяющего интерфейс печатал «доверенная область не собрана». Закрыто в тот
+же день: паспорт собирается из артефакта одной командой и лежит в git.
+
+**Чего эта ревизия не проверяла.** Ни одного расчёта ГГДМ. Заявленное
+13 133,8 здесь не пересчитывалось — выгрузки `runs/matched-0995/rows.csv` на
+машине нет. Живого вызова языковой модели не было: ключа нет. `docker build`
+не запускался.
