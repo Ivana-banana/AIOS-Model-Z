@@ -186,19 +186,20 @@ def test_a_run_killed_by_sigterm_restores_the_module_itself(tmp_path):
 
     Проверяется делом: настоящий подпроцесс, настоящий сигнал.
 
-    **На Windows тест пропускается, и это не поблажка.** `Popen.send_signal`
-    там зовёт `TerminateProcess`: процесс снимается ядром, обработчик Python не
-    выполняется никогда — перехватить нечего, и никакая правка `mutate.py` этого
-    не изменит. Защита Windows-машины — восстановление «на входе» (тест выше),
-    и оно проверяется на всех платформах.
+    **На Windows проверяется другое, и тест от этого не пропускается.**
+    `Popen.send_signal(SIGTERM)` там зовёт `TerminateProcess`: процесс снимает
+    ядро, обработчик Python не выполняется никогда — перехватить нечего, и
+    никакая правка `mutate.py` этого не изменит. Значит, на Windows защита
+    другая: рядом с модулем обязан остаться бэкап, по которому прерванный
+    прогон виден и человеку, и сторожу
+    `test_no_module_of_the_repository_is_left_mutated`. Пропуск здесь был бы
+    хуже вдвойне — он и не проверяет ничего, и делает число пропусков разным
+    на двух машинах проекта, а его сверяют строго (Р-247).
     """
     import signal
     import subprocess
     import sys as system
     import time
-
-    if system.platform == "win32":
-        pytest.skip("Windows снимает процесс TerminateProcess: обработчика сигнала нет")
 
     module = tmp_path / "жертва.py"
     original = ("# важный комментарий" + chr(10) + "def f(a, b):" + chr(10)
@@ -224,11 +225,23 @@ def test_a_run_killed_by_sigterm_restores_the_module_itself(tmp_path):
     if not mutated:
         pytest.skip("прогон закончился раньше, чем удалось прервать его на середине")
 
+    backup = module.with_suffix(".py.mutation-backup")
+
+    if system.platform == "win32":
+        # Модуль остаётся мутированным — иначе и быть не может; проверяется, что
+        # прерванный прогон не исчезает бесследно: бэкап рядом и хранит оригинал.
+        assert backup.exists(), (
+            "снятый прогон не оставил бэкапа: прерывание Windows-машины "
+            "становится невидимым"
+        )
+        assert backup.read_text(encoding="utf-8") == original
+        return
+
     assert module.read_text(encoding="utf-8") == original, (
         "убитый сигналом прогон оставил модуль мутированным: "
         + module.read_text(encoding="utf-8")
     )
-    assert not module.with_suffix(".py.mutation-backup").exists(), "бэкап остался лежать рядом"
+    assert not backup.exists(), "бэкап остался лежать рядом"
     assert "прерван сигналом" in (errors or ""), errors[-300:]
 
 
