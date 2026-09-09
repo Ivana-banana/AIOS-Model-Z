@@ -80,15 +80,17 @@ def audit(
     schedule_error = None
     scaling = None
     if schedule_path.is_file():
-        schedule_error = (schedule_validator or _schedule_problem)(schedule_path)
-        scaling_error, scaling = _scaling_problem(schedule_path)
+        schedule_error = (schedule_validator(schedule_path)
+                          if schedule_validator is not None
+                          else _schedule_problem(schedule_path, root))
+        scaling_error, scaling = _scaling_problem(schedule_path, root)
         checksum_error, checksum = _checksum_problem(submission, schedule_path)
         schedule_error = (
             schedule_error
             or scaling_error
             or _wrong_run(submission, schedule_path)
             or checksum_error
-            or _trace_problem(schedule_path, declared)
+            or _trace_problem(schedule_path, declared, root)
         )
         scaling = f"{scaling}; {checksum}"
     model_error = None
@@ -247,7 +249,19 @@ def _model_problem(path: Path) -> str | None:
     return None
 
 
-def _trace_problem(schedule: Path, declared: str | None) -> str | None:
+#: Конфигурация проверяемого корня, а не нашего. `--root` честно доходил только
+#: до проверок наличия файлов; три содержательные читали `config.toml` ЭТОГО
+#: репозитория, и чужой пакет сверялся с нашим деком, нашими нормативами и нашим
+#: стартовым годом — молча (Р-71).
+def _configuration(root: Path):
+    """Конфигурация корня. Бросает — вызывающий решает, что с этим делать."""
+    from aios import config as config_module
+
+    return config_module.load(Path(root) / "config.toml")
+
+
+def _trace_problem(schedule: Path, declared: str | None,
+                   root: Path = ROOT) -> str | None:
     """Есть ли машинный след того, что заявленное число посчитано из этой выгрузки?
 
     До 03.09 этот пункт проверял `md5` файла и наличие числа в
@@ -300,7 +314,7 @@ def _trace_problem(schedule: Path, declared: str | None) -> str | None:
     # Стартовый год, нормативы и выгрузка — три величины, которые меняют число
     # молча. Прежде след их **писал**, но никто не сверял: пересимулированный
     # `rows.csv` или подменённые нормативы пункт проходили (С9).
-    problem = _trace_inputs_problem(schedule, record)
+    problem = _trace_inputs_problem(schedule, record, root)
     if problem is not None:
         return problem
 
@@ -315,7 +329,8 @@ def _trace_problem(schedule: Path, declared: str | None) -> str | None:
     return None
 
 
-def _trace_inputs_problem(schedule: Path, record: dict) -> str | None:
+def _trace_inputs_problem(schedule: Path, record: dict,
+                          root: Path = ROOT) -> str | None:
     """Сверить входы расчёта: стартовый год, нормативы и выгрузку.
 
     Что сверяется и почему каждое:
@@ -335,12 +350,7 @@ def _trace_inputs_problem(schedule: Path, record: dict) -> str | None:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
-        from aios import config as config_module
-    except Exception:  # noqa: BLE001 — без зависимостей сверяем то, что можем
-        return None
-
-    try:
-        configuration = config_module.load()
+        configuration = _configuration(root)
     except Exception:  # noqa: BLE001 — конфигурацию проверяет отдельный пункт
         return None
 
@@ -479,7 +489,7 @@ def _checksum_problem(submission: Path, schedule: Path) -> tuple[str | None, str
     return None, f"md5 {actual} совпал с заявкой"
 
 
-def _scaling_problem(path: Path) -> tuple[str | None, str]:
+def _scaling_problem(path: Path, root: Path = ROOT) -> tuple[str | None, str]:
     """Заявленный множитель обязан описывать сдаваемый файл, а не намерение.
 
     `optimise.scale` умножает поле расхода независимо от режима. Под `LRAT` и
@@ -502,7 +512,7 @@ def _scaling_problem(path: Path) -> tuple[str | None, str]:
     if not report.is_file():
         report = path.parent.parent / "scaling.json"
     if not report.is_file():
-        return _audit_without_report(path)
+        return _audit_without_report(path, root)
     try:
         data = json.loads(report.read_text(encoding="utf-8"))
         share = float(data["share"])
@@ -521,7 +531,8 @@ def _scaling_problem(path: Path) -> tuple[str | None, str]:
     return None, f"множитель применён буквально ко всем {records} записям"
 
 
-def _audit_without_report(path: Path) -> tuple[str | None, str]:
+def _audit_without_report(path: Path,
+                          root: Path = ROOT) -> tuple[str | None, str]:
     """Мерить и без карты множителей: обнуление записи видно из пары файлов.
 
     Раньше отсутствие `scaling.json` означало строку «не измерена», и это было
@@ -536,12 +547,11 @@ def _audit_without_report(path: Path) -> tuple[str | None, str]:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
-        from aios import config as config_module
         from aios import optimise
         from aios.deck import parse_schedule
         from aios.deckfiles import layout
 
-        config = config_module.load(ROOT / "config.toml")
+        config = _configuration(root)
         reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
         start = config.case.control_start
         before = [one for one in reference.steps if one.date >= start]
@@ -575,12 +585,11 @@ def _audit_without_report(path: Path) -> tuple[str | None, str]:
     )
 
 
-def _schedule_problem(path: Path) -> str | None:
+def _schedule_problem(path: Path, root: Path = ROOT) -> str | None:
     """Разобрать сдаваемое расписание и проверить физические ограничения."""
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
-        from aios import config as config_module
         from aios import economics
         from aios.deck import parse_schedule
         from aios.schedule import assert_valid, case_limits
@@ -597,7 +606,7 @@ def _schedule_problem(path: Path) -> str | None:
         # и предполётная проверка держат разные числа, и файл, прошедший один
         # шлюз, отвергается другим (2.3 #8, С12). Нормативы — те, что названы в
         # конфигурации: на валидационном кейсе они приходят от организаторов.
-        configuration = config_module.load()
+        configuration = _configuration(root)
         assert_valid(parsed.steps, **case_limits(
             economics.load_norms(configuration.economics.norms_file)[1],
             configuration.limits.max_injector_bhp_atm,
