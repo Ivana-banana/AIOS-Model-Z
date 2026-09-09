@@ -749,3 +749,88 @@ def test_control_tail_of_a_built_case_is_what_the_generator_wrote(model_dir, tmp
         date(2007, 1, 1), date(2007, 2, 1)
     ]
     assert "01 NOV 2006" not in tail
+
+
+QUOTED_MONTH_SCHEDULE = """SCHEDULE
+
+DATES
+ 1 'JAN' 2007 /
+/
+
+COMPDAT
+ 'W1' 1 1 1 2 OPEN 1* 1* 0.146 /
+/
+
+WCONPROD
+ 'W1' 'OPEN' 'LRAT' 3* 30.0 1* 50 /
+/
+
+DATES
+ 1 "FEB" 2007 /
+/
+
+WPIMULT
+ 'W1' 1.5 3* /
+/
+"""
+
+
+def test_completions_are_carried_when_the_month_is_quoted():
+    """`1 'JAN' 2007 /` — законная форма DATES, и вскрытия обязаны переехать.
+
+    Своя регулярка даты в `run.py` кавычек не знала, а `aios.deck` знал. На
+    таком деке `carried_keywords` не опознавал ни одной даты и **молча**
+    выбрасывал все неуправляющие блоки: скважина получала режим и ни одного
+    соединения с пластом. Цена этой самой потери уже измерена на Модели Z в
+    августе — 22 скважины дают ноль за весь горизонт, 486,7 тыс. т нефти и
+    около 1 106 млн руб., а симулятор сообщает об этом одним предупреждением
+    среди сотен строк.
+    """
+    carried = run.carried_keywords(QUOTED_MONTH_SCHEDULE, date(2007, 1, 1))
+
+    assert set(carried) == {date(2007, 1, 1), date(2007, 2, 1)}
+    assert "COMPDAT" in carried[date(2007, 1, 1)]
+    assert "WPIMULT" in carried[date(2007, 2, 1)]
+
+
+def test_a_schedule_whose_dates_cannot_be_read_refuses_instead_of_carrying_nothing():
+    """Ни одной разобранной даты при наличии DATES — отказ, а не пустой перенос.
+
+    Пустой словарь читается вызывающим как «переносить нечего», и разница между
+    «в деке нет вскрытий» и «мы не смогли прочитать ни одной даты» пропадала.
+    """
+    unreadable = "DATES\n 1 2007 JAN /\n/\n\nCOMPDAT\n 'W1' 1 1 1 2 OPEN /\n/\n"
+
+    with pytest.raises(ValueError, match="ни одна дата не разобрана"):
+        run.carried_keywords(unreadable, date(2007, 1, 1))
+
+
+def test_an_unknown_month_is_refused_in_words_not_by_keyerror():
+    """Неизвестный месяц — сообщение, а не голый `KeyError('XXX')`.
+
+    Трассировка из глубины разбора уезжала во все точки входа, читающие дек, и
+    не говорила ни какого месяца не хватает, ни где он встретился.
+    """
+    from aios import deck as deck_module
+
+    with pytest.raises(ValueError, match="неизвестный месяц"):
+        deck_module.parse_date_record(("1", "XXX", "2007"))
+
+
+def test_a_dates_record_with_a_time_field_is_read_like_the_deck_reads_it():
+    """`1 'JAN' 2008 12:00:00 /` — законная запись, и её пишет тНавигатор.
+
+    `aios.deck.parse_date_record` смотрит только первые три поля, лишние ей не
+    мешают. Регулярка `run.py` требовала `/` сразу за годом — два разбора
+    отвечали на один вопрос по-разному. После сторожа «ни одна дата не
+    разобрана» (Н-12) это перестало быть тихой потерей вскрытий и стало отказом
+    сборки кейса на деке валидационного случая (Р-43, ревью ночного дифа).
+    """
+    text = ("SCHEDULE\n\nDATES\n 1 'JAN' 2008 12:00:00 /\n/\n\n"
+            "COMPDAT\n 'W1' 1 1 1 2 OPEN 1* 1* 0.146 /\n/\n")
+
+    from aios import deck as deck_module
+
+    assert [one.date for one in deck_module.parse_schedule_text(text).steps] == \
+        [date(2008, 1, 1)]
+    assert list(run.carried_keywords(text, date(2007, 1, 1))) == [date(2008, 1, 1)]

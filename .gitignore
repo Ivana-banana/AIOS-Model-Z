@@ -79,6 +79,17 @@ __pycache__/
 /runs/matched-0995/*
 !/runs/matched-0995/wells_schedule.inc
 !/runs/matched-0995/npv.json
+# 08.09 форма сдачи сменилась на «хвост» за период управления: заявляемым стал
+# файл уровнем глубже, `submission/wells_schedule.inc`. Исключение выше на него
+# не распространяется, и в git остался лежать прежний файл с другим `md5` —
+# то есть тег `submit-2026-09-08` называл файл, которого в теге нет, а на клоне
+# проверяющего `check_package.py` отвечал «пакет неполон» и возвращал 1.
+# Сторож, который поймал бы это сам, — `test_packaging.py`,
+# `test_the_file_the_submission_declares_is_tracked_by_git` (Н-03).
+!/runs/matched-0995/submission/
+/runs/matched-0995/submission/*
+!/runs/matched-0995/submission/wells_schedule.inc
+!/runs/matched-0995/submission/npv.json
 
 # Полторы тысячи байт к тому же исключению: **след базового сценария**.
 # Заявка — это тройка (заявленное, базовое, прирост), а машинный след был только

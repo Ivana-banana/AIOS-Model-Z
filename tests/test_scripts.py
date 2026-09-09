@@ -661,6 +661,28 @@ def test_confirm_refuses_a_loss_making_result(tmp_path, monkeypatch, capsys):
     assert not losing.is_improvement
 
 
+def test_the_case_is_not_built_when_the_case_conditions_are_broken():
+    """Условия кейса — такой же отказ, как нарушение расписания.
+
+    `CycleResult` называет кандидата с непустым `case_problems` непригодным, а
+    гейт сборки смотрел только на `problems`: команда печатала список нарушений,
+    тут же писала «кейс собран», возвращала 0, и `run_all.py` тратил на такой
+    кандидат 12–19 минут ГГДМ. Принцип Р-191 — «единая команда обязана
+    отказывать на плохом кандидате» — был применён только к последнему шагу
+    (Р-69).
+    """
+    from scripts import run_cycle
+
+    source = (SCRIPTS / "run_cycle.py").read_text(encoding="utf-8")
+    gate = source.index("if result.problems:")
+    build = source.index("case = build_case(")
+
+    assert "if result.case_problems:" in source[gate:build], (
+        "между проверкой расписания и сборкой кейса нет гейта по условиям кейса"
+    )
+    assert run_cycle is not None
+
+
 def test_confirm_prints_case_problems_of_the_full_run():
     """Нарушения условий кейса на выгрузке ГГДМ печатаются, а не молчат."""
     from aios import loop
@@ -738,6 +760,11 @@ def test_run_cycle_main_survives_its_own_call_sites(tmp_path, monkeypatch, capsy
     assert "суррогат:" in printed
     marker = json.loads((tmp_path / "out" / "cycle.json").read_text(encoding="utf-8"))
     assert marker["decision_identity"]["tune_rates"] is False
+    # Подпись самого плана, а не только входов: именно ею `--confirm` отличает
+    # «отклик ГГДМ на это расписание» от «отклик на расписание до правки кода».
+    # Что она различает разные планы — отдельным тестом; здесь достаточно, что
+    # она вообще записана: без неё сверять при подтверждении будет нечего.
+    assert len(marker["plan_md5"]) == 32, marker
 
     # Хвост Р-47: кейс уезжает считаться на другую машину, а `rows.csv` в его
     # каталоге не появится — его пишет `export_rows.py` уже по результату
@@ -1256,6 +1283,41 @@ def test_cycle_refuses_confirmation_with_a_different_decision_plan(tmp_path, cap
     assert "нет результата расчёта" not in captured.err
 
 
+def test_the_plan_digest_tells_two_different_plans_apart():
+    """Подпись плана обязана меняться вместе с решением, иначе она бесполезна.
+
+    `--confirm` заново проходит поиск и сверяет **входы**: суррогат,
+    конфигурацию, seed, множители, опорное расписание. Версии кода среди них
+    нет, а решают именно они: правка `optimise`, `planner`, `policy` или `loop`
+    между `--out` и `--confirm` даёт пару «расписание A + отклик ГГДМ на
+    расписание B», и подпись «подтверждено полным расчётом» встаёт на обоих
+    (Н-20). Подпись плана — единственное, что эту пару различает.
+    """
+    from datetime import date as date_type
+
+    from aios.deck import ProducerControl, ScheduleStep
+    from scripts import run_cycle
+
+    def plan(rate: float):
+        return [ScheduleStep(date_type(2007, 1, 1),
+                             (ProducerControl("1", "OPEN", "LRAT", rate, 50.0),), ())]
+
+    assert run_cycle.plan_digest(plan(30.0)) == run_cycle.plan_digest(plan(30.0))
+    assert run_cycle.plan_digest(plan(30.0)) != run_cycle.plan_digest(plan(31.0))
+
+
+def test_a_case_without_a_plan_digest_is_not_refused(tmp_path):
+    """Кейс, собранный до появления подписи плана, подтверждать не мешаем."""
+    import json
+
+    from scripts import run_cycle
+
+    (tmp_path / "cycle.json").write_text(json.dumps({"surrogate_identity": {}}),
+                                         encoding="utf-8")
+
+    assert run_cycle.written_plan_digest(tmp_path) is None
+
+
 def test_a_case_built_before_the_marker_appeared_is_not_refused(tmp_path):
     """Кейс без `cycle.json` собран до Р-100 — это не повод отказывать."""
     from scripts import run_cycle
@@ -1757,6 +1819,114 @@ def test_every_deck_reading_script_is_either_swept_or_named():
         + ", ".join(sorted(unaccounted)))
 
 
+#: Все точки входа, принимающие `--config`. Аргументы — ровно те, без которых
+#: argparse не пускает дальше; существовать им не нужно, потому что отказ по
+#: конфигурации стоит **первым** действием `main`.
+CONFIG_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
+    "adopt_history.py": ("--history", "{history}"),
+    "benchmark_scale.py": (),
+    "build_case.py": (),
+    "build_dataset.py": (),
+    "build_doe.py": (),
+    "build_matched_case.py": ("{out}", "--rows", "{rows}"),
+    "build_scaled_case.py": ("{out}",),
+    "build_submission.py": (),
+    "calibrate_search.py": ("--model", "{model}"),
+    "check_submission.py": ("{schedule}",),
+    "collect_pairs.py": ("--model", "{model}", "--runs", "{run}"),
+    "explain_quality.py": (),
+    "export_rows.py": (),
+    "forecast_speed.py": (),
+    "pack_npv.py": ("{run}",),
+    "pressure_check.py": ("{run}", "--model", "{model}"),
+    "pressure_share.py": ("--rows", "{rows}"),
+    "profiles.py": ("{run}",),
+    "rehearse_case.py": ("--rows", "{rows}"),
+    "run_all.py": (),
+    "run_cycle.py": (),
+    "shapley_plan.py": ("build", "{out}", "--rows", "{rows}"),
+    "surrogate_warnings.py": ("--model", "{model}"),
+    "train_surrogate.py": (),
+    # Без пары «модель + расписание» отказывает раньше конфигурации, своими
+    # словами: «нечего делать: задайте --dataset либо --model и --schedule».
+    "trust_gate.py": ("--model", "{model}", "--schedule", "{schedule}"),
+    "verify_declared.py": (),
+}
+
+#: Чем ломается конфигурация. Три случая, а не один: пропавший файл, опечатка в
+#: TOML и недостающая секция — три разные трассировки из трёх разных мест.
+BROKEN_CONFIGS = {
+    "нет файла": None,
+    "не TOML": "[case\nmodel_dir = \n",
+    "нет секции": '[case]\nmodel_dir = "x"\n',
+}
+
+
+@pytest.mark.parametrize("name", sorted(CONFIG_ENTRY_POINTS))
+@pytest.mark.parametrize("breakage", sorted(BROKEN_CONFIGS))
+def test_no_entry_point_answers_a_broken_config_with_a_traceback(
+        name: str, breakage: str, tmp_path: Path):
+    """Промах мимо конфигурации — отказ словами, а не трассировкой.
+
+    Третий случай той же болезни: дек (Р-248, десять точек входа), нормативы
+    (Р-252, девять) и теперь сама конфигурация — все 26 точек входа отвечали
+    трассировкой. Пропавший файл давал четыре кадра `FileNotFoundError`,
+    опечатка в TOML — кадры `tomllib`, недостающая секция — `KeyError`.
+
+    Промахнуться здесь вероятнее всего на валидационном кейсе: `--config`
+    печатают руками, и печатают в тот вечер, когда читать трассировку некогда.
+
+    Сторож ничем не зависит от рабочего дерева: аргументы синтетические, файлы
+    создаются в `tmp_path`. Обе прежние редакции сторожей этого класса ошиблись
+    ровно на этом — брали расписание и суррогат из `runs/` и `artifacts/`,
+    и на чистом клоне краснели сами.
+    """
+    import subprocess
+
+    broken = tmp_path / "config.toml"
+    if BROKEN_CONFIGS[breakage] is None:
+        broken = tmp_path / "нет-такого.toml"
+    else:
+        broken.write_text(BROKEN_CONFIGS[breakage], encoding="utf-8")
+
+    run = tmp_path / "run"
+    run.mkdir()
+    for stub in ("rows.csv", "wells_schedule.inc", "surrogate.joblib", "history.inc"):
+        (run / stub).write_text("", encoding="utf-8")
+
+    places = {"rows": str(run / "rows.csv"), "run": str(run),
+              "out": str(tmp_path / "out"), "model": str(run / "surrogate.joblib"),
+              "schedule": str(run / "wells_schedule.inc"),
+              "history": str(run / "history.inc")}
+    arguments = [one.format(**places) for one in CONFIG_ENTRY_POINTS[name]]
+
+    done = subprocess.run(
+        [sys.executable, str(SCRIPTS / name), *arguments, "--config", str(broken)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT, timeout=600)
+
+    assert "Traceback" not in done.stderr, (
+        f"scripts/{name} отвечает трассировкой на конфигурацию «{breakage}»:"
+        f"\n{done.stderr[-800:]}")
+    assert done.returncode != 0, (
+        f"scripts/{name} с нечитаемой конфигурацией вернул 0 — тихий успех")
+    assert "Конфигурация не читается" in done.stderr, (
+        f"scripts/{name} отказывает, но не говорит, чего не хватает:"
+        f"\n{done.stderr[-800:]}")
+
+
+def test_every_script_taking_a_config_is_swept():
+    """Новая точка входа с `--config` не проскочит мимо обхода молча."""
+    taking = {path.name for path in sorted(SCRIPTS.glob("*.py"))
+              if '"--config"' in path.read_text(encoding="utf-8")}
+
+    unaccounted = taking - set(CONFIG_ENTRY_POINTS)
+
+    assert not unaccounted, (
+        "скрипты принимают --config, но не попали в обход: "
+        + ", ".join(sorted(unaccounted)))
+
+
 #: Точки входа, доходящие до чтения нормативов. Аргументы подобраны так, чтобы
 #: скрипт дошёл до нормативов на любой машине, включая чистый клон.
 NORMS_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
@@ -1883,4 +2053,134 @@ def test_every_norms_reading_script_is_either_swept_or_named():
     assert readers <= swept, (
         "скрипты читают нормативы и не попали ни в обход, ни в поимённый "
         f"список: {sorted(readers - swept)}"
+    )
+
+
+def test_the_rehearsal_refuses_an_export_the_reference_calculator_cannot_price(tmp_path):
+    """Нефизичная выгрузка — провал репетиции, а не «нарушений нет».
+
+    `sanity_problems` звался только при объявленном отклике пласта, и из ответа
+    оставлялись строки со словом «пластовое». Всё остальное выбрасывалось:
+    отрицательные приращения, нефть больше жидкости, дебит выше предела ЭЦН.
+    Кейс с `WLPR = 900` проходил репетицию с кодом 0 — притом что эталонный
+    расчётчик на нём просто отказывается считать (`if row["WLPR"] > 500` в
+    `chdd_model`), то есть ЧДД по такому кейсу не существует вовсе.
+    """
+    import csv
+    import subprocess
+    import sys as system
+
+    rows_file = tmp_path / "rows.csv"
+    rows = [{"DATA": f"2007-{month:02d}-01", "well": "1", "WLPT": 0, "WLPR": 900.0,
+             "WOMT": 0, "WOMR": 30.0, "WWIR": 0, "WWIT": 0, "THP": 100, "BHP": 80,
+             "WEFF": 1, "WLPT_Diff": -500.0, "WOMT_Diff": 900.0, "WWIT_Diff": 0.0}
+            for month in range(1, 4)]
+    with rows_file.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    if not (ROOT / "config-rehearsal.toml").is_file():
+        pytest.skip("нет конфигурации репетиции")
+    # Репетиция читает дек, а он в git не ведётся и распаковывается отдельным
+    # шагом инструкции: без него команда честно отказывает «Дек не читается», и
+    # проверять на этом отказе физическую годность выгрузки нечего. Пропуск с
+    # названной причиной, а не красный тест на клоне проверяющего.
+    from aios import config as config_module
+
+    config = config_module.load(ROOT / "config-rehearsal.toml")
+    if not config.case.model_dir.is_dir():
+        pytest.skip(f"дек не распакован: {config.case.model_dir}")
+
+    done = subprocess.run(
+        [system.executable, str(SCRIPTS / "rehearse_case.py"),
+         "--config", str(ROOT / "config-rehearsal.toml"), "--rows", str(rows_file)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT, timeout=900)
+
+    assert done.returncode == 1, done.stdout[-600:]
+    assert "ВЫГРУЗКА НЕФИЗИЧНА" in done.stdout, done.stdout[-600:]
+    assert "дебит жидкости 900" in done.stdout, done.stdout[-600:]
+
+
+def test_the_trust_gate_reads_a_dataset_without_per_phase_multipliers(tmp_path):
+    """Пакет старого вида читается, а не роняет команду трассировкой.
+
+    Раздельные множители по фазам появились не сразу: `data/dataset-levels.csv`
+    — тот самый пакет, что стоит умолчанием в `train_surrogate.py`, — несёт
+    только общий `multiplier`. `usecols` требовал обе колонки безусловно, и
+    команда падала `ValueError: Usecols do not match columns` — притом что
+    ветка «взять общий множитель» ниже написана ровно под этот случай и была
+    недостижима (Н-30).
+    """
+    import csv
+    import sys as system
+
+    system.path.insert(0, str(SCRIPTS))
+    try:
+        from trust_gate import load_profiles
+    finally:
+        system.path.pop(0)
+
+    old_style = tmp_path / "старый.csv"
+    with old_style.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["scenario", "multiplier", "DATA", "well"])
+        writer.writeheader()
+        for scenario in ("s1", "s2"):
+            for month in (1, 2):
+                writer.writerow({"scenario": scenario, "multiplier": 1.1,
+                                 "DATA": f"2007-{month:02d}-01", "well": "1"})
+
+    profiles = load_profiles([old_style])
+
+    assert set(profiles) == {"старый:s1", "старый:s2"}
+    assert profiles["старый:s1"]["prod:1|уровень"] == pytest.approx(1.1)
+
+
+def test_the_trust_gate_refuses_an_empty_package_in_words(tmp_path):
+    """Пустой пакет — отказ словами, а не трассировка из глубины области.
+
+    Каталог `data/` под `.gitignore` и собирается из `runs/`, поэтому пустой или
+    короткий пакет — обычное состояние чистого клона. Читал трассировку тот, кто
+    просто повторил команду из README.
+    """
+    import csv
+    import subprocess
+    import sys as system
+
+    empty = tmp_path / "пустой.csv"
+    with empty.open("w", encoding="utf-8", newline="") as handle:
+        csv.DictWriter(handle, fieldnames=["scenario", "multiplier", "DATA", "well"]).writeheader()
+
+    done = subprocess.run(
+        [system.executable, str(SCRIPTS / "trust_gate.py"),
+         "--dataset", str(empty), "--out", str(tmp_path / "out.json")],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT, timeout=600)
+
+    assert done.returncode == 1
+    assert "Traceback" not in done.stderr, done.stderr[-400:]
+    assert "сценариев 0" in done.stderr and "build_dataset" in done.stderr
+
+
+def test_run_all_resolves_out_against_the_repository_not_the_caller(tmp_path):
+    """Относительный `--out` разрешается от корня, а не от каталога вызывающего.
+
+    Шаги идут с `cwd=ROOT`, поэтому `run_all.py --out out/here`, запущенный из
+    другого каталога, клал результат в `<repo>/out/here`, а последняя строка
+    печатала `out/here/wells_schedule.inc` — путь, которого у вызывающего нет
+    (Р-66).
+    """
+    import subprocess
+    import sys as system
+
+    done = subprocess.run(
+        [system.executable, str(SCRIPTS / "run_all.py"), "--dry-run",
+         "--out", "out/here"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=tmp_path, timeout=600)
+
+    assert done.returncode == 0, done.stderr[-400:]
+    assert str(ROOT / "out" / "here") in done.stdout, (
+        "путь результата напечатан относительно чужого каталога: " + done.stdout[-400:]
     )

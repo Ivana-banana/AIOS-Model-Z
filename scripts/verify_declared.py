@@ -81,6 +81,21 @@ def digest(path: Path, algorithm: str = "md5") -> str:
     return accumulator.hexdigest()
 
 
+def declared_run(text: str) -> str | None:
+    """Каталог прогона, который документ называет заявленным.
+
+    Нужен ровно затем, чтобы отличить «число не воспроизводится» от «сверяется
+    не тот прогон»: по паспорту дня отправки `verify_declared` гоняют по обоим
+    прогонам подряд, и на базовом он до 09.09 кричал «отправлять пакет нельзя»
+    — притом что базовый и не обязан давать заявленное число.
+    """
+    match = re.search(r"`(runs/[\w.-]+(?:/[\w.-]+)*)/wells_schedule\.inc`", text)
+    if match is None:
+        return None
+    path = match.group(1)
+    return path[: -len("/submission")] if path.endswith("/submission") else path
+
+
 def portable(path: Path) -> str:
     """Путь так, как его напишет любая машина: от корня репозитория, через `/`.
 
@@ -132,27 +147,15 @@ def recompute(rows_file: Path, start_year: int, norms_file: Path,
                                encoding="utf-8", errors="replace")
     if completed.returncode != 0:
         raise RuntimeError(
-            f"эталонный расчётчик отказал (код {completed.returncode}):\n{completed.stderr}"
+            f"эталонный расчётчик отказал (код {completed.returncode}):\n"
+            # Причину он печатает в stdout («Ошибка: …», РАСЧЕТ_ЧДД.py), а не в
+            # stderr, и до 09.09 сюда попадала пустая строка: оператор видел
+            # «отказал (код 1):» и ничего больше. Именно эту строку читают на
+            # валидационном кейсе, когда эталон отвергает выгрузку.
+            + "\n".join(part for part in (completed.stdout, completed.stderr) if part.strip())
         )
     raw = json.loads(json_file.read_text(encoding="utf-8"))
     return float(raw["summary"]["totalChddM"]), recorded
-
-
-def charge_initial_pump(norms_file: Path) -> bool | None:
-    """Значение флага `chargeInitialPump` из нормативов — или None, если его нет.
-
-    Флаг решает, платим ли мы за ЭЦН, уже стоящий в скважине на начало расчёта.
-    На заявке это 92,9 млн руб. разницы (`BLOCKED.md`, п. 0.1), и до 04.09 след
-    её не фиксировал: два расчёта одного расписания с разными значениями флага
-    давали одинаково выглядящий машинный след (С9).
-    """
-    assumptions, _ = economics.load_norms(norms_file)
-    value = assumptions.get("chargeInitialPump")
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in ("да", "true", "yes", "1")
-    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -168,6 +171,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = build_parser().parse_args()
+    # Конфигурация проверяется ПЕРВОЙ: без неё не выполнить ничего, а её путь
+    # печатают руками. Обратный порядок означал, что на чистом клоне (где нет
+    # ни одной выгрузки) команда отвечала «нет выгрузки» на битый --config —
+    # и обход точек входа краснел на клоне, хотя на машине разработки был
+    # зелёным. Ровно эта же ошибка была у обоих прежних сторожей класса.
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+
     run_dir = arguments.run if arguments.run.is_absolute() else ROOT / arguments.run
     rows_file = run_dir / "rows.csv"
     if not rows_file.is_file():
@@ -184,17 +197,29 @@ def main() -> int:
 
     claimed = arguments.claimed
     source = "аргумент --claimed"
+    wrong_run: str | None = None
     if claimed is None:
         submission = (arguments.submission if arguments.submission.is_absolute()
                       else ROOT / arguments.submission)
-        claimed = parse_declared(submission.read_text(encoding="utf-8")) \
-            if submission.is_file() else None
+        text = submission.read_text(encoding="utf-8") if submission.is_file() else ""
+        claimed = parse_declared(text) if text else None
         source = portable(submission)
+        declared = declared_run(text)
+        if declared is not None and portable(run_dir) != declared:
+            wrong_run = declared
     if claimed is None:
         print(f"заявленное число не найдено в {source}", file=sys.stderr)
         return 1
 
-    recomputed, command = recompute(rows_file, start_year, norms_file, run_dir)
+    # Отказ эталона — это ответ, а не поломка: он бывает на дебите свыше 500,
+    # на дублях скважино-месяцев, на битой шапке. `build_submission` рядом ловит
+    # его строкой «отказ: …» с 08.09, а здесь исключение уходило трассировкой,
+    # хотя причина в нём теперь есть (Р-72).
+    try:
+        recomputed, command = recompute(rows_file, start_year, norms_file, run_dir)
+    except RuntimeError as failure:
+        print(f"отказ: {failure}", file=sys.stderr)
+        return 1
     difference = abs(recomputed - claimed)
     agreed = difference <= ROUNDING_TOLERANCE_M
 
@@ -209,12 +234,20 @@ def main() -> int:
         "startYear": start_year,
         "vendorVersion": economics.VENDOR_VERSION,
         "normsSha256": digest(norms_file, "sha256"),
+        "chargeInitialPump": economics.charge_initial_pump(norms_file),
         "rowsMd5": digest(rows_file),
         "scheduleMd5": digest(schedule_file) if schedule_file.is_file() else None,
         "command": " ".join(command),
     }
-    (run_dir / "npv.json").write_text(
-        json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # След пишется только тогда, когда сверялся ТОТ прогон. Иначе команда,
+    # прогнанная по чужому прогону (а паспорт дня отправки велит гонять и
+    # базовый), затирала его машинный след числом заявки: `claimedM` 11 851,8 →
+    # 13 133,8, `agreed` true → false. След базы — половина заявляемой тройки
+    # (заявленное, базовое, прирост) и лежит в git ровно затем, чтобы прирост
+    # можно было проверить на чистом клоне (Р-234). Найдено ревью ночного дифа.
+    if wrong_run is None:
+        (run_dir / "npv.json").write_text(
+            json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     print(f"прогон:      {run_dir}")
     print(f"выгрузка:    rows.csv, md5 {record['rowsMd5']}")
@@ -225,9 +258,18 @@ def main() -> int:
     print(f"пересчёт:    {recomputed:,.3f} млн руб.")
     print(f"заявлено:    {claimed:,.3f} млн руб. ({source})")
     print(f"расхождение: {difference:,.6f} млн руб.")
-    print(f"след:        {(run_dir / 'npv.json')}")
+    if wrong_run is None:
+        print(f"след:        {(run_dir / 'npv.json')}")
+    else:
+        print("след:        не записан — сверялся не заявленный прогон")
     print()
     if not agreed:
+        if wrong_run:
+            print(f"НЕ ТОТ ПРОГОН: заявлен {wrong_run}, а сверяется "
+                  f"{portable(run_dir)}. Это не расхождение заявки: у базового "
+                  "и любого другого сценария своё число. Чтобы сверить его, "
+                  "назовите его ключом --claimed.", file=sys.stderr)
+            return 1
         print("РАСХОЖДЕНИЕ: заявленное число не воспроизводится этой выгрузкой. "
               "Отправлять пакет нельзя — сначала разберите, откуда взялось число.",
               file=sys.stderr)

@@ -50,8 +50,26 @@ def load_profiles(paths: list[Path]) -> dict[str, dict[str, float]]:
     """
     profiles: dict[str, dict[str, float]] = {}
     for path in paths:
-        frame = pd.read_csv(path, usecols=["scenario", "DATA", "well", "multiplier",
-                                           "production_multiplier", "injection_multiplier"])
+        # Раздельные множители по фазам появились не сразу: пакеты старого вида
+        # (`data/dataset-levels.csv` — тот самый, что стоит умолчанием в
+        # `train_surrogate.py`) несут только общий `multiplier`. Требовать их
+        # безусловно значило падать трассировкой `Usecols do not match columns`
+        # на собственных датасетах — притом что ветка «взять общий множитель»
+        # ниже написана ровно под этот случай и была недостижима (Н-30).
+        present = set(pd.read_csv(path, nrows=0).columns)
+        needed = ["scenario", "DATA", "well", "multiplier"]
+        absent = [name for name in needed if name not in present]
+        if absent:
+            raise ValueError(
+                f"в пакете {path} нет обязательных колонок: {', '.join(absent)}. "
+                "Ожидается выгрузка DoE от scripts/build_dataset.py"
+            )
+        optional = [name for name in ("production_multiplier", "injection_multiplier")
+                    if name in present]
+        frame = pd.read_csv(path, usecols=needed + optional)
+        for name in ("production_multiplier", "injection_multiplier"):
+            if name not in optional:
+                frame[name] = float("nan")
         frame["DATA"] = pd.to_datetime(frame["DATA"])
         for name, block in frame.groupby("scenario"):
             months: dict = {}
@@ -269,6 +287,10 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
 
     from aios.neural import NeuralBundle, NeuralSurrogate
 
+    refusal = config_module.refusal(config_path)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(config_path)
     if not model.is_file():
         # артефакт лежит в `artifacts/`, а этот каталог в git не ведётся: промах
@@ -398,6 +420,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     profiles = load_profiles(args.dataset)
+    if len(profiles) <= args.k:
+        # Пустой или короткий пакет — обычное состояние на чистом клоне: каталог
+        # `data/` под .gitignore и собирается из `runs/` командой build_dataset.
+        # До 09.09 это отвечало трассировкой из глубины `TrustRegion.fit`
+        # («сценариев 0, а нужно больше k = 5»), и читать её приходилось тому,
+        # кто просто повторил команду из README (Н-30).
+        print(
+            f"в пакетах {', '.join(str(one) for one in args.dataset)} "
+            f"сценариев {len(profiles)}, а области нужно больше k = {args.k}: "
+            "расстояние до k-го соседа при таком наборе не определено.\n"
+            "Датасеты DoE не ведутся в git (каталог data/ под .gitignore) — "
+            "соберите их командой scripts/build_dataset.py по каталогам прогонов "
+            "или укажите --dataset на готовый пакет.",
+            file=sys.stderr)
+        return 1
     region = trust.TrustRegion.fit(profiles, k=args.k, quantile=args.quantile)
     margin = trust.OptimismMargin.fit(
         [(pair.predicted, pair.actual) for pair in pairs], alpha=args.alpha)

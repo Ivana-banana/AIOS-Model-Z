@@ -767,3 +767,63 @@ def test_an_unknown_provider_is_refused_not_silently_replaced():
     assert result.source == "template-failed"
     assert "yandxe" in (result.failure or ""), "имя опечатки не названо"
     assert "anthropic" in (result.failure or "").lower(), "не сказано, что допустимо"
+
+
+def test_a_text_claiming_a_full_run_that_did_not_happen_is_rejected():
+    """Статус — не число, и барьер чисел его не видел вовсе.
+
+    Ответ, где прирост подписан «подтверждено полным расчётом ГГДМ» при
+    `confirmed = False`, проходил обе проверки: числа в нём могли быть
+    процитированы из фактов, а слово «подтверждено» числом не является. Между тем
+    это ровно то утверждение, из-за которого расхождение заявленного ЧДД с
+    пересчётом организаторов становится дисквалификацией — прогноз суррогата,
+    поданный как факт ГГДМ (Р-51, ревизия ночи 08→09.09).
+    """
+    from aios.explain import Evidence, false_confirmation
+
+    facts = Evidence(subject="остановка скважины 42", observations=(),
+                     numbers={"прирост ЧДД, млн руб.": 681.16}, caveats=(),
+                     confirmed=False)
+
+    assert false_confirmation("Результат подтверждён полным расчётом ГГДМ.", facts)
+    assert false_confirmation("Прирост получен полным расчётом.", facts)
+    assert false_confirmation("Это прогноз суррогата, ГГДМ не считалась.", facts) is None
+
+    # когда расчёт действительно был, называть его — не ложь, а обязанность
+    confirmed = Evidence(subject="x", observations=(), numbers={}, caveats=(),
+                         confirmed=True)
+    assert false_confirmation("Подтверждено полным расчётом ГГДМ.", confirmed) is None
+
+
+def test_a_cached_answer_goes_through_the_same_barriers(tmp_path):
+    """Инвариант «непроверенное не показывается принятым» держится и на чтении.
+
+    Файл кэша правится руками, приезжает с другой машины и — по плану
+    `BLOCKED.md`, п. 0.2-бис — кладётся в сдаваемый пакет. Барьеры стояли только
+    на записи, поэтому подложенный текст с выдуманным числом отдавался со
+    `source = "cache"` и пустым `rejected_numbers`, то есть под подписью
+    «проверка чисел пройдена» (Р-52).
+    """
+    import json
+
+    from aios.explain import Evidence, Settings, explain
+
+    facts = Evidence(subject="остановка скважины 42", observations=(),
+                     numbers={"прирост ЧДД, млн руб.": 681.16}, caveats=(),
+                     confirmed=False)
+    settings = Settings(enabled=False, cache_dir=tmp_path)
+
+    honest = explain(facts, settings)
+    assert honest.source == "template"
+
+    fingerprint = honest.fingerprint
+    (tmp_path / f"{fingerprint}.json").write_text(json.dumps({
+        "text": "Прирост ЧДД составил 99999.9 млн руб. и подтверждён полным расчётом ГГДМ.",
+        "model": "yandexgpt/latest", "fingerprint": fingerprint,
+    }), encoding="utf-8")
+
+    answer = explain(facts, settings)
+
+    assert answer.source == "cache-rejected", answer.source
+    assert answer.rejected_numbers, "барьеры на чтении кэша молчат"
+    assert "99999.9" in " ".join(answer.rejected_numbers)

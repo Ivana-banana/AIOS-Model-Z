@@ -7,7 +7,11 @@ requires-python = ">=3.11"
 [tool.pytest.ini_options]
 testpaths = ["tests", "vendor/CHDD_PYTHON/tests"]
 pythonpath = [".", "tests", "vendor/CHDD_PYTHON"]
-addopts = "-q"
+# `-q` здесь НЕ ставится намеренно. CLAUDE.md предписывает перед коммитом
+# `pytest -q`, и вместе с этим ключом получалось `-qq`: под ним исчезает строка
+# итога, то есть зелёный прогон не показывает ни числа тестов, ни числа
+# пропусков. Падения видны и там (short summary остаётся), а вот 34 пропуска от
+# 1 889 пройденных по мандатной команде отличить было нельзя (Р-55).
 filterwarnings = [
     # resdata предупреждает о своих же векторах на каждом вызове — шум в выводе тестов
     "ignore::DeprecationWarning:resdata.*",

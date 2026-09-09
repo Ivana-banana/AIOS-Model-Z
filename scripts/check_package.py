@@ -30,7 +30,14 @@ DECLARED_SCHEDULE = re.compile(r"`(runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc
 #: Путь стал двухуровневым 08.09: сдаваемый файл лежит в `<прогон>/submission/`,
 #: потому что рядом с ним живёт файл с историей, а имя у обоих одно и то же —
 #: `wells_schedule.inc`, и другое имя организаторам отправлять нельзя.
-DECLARED_MD5 = re.compile(r"`md5 ([0-9a-fA-F]{32})`")
+#: Привязан к строке сдаваемого файла, а не «первый md5 в документе». Рядом
+#: живёт файл-источник (371 шаг, свой md5), и стоит упомянуть его выше таблицы —
+#: сверка молча пойдёт по чужому числу. Так же привязаны и соседние выражения:
+#: `DECLARED_MODEL_SHA256` — к строке артефакта, `check_release_tag` — к строке
+#: «| сдаваемый файл |» (Р-61).
+DECLARED_MD5 = re.compile(
+    r"`runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc`[^\n]*`md5 ([0-9a-fA-F]{32})`"
+)
 DECLARED_MODEL = re.compile(r"`(artifacts/[\w.-]+\.joblib)`")
 DECLARED_MODEL_SHA256 = re.compile(
     r"`artifacts/[\w.-]+\.joblib`[^\n]*`sha256 ([0-9a-fA-F]{64})`"
@@ -73,15 +80,17 @@ def audit(
     schedule_error = None
     scaling = None
     if schedule_path.is_file():
-        schedule_error = (schedule_validator or _schedule_problem)(schedule_path)
-        scaling_error, scaling = _scaling_problem(schedule_path)
+        schedule_error = (schedule_validator(schedule_path)
+                          if schedule_validator is not None
+                          else _schedule_problem(schedule_path, root))
+        scaling_error, scaling = _scaling_problem(schedule_path, root)
         checksum_error, checksum = _checksum_problem(submission, schedule_path)
         schedule_error = (
             schedule_error
             or scaling_error
             or _wrong_run(submission, schedule_path)
             or checksum_error
-            or _trace_problem(schedule_path, declared)
+            or _trace_problem(schedule_path, declared, root)
         )
         scaling = f"{scaling}; {checksum}"
     model_error = None
@@ -240,7 +249,19 @@ def _model_problem(path: Path) -> str | None:
     return None
 
 
-def _trace_problem(schedule: Path, declared: str | None) -> str | None:
+#: Конфигурация проверяемого корня, а не нашего. `--root` честно доходил только
+#: до проверок наличия файлов; три содержательные читали `config.toml` ЭТОГО
+#: репозитория, и чужой пакет сверялся с нашим деком, нашими нормативами и нашим
+#: стартовым годом — молча (Р-71).
+def _configuration(root: Path):
+    """Конфигурация корня. Бросает — вызывающий решает, что с этим делать."""
+    from aios import config as config_module
+
+    return config_module.load(Path(root) / "config.toml")
+
+
+def _trace_problem(schedule: Path, declared: str | None,
+                   root: Path = ROOT) -> str | None:
     """Есть ли машинный след того, что заявленное число посчитано из этой выгрузки?
 
     До 03.09 этот пункт проверял `md5` файла и наличие числа в
@@ -255,8 +276,14 @@ def _trace_problem(schedule: Path, declared: str | None) -> str | None:
     """
     trace = schedule.parent / "npv.json"
     if not trace.is_file():
+        # Каталог прогона, а не каталог сдаваемого хвоста: `--run submission`
+        # указывал бы на путь, которого нет. То же правило, что у
+        # `check_release_tag.reproduction_problem` (Р-50, ревью ночного дифа).
+        run = schedule.parent
+        if run.name == "submission":
+            run = run.parent
         return (f"нет машинного следа {trace}: запустите "
-                f"python scripts/verify_declared.py --run {schedule.parent.name}")
+                f"python scripts/verify_declared.py --run {run.name}")
     try:
         record = json.loads(trace.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
@@ -287,7 +314,7 @@ def _trace_problem(schedule: Path, declared: str | None) -> str | None:
     # Стартовый год, нормативы и выгрузка — три величины, которые меняют число
     # молча. Прежде след их **писал**, но никто не сверял: пересимулированный
     # `rows.csv` или подменённые нормативы пункт проходили (С9).
-    problem = _trace_inputs_problem(schedule, record)
+    problem = _trace_inputs_problem(schedule, record, root)
     if problem is not None:
         return problem
 
@@ -302,7 +329,8 @@ def _trace_problem(schedule: Path, declared: str | None) -> str | None:
     return None
 
 
-def _trace_inputs_problem(schedule: Path, record: dict) -> str | None:
+def _trace_inputs_problem(schedule: Path, record: dict,
+                          root: Path = ROOT) -> str | None:
     """Сверить входы расчёта: стартовый год, нормативы и выгрузку.
 
     Что сверяется и почему каждое:
@@ -322,12 +350,7 @@ def _trace_inputs_problem(schedule: Path, record: dict) -> str | None:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
-        from aios import config as config_module
-    except Exception:  # noqa: BLE001 — без зависимостей сверяем то, что можем
-        return None
-
-    try:
-        configuration = config_module.load()
+        configuration = _configuration(root)
     except Exception:  # noqa: BLE001 — конфигурацию проверяет отдельный пункт
         return None
 
@@ -466,7 +489,7 @@ def _checksum_problem(submission: Path, schedule: Path) -> tuple[str | None, str
     return None, f"md5 {actual} совпал с заявкой"
 
 
-def _scaling_problem(path: Path) -> tuple[str | None, str]:
+def _scaling_problem(path: Path, root: Path = ROOT) -> tuple[str | None, str]:
     """Заявленный множитель обязан описывать сдаваемый файл, а не намерение.
 
     `optimise.scale` умножает поле расхода независимо от режима. Под `LRAT` и
@@ -489,7 +512,7 @@ def _scaling_problem(path: Path) -> tuple[str | None, str]:
     if not report.is_file():
         report = path.parent.parent / "scaling.json"
     if not report.is_file():
-        return _audit_without_report(path)
+        return _audit_without_report(path, root)
     try:
         data = json.loads(report.read_text(encoding="utf-8"))
         share = float(data["share"])
@@ -508,7 +531,8 @@ def _scaling_problem(path: Path) -> tuple[str | None, str]:
     return None, f"множитель применён буквально ко всем {records} записям"
 
 
-def _audit_without_report(path: Path) -> tuple[str | None, str]:
+def _audit_without_report(path: Path,
+                          root: Path = ROOT) -> tuple[str | None, str]:
     """Мерить и без карты множителей: обнуление записи видно из пары файлов.
 
     Раньше отсутствие `scaling.json` означало строку «не измерена», и это было
@@ -523,12 +547,11 @@ def _audit_without_report(path: Path) -> tuple[str | None, str]:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
-        from aios import config as config_module
         from aios import optimise
         from aios.deck import parse_schedule
         from aios.deckfiles import layout
 
-        config = config_module.load(ROOT / "config.toml")
+        config = _configuration(root)
         reference = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))
         start = config.case.control_start
         before = [one for one in reference.steps if one.date >= start]
@@ -562,12 +585,11 @@ def _audit_without_report(path: Path) -> tuple[str | None, str]:
     )
 
 
-def _schedule_problem(path: Path) -> str | None:
+def _schedule_problem(path: Path, root: Path = ROOT) -> str | None:
     """Разобрать сдаваемое расписание и проверить физические ограничения."""
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     try:
-        from aios import config as config_module
         from aios import economics
         from aios.deck import parse_schedule
         from aios.schedule import assert_valid, case_limits
@@ -584,7 +606,7 @@ def _schedule_problem(path: Path) -> str | None:
         # и предполётная проверка держат разные числа, и файл, прошедший один
         # шлюз, отвергается другим (2.3 #8, С12). Нормативы — те, что названы в
         # конфигурации: на валидационном кейсе они приходят от организаторов.
-        configuration = config_module.load()
+        configuration = _configuration(root)
         assert_valid(parsed.steps, **case_limits(
             economics.load_norms(configuration.economics.norms_file)[1],
             configuration.limits.max_injector_bhp_atm,
@@ -602,14 +624,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", type=Path, default=Path("artifacts/surrogate.joblib"))
     arguments = parser.parse_args(argv)
 
-    checks = audit(arguments.root, arguments.schedule, arguments.model)
+    return report(audit(arguments.root, arguments.schedule, arguments.model))
+
+
+def report(checks: list[Check]) -> int:
+    """Напечатать итог и вернуть код возврата. Три состояния, а не два."""
+    # «Не выполнена» — это не «претензий нет». Сверка сдаваемого файла с деком
+    # глушится `except Exception` (нет дека, опечатка в model_dir, упавший
+    # импорт), и пункт всё равно печатался «ГОТОВО», а команда отвечала «пакет
+    # готов». Паспорт дня отправки принимает пакет ровно по этому признаку —
+    # «все строки ГОТОВО, последняя строка „пакет готов“», — то есть признак
+    # достигался и тогда, когда содержательная половина пункта не состоялась
+    # (Р-65).
+    unchecked = [item for item in checks
+                 if item.ready and "не выполнена" in item.detail]
     for item in checks:
-        status = "ГОТОВО" if item.ready else "НЕТ"
-        print(f"[{status:6}] {item.number}. {item.title}: {item.detail}")
+        status = ("ГОТОВО" if item.ready else "НЕТ")
+        if item in unchecked:
+            status = "НЕ ПРОВ"
+        print(f"[{status:7}] {item.number}. {item.title}: {item.detail}")
     missing = [item for item in checks if not item.ready]
     print()
-    print("пакет готов" if not missing else f"пакет неполон: {len(missing)} пункт(а)")
-    return 0 if not missing else 1
+    if missing:
+        print(f"пакет неполон: {len(missing)} пункт(а)")
+        return 1
+    if unchecked:
+        # Код возврата остаётся нулевым: ничего не сломано, файлы на месте.
+        # Красным этот случай делать нельзя — проверяющий набирает команду на
+        # чистом клоне до распаковки дека, и это его обычный первый запуск.
+        # Но «пакет готов» здесь не пишется, и паспорт дня отправки этого
+        # признака не увидит.
+        print(f"пакет собран, но {len(unchecked)} проверок(и) не выполнено — "
+              "см. строки [НЕ ПРОВ] выше; на машине с деком прогоните ещё раз")
+        return 0
+    print("пакет готов")
+    return 0
 
 
 if __name__ == "__main__":

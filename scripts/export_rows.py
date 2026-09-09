@@ -127,6 +127,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="имя кейса без расширения (по умолчанию [case].case_name)")
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     run_dir = Path(arguments.run_dir) if arguments.run_dir else config.case.run_dir
     case_name = arguments.case_name or config.case.case_name

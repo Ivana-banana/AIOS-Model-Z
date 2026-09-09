@@ -8,6 +8,7 @@
   "startYear": 2007,
   "vendorVersion": "7.0.2-negative-row-filter",
   "normsSha256": "4f96a304db486f158994173be6e86b45d63858b8d851470cab8168c86b366358",
+  "chargeInitialPump": false,
   "rowsMd5": "d5874da5d5b3d26cb2f30b108e0fedc9",
   "scheduleMd5": "c4c889491a383f7db239c9e981e6bfb2",
   "command": "python vendor/CHDD_PYTHON/РАСЧЕТ_ЧДД.py --input runs/base/rows.csv --norms vendor/CHDD_PYTHON/input/Нормативы_ЧДД.xlsx --start-year 2007 --output runs/base/npv-vendor.xlsx --json runs/base/npv-vendor.json"

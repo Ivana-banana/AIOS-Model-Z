@@ -231,6 +231,30 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     if control_kind not in {"producers", "injectors", "all", "conversions", "cyclic"}:
         raise ValueError(f"неизвестный тип управления: {control_kind}")
     if control_kind == "cyclic":
+        # Отвергать, а не игнорировать — то же правило, что у `conversions`
+        # ниже. Циклическое заводнение задаётся периодами противофазной
+        # пульсации, и ни диапазон множителей, ни округление к нулю, ни уровень
+        # сценария, ни доля остановок, ни число периодов сюда не входят. Пока
+        # они молча принимались, два вызова с совершенно разными параметрами
+        # давали побайтово одинаковые сценарии — воспроизводимость по конфигу
+        # обещана регламентом, а конфиг ни на что не влиял (Р-70).
+        ignored = []
+        if bounds != DEFAULT_RANGE:
+            ignored.append(f"bounds={bounds}")
+        if snap_to_zero != 0.05:
+            ignored.append(f"snap_to_zero={snap_to_zero}")
+        if levels is not None:
+            ignored.append(f"levels={levels}")
+        if shut_share is not None:
+            ignored.append(f"shut_share={shut_share}")
+        if periods != 1:
+            ignored.append(f"periods={periods}")
+        if ignored:
+            raise ValueError(
+                "циклическому заводнению неприменимы: " + ", ".join(ignored)
+                + ". Режим задаётся периодами противофазной пульсации закачки, "
+                  "а не множителями по скважинам"
+            )
         return _design_cyclic(base_steps, injector_wells, samples=samples, seed=seed,
                               limits=limits)
 
@@ -244,6 +268,14 @@ def design(base_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             raise ValueError(
                 "перевод под закачку — разовое событие, делить его на периодов "
                 f"больше одного нечем (запрошено {periods})"
+            )
+        if levels is not None:
+            # Уровень сценария — про общий отбор, а перевод задаёт режим
+            # скважины целиком (ноль добычи и закачка). Принимался молча, как и
+            # пять параметров циклического режима (Р-70).
+            raise ValueError(
+                "уровень отбора неприменим к переводу под закачку: режим задан "
+                f"самим переводом (запрошено levels={levels})"
             )
         return _design_conversions(base_steps, producer_wells,
                                    samples=samples, seed=seed, bounds=bounds, limits=limits)

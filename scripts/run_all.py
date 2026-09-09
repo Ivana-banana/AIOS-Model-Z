@@ -190,11 +190,23 @@ def main(argv: list[str] | None = None) -> int:
             print(refusal, file=sys.stderr)
             return 1
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     base_dir = Path(arguments.base) if arguments.base else config.case.run_dir
+    # Шаги идут с `cwd=ROOT`, значит относительный `--out` надо разрешать от
+    # корня, а не от каталога вызывающего: иначе `run_all.py --out out/here`,
+    # запущенный из другого каталога, кладёт результат в `<repo>/out/here`, а
+    # последняя строка печатает `out/here/…` — путь, которого у вызывающего нет
+    # (Р-66).
+    out_dir = Path(arguments.out)
+    if not out_dir.is_absolute():
+        out_dir = ROOT / out_dir
     steps = plan(
         base_dir,
-        Path(arguments.out),
+        out_dir,
         case_name=config.case.case_name,
         processes=arguments.processes or config.run.processes,
         flow_args=arguments.flow_args.split() if arguments.flow_args else (),
@@ -211,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
 
     code = execute(steps, _run)
     if code == 0:
-        print(f"\nготово. Расписание: {Path(arguments.out) / 'wells_schedule.inc'}")
+        print(f"\nготово. Расписание: {out_dir / 'wells_schedule.inc'}")
         print("Число, напечатанное последним шагом, посчитано эталонным "
               "расчётчиком по полному расчёту, а не суррогатом.")
         print()

@@ -50,6 +50,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="дополнительно померить на сценарии DoE этого вида")
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     if not arguments.model.is_file():
         # артефакт лежит в `artifacts/`, а этот каталог в git не ведётся: промах

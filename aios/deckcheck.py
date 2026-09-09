@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from aios.deck import _MONTHS as deck_months
 from aios.deck import parse_keywords
 
 MAX_PORTABLE_WELL_NAME = 8
@@ -76,11 +77,10 @@ WELL_REFERENCING = frozenset({
     "WELTARG", "WELOPEN", "WECON", "WEFAC",
 })
 
-_MONTHS = {
-    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
-    "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
-    "JLY": 7,
-}
+#: Таблица месяцев — одна на разбор и на входной контроль. Пока их было две,
+#: они разошлись: `JLY` знал только контроль, и дек с июлем в этой форме
+#: проходил проверку, а разбор валился `KeyError`.
+_MONTHS = deck_months
 
 # Кавычки в `INCLUDE` необязательны: они нужны, когда в пути есть пробелы или
 # спецсимволы. SPE9 из `opm-data` пишет путь голым токеном, и это законная форма —

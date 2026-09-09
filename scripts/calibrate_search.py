@@ -71,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="пропустить seed'ы с готовой выгрузкой rows.csv")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    refusal = config_module.refusal(args.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     settings = config_module.load(args.config)
     if not settings.trust.search_seeds:
         print("в конфиге нет [trust].search_seeds: ночной поиск нечем воспроизвести",

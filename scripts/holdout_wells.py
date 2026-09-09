@@ -177,7 +177,11 @@ def main() -> int:
     arguments = parser.parse_args()
 
     bundle = joblib.load(arguments.model)
-    data = load_datasets(arguments.data)
+    try:
+        data = load_datasets(arguments.data)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
     data["scenario"] = data["scenario"].astype(str)
     data["well"] = data["well"].astype(str)
     data["DATA"] = pd.to_datetime(data["DATA"], errors="raise")

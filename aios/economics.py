@@ -72,6 +72,26 @@ def load_norms(norms_file: Path = NORMS_FILE) -> tuple[dict[str, Any], list[dict
     return excel_io.load_norms(norms_file)
 
 
+def charge_initial_pump(norms_file: Path = NORMS_FILE) -> bool | None:
+    """Значение флага `chargeInitialPump` из нормативов — или `None`, если его нет.
+
+    Флаг решает, платим ли мы за ЭЦН, уже стоящий в скважине на начало расчёта.
+    На заявке это 92,9 млн руб. разницы (`BLOCKED.md`, п. 0.1): два расчёта
+    одного и того же расписания с разными значениями флага дают разные деньги.
+    Поэтому он и попадает в машинный след — иначе следы неразличимы.
+
+    Значение читается из книги организаторов, а не задаётся у нас: «ДА»/«НЕТ»
+    в их файле, а не литерал в коде.
+    """
+    assumptions, _ = load_norms(norms_file)
+    value = assumptions.get("chargeInitialPump")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("да", "true", "yes", "1")
+    return None
+
+
 def load_records(source_file: Path) -> tuple[list[str], list[dict[str, Any]]]:
     """Прочитать исходные данные (.xlsx или .csv) в формате эталонного расчётчика."""
     return excel_io.load_source_records(source_file)

@@ -190,6 +190,66 @@ def test_every_pinned_runtime_package_has_its_licence_text():
             f"нет текста лицензии для {requirement} (ожидался {prefix}*.txt)"
 
 
+def test_every_copyleft_package_of_the_image_is_named_in_the_register():
+    """Копилефт из образа обязан быть в реестре и иметь текст лицензии.
+
+    Прежний сторож проверял `requirements.txt` — прямые пакеты. Образ же с 22.08
+    ставится из `requirements.lock` (`docker/Dockerfile`), и транзитивные в
+    сторож не попадали. Так в поставке оказались три неназванных
+    копилефт-компонента: `cwrap` (GPL-3.0-or-later, обязательная зависимость
+    `resdata`), `resfo` и `resfo-utilities` (LGPL-3.0-or-later), а текста LGPL в
+    `LICENSES/` не было вовсе — при том что раздел «GPL-компоненты» заведён ровно
+    под §6 GPLv3 (найдено ревизией 09.09).
+
+    Лицензия читается из метаданных установленного дистрибутива, а не из
+    таблицы: таблица и есть то, что проверяется.
+    """
+    import importlib.metadata as metadata
+
+    lock = ROOT / "requirements.lock"
+    if not lock.is_file():
+        pytest.skip("нет requirements.lock")
+    names = sorted({
+        match.group(1).lower()
+        for match in re.finditer(r"^([A-Za-z0-9._-]+)==", lock.read_text(encoding="utf-8"), re.M)
+    })
+
+    copyleft: list[tuple[str, str, str]] = []
+    unknown: list[str] = []
+    for name in names:
+        try:
+            meta = metadata.metadata(name)
+        except metadata.PackageNotFoundError:
+            unknown.append(name)
+            continue
+        licence = meta.get("License-Expression") or meta.get("License") or ""
+        if any(mark in licence.upper() for mark in ("GPL", "MPL", "EPL", "CDDL")):
+            copyleft.append((name, licence, metadata.version(name)))
+
+    if unknown:
+        pytest.skip("не установлены пакеты из lock: " + ", ".join(unknown[:5]))
+
+    register = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    texts = [path.name for path in LICENSES.glob("*.txt")]
+    # Имя файла — `<пакет>-<версия>-<лицензия>.txt`, и версия в нём обязательна:
+    # без неё `resfo-utilities-1.1.0-…` засчитывался бы как текст для `resfo`,
+    # то есть пропажа настоящего текста проходила бы молча.
+    #
+    # Текст лицензии требуется для GPL и LGPL — GPLv3 §4 и LGPLv3 велят
+    # приложить копию. MPL реестр называет ссылкой, и этого достаточно.
+    missing = [
+        f"{name} ({licence})" for name, licence, version in copyleft
+        if f"`{name}`" not in register
+        or ("GPL" in licence.upper()
+            and not any(text.startswith(f"{name}-{version}-") for text in texts))
+    ]
+
+    assert not missing, (
+        "копилефт-пакеты образа не названы в THIRD_PARTY_NOTICES.md или без "
+        "текста лицензии в LICENSES/: " + ", ".join(missing)
+    )
+
+
 def test_the_image_carries_the_licence_texts_but_not_our_rights_register():
     """GPLv3 §4: копия лицензии передаётся вместе с программой.
 
@@ -282,7 +342,11 @@ HEAVY_ALLOWED = {
     "materials/Техническое_задание_хакатона_«AIOS».docx":
         "ТЗ хакатона — сама постановка задачи",
     "runs/matched-0995/wells_schedule.inc":
-        "сдаваемый файл — заявленный сценарий, на нём считается заявляемый ЧДД",
+        "прогон заявленного сценария целиком (371 шаг, с 1994 года) — из него "
+        "режется сдаваемый хвост и им же воспроизводится расчёт",
+    "runs/matched-0995/submission/wells_schedule.inc":
+        "сдаваемый файл — хвост за период управления AIOS (225 шагов, с 08.09), "
+        "на нём заявлен ЧДД; его называет docs/submission.md и тег submit-*",
     "artifacts/surrogate.joblib":
         "обученный суррогат — часть комплекта поставки; без него допуск падал "
         "9 из 10 на клоне проверяющего (Д4, Р-197)",
@@ -334,6 +398,84 @@ def test_every_heavy_tracked_file_has_a_written_reason():
     assert not unexplained, (
         "отслеживается тяжёлый файл без записанной причины: " + ", ".join(unexplained)
         + " — либо снять через git rm --cached, либо дописать причину в HEAVY_ALLOWED"
+    )
+
+
+def test_the_declared_checksum_belongs_to_the_file_we_actually_ship():
+    """`md5` заявки считается от файла, а не переписывается из документа в документ.
+
+    Все прежние сторожа сверяли **документ с документом**: регуляркой брали
+    строку `md5` из `docs/submission.md` и искали её в трёх других текстах.
+    Сам файл не читал никто. Проверено ревизией в отдельном worktree: к
+    сдаваемому файлу дописана строка, `md5` стал другим — полная сюита осталась
+    зелёной (Р-54).
+
+    Здесь сходятся три источника, и все три лежат в git: сам файл, машинный след
+    рядом с ним и заявка. Пропуск не нужен — на чистом клоне все три на месте.
+    """
+    import hashlib
+    import json
+    import re
+
+    schedule = ROOT / "runs" / "matched-0995" / "submission" / "wells_schedule.inc"
+    trace = schedule.parent / "npv.json"
+    document = (ROOT / "docs" / "submission.md").read_text(encoding="utf-8")
+
+    assert schedule.is_file(), f"нет сдаваемого файла {schedule}"
+    assert trace.is_file(), f"нет машинного следа {trace}"
+
+    actual = hashlib.md5(schedule.read_bytes()).hexdigest()
+    recorded = json.loads(trace.read_text(encoding="utf-8"))["scheduleMd5"]
+    # Выражение то же, что у `check_package.DECLARED_MD5`, и привязано к строке
+    # сдаваемого файла: рядом в документе назван файл-источник со своим md5, и
+    # «первый md5 в тексте» указывал бы на него (Р-61).
+    declared = re.search(
+        r"`runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc`[^\n]*`md5 ([0-9a-f]{32})`",
+        document)
+
+    assert declared, "в docs/submission.md не найден md5 сдаваемого файла"
+    assert actual == recorded, (
+        f"файл и машинный след разошлись: у файла {actual}, в следе {recorded}"
+    )
+    assert actual == declared.group(1), (
+        f"файл и заявка разошлись: у файла {actual}, в документе {declared.group(1)}"
+    )
+
+
+def test_the_file_the_submission_declares_is_tracked_by_git():
+    """Файл, который заявка называет своим, обязан лежать в репозитории.
+
+    Правило `.gitignore` с исключением под `runs/` заведено ровно за этим
+    (Р-181): проверяющий клонирует репозиторий и должен получить то, что мы
+    сдаём, а потеря диска не должна означать потерю заявки.
+
+    08.09 форма сдачи сменилась на «хвост» за период управления, и заявляемым
+    стал `runs/matched-0995/submission/wells_schedule.inc` — путь на уровень
+    глубже. Исключение в `.gitignore` осталось прежним, поэтому в git лежал
+    **другой** файл с другим `md5`, а тег `submit-2026-09-08` объявлял файл,
+    которого в теге нет. На чистом клоне `check_package.py` отвечал
+    «пакет неполон: 1 пункт(а)» и возвращал 1 — то есть допуск падал 9 из 10.
+
+    Сторож берёт путь из `docs/submission.md` тем же выражением, что и
+    `check_package.py`, — чтобы проверялся именно заявленный файл, а не
+    записанный здесь когда-то.
+    """
+    import subprocess
+
+    text = (ROOT / "docs" / "submission.md").read_text(encoding="utf-8")
+    declared = re.findall(r"`(runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc)`", text)
+
+    assert declared, "в docs/submission.md не назван сдаваемый файл"
+
+    listed = subprocess.run(["git", "ls-files", "-z", "--", *set(declared)], cwd=ROOT,
+                            capture_output=True, check=True).stdout.decode("utf-8")
+    tracked = {name for name in listed.split("\x00") if name}
+    missing = sorted(set(declared) - tracked)
+
+    assert not missing, (
+        "заявка называет файл, которого нет в git: " + ", ".join(missing)
+        + " — снять исключение в .gitignore и добавить файл, иначе чистый клон "
+          "проверяющего не содержит того, что мы сдаём"
     )
 
 

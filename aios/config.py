@@ -69,6 +69,43 @@ class Config:
     """Откуда прочитано — идёт в отчёт вместе с числом ЧДД."""
 
 
+def refusal(path: str | Path) -> str | None:
+    """`None`, если конфигурация читается; иначе готовый текст отказа.
+
+    Родня `deckfiles.missing_deck_refusal` и `deckfiles.norms_refusal`, и
+    болезнь та же — третий её случай (Р-248 дек, Р-252 нормативы). Промах мимо
+    конфигурации отвечал трассировкой во всех 26 точках входа: пропавший файл —
+    четырьмя кадрами `FileNotFoundError`, опечатка в TOML — кадрами
+    `tomllib`, недостающая секция — `KeyError`. Проверяющий читает трассировку
+    как «проект не работает», а на валидационном кейсе `--config` печатают
+    руками, и промахнуться там вероятнее всего.
+
+    Проверка — это **попытка загрузки**, а не вторая копия разбора: два разных
+    ответа на вопрос «читается ли конфигурация» разошлись бы молча. Цена
+    двойного чтения — килобайт TOML.
+    """
+    try:
+        load(path)
+    except FileNotFoundError:
+        reason = "нет файла"
+    except IsADirectoryError:
+        reason = "это каталог, а не файл"
+    except tomllib.TOMLDecodeError as error:
+        reason = f"это не TOML: {error}"
+    except KeyError as error:
+        reason = str(error).strip("'\"")
+    except (ValueError, TypeError) as error:
+        reason = str(error)
+    except OSError as error:
+        reason = str(error)
+    else:
+        return None
+    return f"""Конфигурация не читается: {reason}
+Ожидается файл конфигурации: {Path(path)}
+Образец — `config.toml` в корне репозитория; путь задаётся ключом --config,
+и относительные пути внутри считаются от каталога самой конфигурации."""
+
+
 def load(path: str | Path = DEFAULT_PATH) -> Config:
     """Прочитать конфигурацию. Отсутствие ключа — ошибка с внятным текстом."""
     source = Path(path)

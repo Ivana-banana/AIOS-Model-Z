@@ -583,3 +583,76 @@ def test_the_gate_refuses_a_schedule_whose_records_lost_their_rate(monkeypatch):
     assert "1 открытых записей без расхода" in problem
     assert "2014-01-01 p" in problem
 
+
+def test_a_check_that_did_not_run_is_not_reported_as_ready(capsys):
+    """«Не выполнена» — это не «претензий нет».
+
+    Сверка сдаваемого файла с деком глушится `except Exception` (нет дека,
+    опечатка в `model_dir`, упавший импорт), и пункт всё равно печатался
+    «ГОТОВО», а команда отвечала «пакет готов». Паспорт дня отправки принимает
+    пакет ровно по этому признаку — «все строки ГОТОВО, последняя строка „пакет
+    готов“», — то есть признак достигался и тогда, когда содержательная половина
+    пункта не состоялась (Р-65).
+
+    Код возврата при этом остаётся нулевым: ничего не сломано, файлы на месте, а
+    проверяющий набирает команду на чистом клоне до распаковки дека — это его
+    обычный первый запуск, и красным он быть не должен.
+    """
+    import check_package
+
+    ready = check_package.Check(number="6", title="результат", ready=True,
+                                detail="файл на месте; сверка записей не выполнена: "
+                                       "ValueError: нет каталога дека")
+    other = check_package.Check(number="7", title="git", ready=True, detail="есть")
+
+    code = check_package.report([ready, other])
+    printed = capsys.readouterr().out
+
+    assert code == 0
+    assert "НЕ ПРОВ" in printed
+    assert "пакет готов" not in printed
+    assert "не выполнено" in printed
+
+
+def test_root_reaches_the_checks_that_read_the_configuration(tmp_path, monkeypatch):
+    """`--root` доходит до содержательных проверок, а не только до наличия файлов.
+
+    Три проверки читали `config.toml` ЭТОГО репозитория: сверка входов
+    машинного следа, разбор сдаваемого расписания и аудит масштабирования. Чужой
+    пакет сверялся с нашим деком, нашими нормативами и нашим стартовым годом —
+    молча (Р-71).
+    """
+    import check_package
+    import pytest
+
+    seen: list[Path] = []
+    original = check_package._configuration
+
+    def spy(root):
+        seen.append(Path(root))
+        return original(ROOT)
+
+    monkeypatch.setattr(check_package, "_configuration", spy)
+
+    foreign = tmp_path / "чужой"
+    foreign.mkdir()
+    schedule = ROOT / "runs" / "matched-0995" / "submission" / "wells_schedule.inc"
+    if not schedule.is_file():
+        pytest.skip("нет сдаваемого расписания")
+
+    # Каждая из трёх проверок спрашивается напрямую: через `audit` они не
+    # доходят до конфигурации, если рядом нет файлов чужого пакета, и тест
+    # проверял бы не то.
+    # У копии нет `scaling.json` рядом, поэтому аудит масштабирования идёт по
+    # ветке «отчёта нет» — той самой, что читает конфигурацию.
+    copied = foreign / "wells_schedule.inc"
+    copied.write_bytes(schedule.read_bytes())
+
+    check_package._schedule_problem(schedule, foreign)
+    check_package._scaling_problem(copied, foreign)
+    check_package._trace_inputs_problem(schedule, {"startYear": 2007}, foreign)
+
+    assert len(seen) == 3, f"конфигурацию спросили {len(seen)} раз из трёх"
+    assert all(path == foreign for path in seen), (
+        f"проверка читает конфигурацию не того корня: {seen}"
+    )

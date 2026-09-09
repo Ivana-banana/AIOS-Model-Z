@@ -294,6 +294,143 @@ def test_the_committed_trace_records_a_command_anyone_can_run():
     )
 
 
+def test_the_pump_charge_flag_is_read_from_the_norms_book():
+    """Развилка на 92,9 млн руб. читается из книги организаторов, а не из кода.
+
+    Флаг решает, платим ли мы за ЭЦН, уже стоящий в скважине на начало расчёта.
+    В поставке он «НЕТ»; кейс организаторов может прийти с «ДА», и тогда деньги
+    другие.
+    """
+    assert economics.charge_initial_pump() is False
+
+
+def test_the_machine_trace_records_the_pump_charge_flag(tmp_path):
+    """След обязан различать два расчёта одного расписания с разными флагами.
+
+    С9 ревизии 03.09 помечен закрытым, но именно эта его половина сделана не
+    была: `charge_initial_pump()` лежала в `verify_declared.py` мёртвой — ноль
+    вызовов по всему дереву, — и ни один `npv.json` поля не содержал. Два
+    расчёта одного и того же расписания с «ДА» и «НЕТ» давали одинаково
+    выглядящий след при разнице в 92,9 млн руб.
+    """
+    import json
+    import subprocess
+
+    rows = tmp_path / "rows.csv"
+    rows.write_text(
+        "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
+        "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
+        "2007-01-01,1,10,10,5,5,0,0,100,80,1,10,5,0\n"
+        "2007-02-01,1,20,10,10,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+
+    root = economics.VENDOR_DIR.parent.parent
+    done = subprocess.run(
+        [sys.executable, str(root / "scripts" / "verify_declared.py"),
+         "--run", str(tmp_path), "--claimed", "0"],
+        cwd=root, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=600)
+
+    assert (tmp_path / "npv.json").is_file(), done.stderr[-500:]
+    trace = json.loads((tmp_path / "npv.json").read_text(encoding="utf-8"))
+
+    assert "chargeInitialPump" in trace, (
+        "в машинном следе нет флага, решающего 92,9 млн руб. — два расчёта "
+        "одного расписания с разными нормативами неразличимы"
+    )
+    assert trace["chargeInitialPump"] is False
+
+
+def test_a_refusal_of_the_reference_calculator_carries_its_reason(tmp_path):
+    """Отказ эталона обязан доехать до человека вместе с причиной.
+
+    Вендорная точка входа печатает причину в **stdout** (`Ошибка: …`,
+    `РАСЧЕТ_ЧДД.py`), а обе наши обвязки клали в исключение только `stderr`,
+    который при этом пуст. Оператор видел «эталонный расчётчик отказал
+    (код 1):» и пустоту — ни дебита свыше 500, ни дублей скважино-месяцев, ни
+    битой шапки. Читают эту строку на валидационном кейсе, когда эталон
+    отвергает выгрузку и разбираться надо за минуты.
+    """
+    sys.path.insert(0, str(economics.VENDOR_DIR.parent.parent / "scripts"))
+    try:
+        from verify_declared import recompute
+    finally:
+        sys.path.pop(0)
+
+    rows = tmp_path / "rows.csv"
+    rows.write_text(
+        "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
+        "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
+        "2007-01-01,A,0,550,0,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as refusal:
+        recompute(rows, 2007, economics.NORMS_FILE, tmp_path)
+
+    assert "WLPR свыше 500" in str(refusal.value), (
+        "причина отказа эталона потеряна — осталась только строка «отказал»: "
+        + str(refusal.value)
+    )
+
+    # И до человека она доезжает строкой, а не трассировкой: отказ эталона —
+    # это ответ (дебит свыше 500, дубли скважино-месяцев, битая шапка), а не
+    # поломка. Соседний `build_submission` ловил его с 08.09, `verify_declared`
+    # — нет (Р-72).
+    import subprocess
+
+    root = economics.VENDOR_DIR.parent.parent
+    done = subprocess.run(
+        [sys.executable, str(root / "scripts" / "verify_declared.py"),
+         "--run", str(tmp_path), "--claimed", "1"],
+        cwd=root, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=600)
+
+    assert done.returncode == 1
+    assert "Traceback" not in done.stderr, done.stderr[-400:]
+    assert "WLPR свыше 500" in done.stderr
+
+
+def test_the_declared_run_is_read_from_the_document_without_the_tail_directory():
+    """`declared_run()` называет каталог прогона, а не каталог сдаваемого хвоста.
+
+    Паспорт дня отправки велит прогнать `verify_declared` по обоим прогонам —
+    заявленному и базовому. На базовом сверять нечего: у него своё число, и до
+    09.09 скрипт отвечал на это «РАСХОЖДЕНИЕ … отправлять пакет нельзя» —
+    то есть пугал провалом заявки там, где сверялся другой сценарий.
+
+    С 08.09 документ называет файл в подкаталоге `submission/`, а прогоном
+    остаётся каталог уровнем выше: `--run` принимает именно его.
+    """
+    sys.path.insert(0, str(economics.VENDOR_DIR.parent.parent / "scripts"))
+    try:
+        from verify_declared import declared_run
+    finally:
+        sys.path.pop(0)
+
+    tail = "| сдаваемый файл | `runs/matched-0995/submission/wells_schedule.inc`, `md5 a7` |"
+    flat = "| сдаваемый файл | `runs/matched-100/wells_schedule.inc`, `md5 a7` |"
+
+    assert declared_run(tail) == "runs/matched-0995"
+    assert declared_run(flat) == "runs/matched-100"
+    assert declared_run("документ без заявленного файла") is None
+
+
+def test_the_current_submission_names_the_run_that_verify_declared_defaults_to():
+    """Умолчание `--run` и заявленный прогон — одно и то же.
+
+    Иначе команда из README сверяет не тот прогон и объявляет расхождение
+    заявки на ровном месте.
+    """
+    sys.path.insert(0, str(economics.VENDOR_DIR.parent.parent / "scripts"))
+    try:
+        from verify_declared import ROOT, build_parser, declared_run
+    finally:
+        sys.path.pop(0)
+
+    document = (ROOT / "docs" / "submission.md").read_text(encoding="utf-8")
+    default = build_parser().get_default("run")
+
+    assert declared_run(document) == default.as_posix()
+
+
 def test_paths_inside_the_repository_are_recorded_relative_to_it():
     """`portable()` укорачивает свои пути и не трогает чужие.
 
@@ -313,4 +450,40 @@ def test_paths_inside_the_repository_are_recorded_relative_to_it():
     outside = ROOT.parent / "чужой-каталог" / "rows.csv"
     assert portable(outside) == str(outside), (
         "путь вне репозитория подменён относительным — команда возьмёт другой файл"
+    )
+
+
+def test_a_run_that_is_not_the_declared_one_leaves_its_trace_alone(tmp_path):
+    """Сверка чужого прогона не затирает его машинный след.
+
+    Паспорт дня отправки велит прогнать `verify_declared` по обоим прогонам.
+    Команда писала след безусловно — то есть на базовом прогоне записывала в его
+    `npv.json` число ЗАЯВКИ: `claimedM` 11 851,8 → 13 133,8, `agreed` true →
+    false. А след базы — половина заявляемой тройки (заявленное, базовое,
+    прирост) и лежит в git ровно затем, чтобы прирост проверялся на чистом
+    клоне (Р-234). Найдено ревью ночного дифа 09.09.
+    """
+    import json
+    import subprocess
+
+    run = tmp_path / "чужой"
+    run.mkdir()
+    (run / "rows.csv").write_text(
+        "DATA,well,WLPT,WLPR,WOMT,WOMR,WWIR,WWIT,THP,BHP,WEFF,"
+        "WLPT_Diff,WOMT_Diff,WWIT_Diff\n"
+        "2007-01-01,1,10,10,5,5,0,0,100,80,1,10,5,0\n"
+        "2007-02-01,1,20,10,10,5,0,0,100,80,1,10,5,0\n", encoding="utf-8")
+    before = {"run": "чужой", "chddM": 1.0, "claimedM": 1.0, "agreed": True}
+    (run / "npv.json").write_text(json.dumps(before), encoding="utf-8")
+
+    root = economics.VENDOR_DIR.parent.parent
+    done = subprocess.run(
+        [sys.executable, str(root / "scripts" / "verify_declared.py"), "--run", str(run)],
+        cwd=root, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=600)
+
+    assert done.returncode == 1
+    assert "НЕ ТОТ ПРОГОН" in done.stderr
+    assert json.loads((run / "npv.json").read_text(encoding="utf-8")) == before, (
+        "след чужого прогона переписан числом заявки"
     )

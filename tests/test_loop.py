@@ -845,3 +845,229 @@ def test_the_summary_names_the_penalty_that_dwarfs_the_margin():
         raw_chdd_m=2647.2, safe_chdd_m=2647.2 - 927.8, margin=margin)
     assert "штраф за удаление" not in calm.summary()
 
+
+def test_the_case_audit_judges_the_corridor_in_the_same_window_as_the_planner():
+    """Аудит коридора и его приведение обязаны считать одним окном.
+
+    Планировщик подбирает коридор с переносом накопленного за историю (решение
+    владельца 04.09, Р-204), запас под потолком считается так же, и
+    подтверждение судит по всей выгрузке. А `_case_problems` считал управляемые
+    годы **с нуля** — и на нетронутой истории Модели Z находил нарушения там, где
+    их нет. С fail-closed (Р-165) это означает, что непригодным объявляется любой
+    кандидат, включая бездействие, и оператор читает «условия кейса нарушены».
+
+    Замер 09.09 на `runs/base/rows.csv`: 16 нарушений в окне цикла против нуля с
+    переносом и нуля по всей выгрузке; худший год 1,401 в 2011 против 1,239 в
+    2020 при потолке 1,3. Здесь то же самое на синтетике: история закачивает
+    мало, горизонт много, и без переноса горизонт выглядит нарушителем.
+    """
+    from aios import planner as planner_module
+
+    limits = planner_module.Limits(water_tolerance=1.3, enforce_water_balance=True,
+                                   water_balance_rule="compensation")
+    history = [make_row(f"200{year}-01-01", "1", liquid=1000.0) for year in range(1, 7)]
+    history += [make_row(f"200{year}-01-01", "2", injection=100.0) for year in range(1, 7)]
+    horizon = [make_row("2007-01-01", "1", liquid=100.0),
+               make_row("2007-01-01", "2", injection=1000.0)]
+
+    without = loop._case_problems([], horizon, limits, None, [])
+    with_history = loop._case_problems([], horizon, limits, None, [], history)
+
+    assert without, "синтетика подобрана неверно: без переноса нарушения обязаны быть"
+    assert not with_history, (
+        "аудит судит окном, в котором коридор не приводился: " + "; ".join(with_history)
+    )
+
+
+def test_the_cycle_measures_trust_distance_on_the_intent_not_on_the_cut_schedule(
+        norms, monkeypatch):
+    """Расстояние до доверенной области меряется по замыслу, а не после срезки.
+
+    Обучающие точки области собраны из множителей DoE, то есть из **замыслов**.
+    Планировщик режет закачку по годам, у нагнетателей появляется признак
+    «размах», которого в обучении не было ни у одного сценария, — и расстояние
+    улетает в 1,25·10¹⁵ при пороге 18: вне области объявляется любой кандидат,
+    включая стартовый.
+
+    `optimise._value_of` считает по замыслу с 03.09 (Р-190), а цикл продолжал
+    мерить после планировщика — одна и та же функция с двух разных входов
+    (Н-15). Здесь проверяется, что вход у неё один и тот же.
+    """
+    from aios import optimise as optimise_module
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.planner import Limits
+
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("P1", "OPEN", "LRAT", 100.0, 50.0),),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 100.0, 300.0),))
+             for month in range(1, 13)]
+
+    seen: list[tuple] = []
+    original = optimise_module._distance_of
+
+    def spy(surrogate_, measured, region=None):
+        seen.append(tuple(measured))
+        return original(surrogate_, measured, region)
+
+    monkeypatch.setattr(optimise_module, "_distance_of", spy)
+
+    result = loop.run_cycle(
+        _Responsive(), steps, norms,
+        control_start=CONTROL_START, start_date=CONTROL_START,
+        tune_rates=False,
+        limits=Limits(max_field_liquid_m3_per_day=50.0,
+                      enforce_water_balance=True,
+                      water_balance_rule="compensation",
+                      water_tolerance=1.3),
+        fluids=FLUIDS,
+    )
+
+    assert seen, "цикл не спросил расстояние вовсе"
+    assert result.allocations, "срезки не случилось — проверять нечего"
+    assert seen[-1] != tuple(result.steps), (
+        "расстояние померено по расписанию после планировщика: именно это "
+        "объявляло вне области любого кандидата, включая стартовый"
+    )
+
+
+def test_a_concession_in_one_year_does_not_excuse_a_quota_breach_in_another():
+    """Уступка засчитывается в том периоде, где объявлена, а не во всех сразу.
+
+    Цикл спрашивал «была ли уступка вообще» и выбрасывал из списка все проверки
+    квоты мероприятий. Одна объявленная уступка гасила квоту целиком: 22
+    мероприятия против предела 1 в 2019 проходили fail-closed, если планировщик
+    уступил хоть в каком-нибудь году (Н-19). Репетиция кейса умела считать
+    правильно с 05.09 — теперь правило у них общее.
+    """
+    from aios import planner as planner_module
+
+    limits = planner_module.Limits(max_events_per_year=1)
+    steps = [
+        ScheduleStep(date(2019, month, 1),
+                     (ProducerControl("1", "OPEN" if month % 2 else "SHUT", "LRAT",
+                                      30.0 if month % 2 else None, 50.0),), ())
+        for month in range(1, 13)
+    ]
+    elsewhere = planner_module.Allocation(
+        well="1", resource="квота мероприятий, год 2021", before=0.0, after=0.0,
+        reason="остановка оставлен вопреки квоте 1 на год 2021: он порождён "
+               "ограничением объекта",
+    )
+    here = planner_module.Allocation(
+        well="1", resource="квота мероприятий, год 2019", before=0.0, after=0.0,
+        reason="остановка оставлен вопреки квоте 1 на год 2019: он порождён "
+               "ограничением объекта",
+    )
+
+    assert loop._case_problems(steps, [], limits, None, []), (
+        "синтетика подобрана неверно: без уступки нарушение обязано быть"
+    )
+    assert loop._case_problems(steps, [], limits, None, [elsewhere]), (
+        "уступка в другом году погасила нарушение — это и был дефект"
+    )
+    assert not loop._case_problems(steps, [], limits, None, [here])
+
+
+def test_a_fit_that_did_not_converge_says_so(norms, monkeypatch):
+    """Выход по исчерпанию проходов обязан быть назван, а не молчалив.
+
+    Чередование «объёмный предел режет закачку — нижняя граница коридора
+    добирает её обратно» не сходится в принципе: чем кончится, решает чётность
+    числа проходов, а не сходимость. Фаззер ревизии (400 сценариев) нашёл и
+    случай, недопустимый при сегодняшних трёх проходах. Само нарушение назовёт
+    `_case_problems`; здесь называется его причина — иначе оператор ищет её в
+    кандидате, а она в противоречии условий кейса.
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+    from aios.planner import Limits
+
+    steps = [ScheduleStep(date(2014, month, 1),
+                          (ProducerControl("P1", "OPEN", "LRAT", 100.0, 50.0),),
+                          (InjectorControl("I1", "WATER", "OPEN", "RATE", 100.0, 300.0),))
+             for month in range(1, 13)]
+
+    # приведение, которое каждый проход меняет расписание и потому не сходится
+    def never_settles(current, forecast, norms_, limits_, fluids_, carried_water=None):
+        changed = [
+            ScheduleStep(one.date,
+                         tuple(ProducerControl(c.well, c.status, c.mode,
+                                               (c.liquid_rate or 0.0) + 1.0, c.bhp)
+                               for c in one.producers),
+                         one.injectors)
+            for one in current
+        ]
+        return changed, []
+
+    monkeypatch.setattr(loop.planner, "enforce", never_settles)
+
+    result = loop.run_cycle(
+        _Responsive(), steps, norms,
+        control_start=CONTROL_START, start_date=CONTROL_START,
+        tune_rates=False, limits=Limits(), fluids=FLUIDS,
+    )
+
+    assert any("не сошлось" in one for one in result.warnings), (
+        "приведение не сошлось, а цикл об этом молчит: " + "; ".join(result.warnings[:5])
+    )
+
+
+def test_a_concession_covers_the_monthly_quota_too_not_only_the_yearly_one():
+    """Когда исчерпаны обе корзины, уступка обязана быть объявлена по обеим.
+
+    Планировщик называл только первую (`full[0]`, а `buckets()` ставит год перед
+    месяцем). `casecheck.announced_for` искал «на месяц …», не находил — и
+    `run_cycle --confirm` печатал «УСЛОВИЯ КЕЙСА НАРУШЕНЫ» с кодом 2 на плане,
+    чьё превышение планировщик объявил вслух. До Н-19 это правило жило только в
+    репетиции; перенос его в fail-closed сделал дефект отказом (Р-45).
+    """
+    from aios import planner as planner_module
+
+    limits = planner_module.Limits(max_events_per_year=1, max_events_per_month=1)
+    steps = [
+        ScheduleStep(date(2019, month, 1),
+                     (ProducerControl("1", "OPEN" if month % 2 else "SHUT", "LRAT",
+                                      30.0 if month % 2 else None, 50.0),), ())
+        for month in range(1, 5)
+    ]
+    conceded = [
+        planner_module.Allocation(
+            well="1", resource=f"квота мероприятий, {where}", before=0.0, after=0.0,
+            reason=f"остановка оставлен вопреки квоте 1 на {where}: он порождён "
+                   "ограничением объекта",
+        )
+        for where in ("год 2019", "месяц 2019-02")
+    ]
+
+    assert loop._case_problems(steps, [], limits, None, []), "синтетика без нарушений"
+    assert not loop._case_problems(steps, [], limits, None, conceded), (
+        "объявленная уступка по обеим корзинам всё равно считается нарушением"
+    )
+
+
+def test_the_fixed_point_ignores_last_bit_jitter():
+    """Неподвижная точка сравнивается по смыслу, а не побитово.
+
+    Срезка «в точности до предела» пересобирает сумму, и последний бит гуляет:
+    предел снова «нарушен», решение печатается снова. Фаззер ревизии на 400
+    сценариях — неподвижная точка не достигалась в 94 случаях, и во всех 94
+    только дрожание последнего бита, ни одной структурной разницы. Цена: лишний
+    прогон суррогата в четверти случаев, фантомная строка «урезано» в отчёте и
+    ложное предупреждение «приведение не сошлось» (Р-59).
+    """
+    from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+
+    base = [ScheduleStep(date(2014, 1, 1),
+                         (ProducerControl("P1", "OPEN", "LRAT", 114.819075, 50.0),),
+                         (InjectorControl("I1", "WATER", "OPEN", "RATE", 33.0, 300.0),))]
+    jitter = [ScheduleStep(date(2014, 1, 1),
+                           (ProducerControl("P1", "OPEN", "LRAT",
+                                            114.819075 + 1e-13, 50.0),),
+                           (InjectorControl("I1", "WATER", "OPEN", "RATE", 33.0, 300.0),))]
+
+    assert loop._settled(jitter, base), "дрожание последнего бита сорвало сходимость"
+
+    # а настоящая разница по-прежнему различается
+    changed = [ScheduleStep(date(2014, 1, 1),
+                            (ProducerControl("P1", "SHUT", "LRAT", None, 50.0),),
+                            (InjectorControl("I1", "WATER", "OPEN", "RATE", 33.0, 300.0),))]
+    assert not loop._settled(changed, base)

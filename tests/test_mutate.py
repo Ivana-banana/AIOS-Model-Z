@@ -16,6 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from mutate import apply_one, plan  # noqa: E402
 
+#: Тесты для подопытных прогонов ниже — **чужие**, а не свои.
+#: `--tests tests/test_mutate.py` означал бы, что инструмент запускает тот самый
+#: файл, который его и запустил: каждая мутация порождала вложенный `pytest`,
+#: тот — новый `mutate.py`, и так вглубь. Пока `mutate.py` падал на пути к
+#: замеру, этого не было видно; как только путь починили, рекурсия оставила
+#: подопытный модуль мутированным. Нужен дешёвый файл, не зовущий инструмент.
+NEUTRAL_TESTS = "tests/test_config.py"
+
 SOURCE = "\n".join([
     "def f(a, b):",
     "    if a < 10 and b:",
@@ -150,7 +158,7 @@ def test_an_interrupted_run_restores_the_module_on_the_next_start(tmp_path):
     root = Path(__file__).resolve().parent.parent
     done = subprocess.run(
         [system.executable, str(root / "scripts" / "mutate.py"),
-         "--module", str(module), "--tests", "tests/test_mutate.py", "--limit", "0"],
+         "--module", str(module), "--tests", NEUTRAL_TESTS, "--limit", "1"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=root, timeout=600,
     )
@@ -162,3 +170,125 @@ def test_an_interrupted_run_restores_the_module_on_the_next_start(tmp_path):
     assert not backup.exists(), "бэкап остался лежать рядом"
     assert "восстановлен" in (done.stderr or ""), done.stderr[:300]
 
+
+def test_a_run_killed_by_sigterm_restores_the_module_itself(tmp_path):
+    """`SIGTERM` тоже восстанавливает модуль — не дожидаясь следующего прогона.
+
+    Восстановление «на входе» (тест выше) спасает лишь того, кто запустит
+    мутацию по тому же модулю снова. Всё остальное — `ruff`, `pytest`,
+    коммит — видит переписанный `ast.unparse` файл: без комментариев, без
+    docstring, с перекроенными импортами. Так и вышло 09.09 на `aios/run.py`,
+    вторично после 06.09: прогон убил таймаут вызывающей команды, `finally`
+    при `SIGTERM` не выполняется, и файл пролежал мутированным, пока его не
+    заметил `ruff`.
+
+    Проверяется делом: настоящий подпроцесс, настоящий сигнал.
+    """
+    import signal
+    import subprocess
+    import sys as system
+    import time
+
+    module = tmp_path / "жертва.py"
+    original = ("# важный комментарий" + chr(10) + "def f(a, b):" + chr(10)
+                + "    if a < 10 and b:" + chr(10) + "        return a + 1" + chr(10)
+                + "    return a - 1" + chr(10))
+    module.write_text(original, encoding="utf-8")
+
+    root = Path(__file__).resolve().parent.parent
+    # Тесты нарочно медленные: нужно успеть послать сигнал в середине прогона.
+    proc = subprocess.Popen(
+        [system.executable, str(root / "scripts" / "mutate.py"),
+         "--module", str(module), "--tests", NEUTRAL_TESTS, "--limit", "1"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=root)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and module.read_text(encoding="utf-8") == original:
+        if proc.poll() is not None:
+            break
+        time.sleep(0.2)
+    mutated = module.read_text(encoding="utf-8") != original
+    proc.send_signal(signal.SIGTERM)
+    _, errors = proc.communicate(timeout=120)
+
+    if not mutated:
+        pytest.skip("прогон закончился раньше, чем удалось прервать его на середине")
+
+    assert module.read_text(encoding="utf-8") == original, (
+        "убитый сигналом прогон оставил модуль мутированным: "
+        + module.read_text(encoding="utf-8")
+    )
+    assert not module.with_suffix(".py.mutation-backup").exists(), "бэкап остался лежать рядом"
+    assert "прерван сигналом" in (errors or ""), errors[-300:]
+
+
+def test_a_run_started_from_inside_a_run_refuses(tmp_path):
+    """Замок против форк-бомбы: прогон изнутри прогона не запускается.
+
+    `--tests tests/test_mutate.py` означает, что на каждую мутацию запускается
+    `pytest` того самого файла, который запускает `mutate.py`, — и так вглубь
+    без дна. В ночь на 09.09 это дважды уронило графическую сессию машины: 884
+    живых процесса python по 41 МБ, 19,6 ГБ RSS при 15,9 ГБ памяти, а `earlyoom`
+    убивал не виновников (каждый процесс мелкий, oom_score низкий), а
+    пользовательскую шину dbus вместе со всем рабочим столом — снаружи это
+    выглядело как «терминал закрылся сам». Нашла и измерила соседняя сессия.
+
+    Развязать рекурсию в самих тестах мало: аргумент передаёт человек, и
+    ошибиться он может снова. Замок держит независимо от аргументов.
+    """
+    import os
+    import subprocess
+    import sys as system
+
+    module = tmp_path / "жертва.py"
+    module.write_text("def f(a):" + chr(10) + "    return a < 10" + chr(10), encoding="utf-8")
+
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [system.executable, str(root / "scripts" / "mutate.py"),
+         "--module", str(module), "--tests", NEUTRAL_TESTS, "--limit", "1"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=root, timeout=600, env={**os.environ, "AIOS_MUTATE_CHILD": "1"},
+    )
+
+    assert done.returncode == 1, done.stdout[-300:]
+    assert "изнутри мутационного прогона" in done.stderr, done.stderr[-300:]
+    assert not (tmp_path / "жертва.py.mutation-backup").exists(), (
+        "отказ случился после снятия бэкапа — замок стоит слишком поздно"
+    )
+
+
+def test_a_red_suite_refuses_instead_of_reporting_every_mutation_killed(tmp_path):
+    """Красный набор — отказ, а не отчёт «убито всё, выжило 0».
+
+    Без базового прогона на неизменённом модуле любая причина, по которой набор
+    красен сам по себе — сломанный импорт, отсутствующая зависимость, один
+    упавший тест, неверный `--tests`, замок против рекурсии, — давала «убито
+    всё, выжило 0» и код 0. Это худший из возможных отчётов: он неотличим от
+    настоящего успеха и читается как доказательство качества тестов. Ровно ту же
+    ложь первый абзац этого файла называет недопустимой, только там источником
+    была сбитая нумерация.
+
+    Нашла соседняя сессия — по замеру, который сделал я сам: прогон с заведомо
+    неверным `--tests` напечатал «убито 7, выжило 0» и вернул 0.
+    """
+    import subprocess
+    import sys as system
+
+    module = tmp_path / "жертва.py"
+    module.write_text("def f(a):" + chr(10) + "    return a < 10" + chr(10), encoding="utf-8")
+    red = tmp_path / "test_красный.py"
+    red.write_text("def test_red():" + chr(10) + "    assert False" + chr(10), encoding="utf-8")
+
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [system.executable, str(root / "scripts" / "mutate.py"),
+         "--module", str(module), "--tests", str(red), "--limit", "1"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=root, timeout=600,
+    )
+
+    assert done.returncode == 1, done.stdout[-400:]
+    assert "красные на неизменённом модуле" in done.stderr, done.stderr[-400:]
+    assert "выжило" not in done.stdout, (
+        "инструмент всё-таки выдал вердикт по красному набору: " + done.stdout[-400:]
+    )

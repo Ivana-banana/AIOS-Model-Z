@@ -37,6 +37,7 @@ from sklearn.preprocessing import StandardScaler
 
 from aios import trust
 from aios.deck import InjectorControl, ProducerControl, ScheduleStep
+from aios.schedule import MAX_LIQUID_RATE_M3_PER_DAY
 from aios.summary import Fluids, sanity_problems
 from aios.surrogate import TrainingEnvelope, expand
 
@@ -273,14 +274,24 @@ class NeuralSurrogate:
     bundle: NeuralBundle
     reference_steps: tuple[ScheduleStep, ...]
     fluids: Fluids = field(default_factory=Fluids)
+    max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY
+    """Предел дебита жидкости кейса — для физических проверок прогноза.
+
+    Умолчание — литерал 500 от Модели Z. Прогноз суррогата был единственным
+    местом, где предел оставался зашитым: `export_rows`, `run_cycle` и
+    `rehearse_case` передают предел кейса, цикл проверяет им расписание, а
+    диагностика прогноза считала по 500 — то есть на кейсе с верхним насосом до
+    320 м³/сут молчала ровно там, где обязана предупредить (Н-25).
+    """
 
     @classmethod
     def create(cls, bundle: NeuralBundle,
                reference_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-               fluids: Fluids | None = None, *, require_quality: bool = True) -> NeuralSurrogate:
+               fluids: Fluids | None = None, *, require_quality: bool = True,
+               max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> NeuralSurrogate:
         if require_quality:
             assert_quality(bundle.report)
-        return cls(bundle, tuple(reference_steps), fluids or Fluids())
+        return cls(bundle, tuple(reference_steps), fluids or Fluids(), max_liquid_rate)
 
     def predict(self,
                 steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
@@ -629,7 +640,8 @@ class NeuralSurrogate:
 
         warnings: list[str] = []
         for well in sorted(by_well, key=_well_key):
-            problems = sanity_problems(by_well[well])
+            problems = sanity_problems(by_well[well],
+                                       max_liquid_rate=self.max_liquid_rate)
             if not problems:
                 continue
             warnings.append(
@@ -753,6 +765,23 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     # попадёт то в обучение, то в отбор, и перестанет быть внешним (`Р-82`)
     available = data["scenario"].unique().tolist()
     if holdout:
+        # Имя сценария зависит от имени файла: `load_datasets` приписывает
+        # «<stem файла>:». Заморозили по одному пакету, обучили по другому —
+        # совпадений ноль, все «замороженные» уходят в обучение, а отчёт всё
+        # равно перечисляет их в `holdout_scenarios`. Дальше любое «стало лучше»
+        # меряется по выборке, на которой модель обучалась, и это невидимо
+        # (Р-82 завёл заморозку ровно против этого; Н-38 — про то, что она
+        # молча не срабатывала).
+        unknown = sorted(set(holdout) - set(available))
+        if len(unknown) == len(set(holdout)):
+            raise ValueError(
+                "ни один замороженный сценарий не найден в выборке: "
+                + ", ".join(unknown[:5])
+                + (" …" if len(unknown) > 5 else "")
+                + ". Имя сценария несёт имя пакета («<файл>:<сценарий>»), "
+                "поэтому заморозка по одному пакету не действует на другой — "
+                "иначе метрика мерялась бы по строкам, на которых учились"
+            )
         available = [name for name in available if name not in holdout]
         if len(available) < 3:
             raise ValueError(
@@ -920,18 +949,33 @@ def train(frame: pd.DataFrame, *, seed: int, test_fraction: float = 0.25,
     )
     return NeuralBundle(
         tuple(controls.columns), models, start_month, month_span,
-        _envelope(controls), report, levels=levels, control_center=centre,
-        trust_region=_trust_region(controls, train_scenarios),
+        _envelope(controls, train_scenarios), report, levels=levels, control_center=centre,
+        trust_region=_trust_region(controls, train_scenarios, control_start),
     )
 
 
 def _trust_region(controls: pd.DataFrame,
-                  train_scenarios: frozenset[str] | set[str]) -> trust.TrustRegion | None:
+                  train_scenarios: frozenset[str] | set[str],
+                  control_start: date | None = None) -> trust.TrustRegion | None:
     """Доверенная область по **обучающим** сценариям (`Р-72`).
 
     Тестовые сценарии сюда не попадают намеренно: порог `τ` выводится из
     разреженности самой выборки, и подмешать в неё отложенные прогоны значит
     измерить область по данным, которых у модели не было.
+
+    **Окно то же, в котором область потом применяется.** Профиль кандидата
+    считается по расписанию периода управления (`optimise._distance_of`,
+    `scripts/trust_gate.py`), а обучающие профили строились по всей матрице
+    управлений — вместе с историей до `control_start`, где все множители
+    нейтральны. На Модели Z это 145 нейтральных месяцев из 370: уровень
+    сценария с множителем 1,5 превращался в (145·1,0 + 225·1,5)/370 ≈ 1,30, а
+    кандидат приходил со своими 1,5. Систематический сдвиг раздувал расстояние —
+    равномерный кандидат ×1,1 давал 28,58 при пороге 24,13, то есть выбывал из
+    поиска, хотя на полном горизонте те же данные дают 18,60 (Н-26).
+
+    Правка касается только **новых** обучений: у артефакта область уже
+    посчитана и лежит внутри него. Сдаваемый `artifacts/surrogate.joblib` не
+    меняется, `sha256` прежний.
 
     `None` возвращается, когда область не определена: обучающих сценариев не
     больше `k`, либо ни одно управление между ними не менялось. Это не отказ
@@ -940,6 +984,11 @@ def _trust_region(controls: pd.DataFrame,
     """
     chosen = controls.index.get_level_values("scenario").isin(set(train_scenarios))
     frame = controls[chosen]
+    if control_start is not None:
+        months = frame.index.get_level_values("DATA")
+        frame = frame[months >= pd.Timestamp(control_start)]
+    if frame.empty:
+        return None
     profiles = {
         str(name): trust.profile({
             stamp.date(): dict(zip(frame.columns, (float(v) for v in row), strict=True))
@@ -1200,12 +1249,25 @@ def _pivot_controls(
     return pivoted.reindex(full_index).fillna(1.0)
 
 
-def _envelope(controls: pd.DataFrame) -> TrainingEnvelope:
+def _envelope(controls: pd.DataFrame,
+              train_scenarios: frozenset[str] | set[str] | None = None) -> TrainingEnvelope:
     """Область применимости снимается с той же матрицы, что уходит в признаки.
 
     Строк здесь ровно «сценарий × месяц» (у Модели Z это 12 × 370), а не
     «скважина × месяц», поэтому перевод в словари ничего не стоит.
+
+    **Только обучающие сценарии** — по той же причине, по какой их одних берёт
+    доверенная область: модель отложенных строк не видела ни разу
+    (`train_rows = rows[rows["scenario"].isin(train_scenarios)]`). Пока область
+    снималась со всех, `covers_control` отвечал «покрыто» на множитель,
+    встречавшийся только в отложенном прогоне, — а оптимизатор целенаправленно
+    тянет решение к краю диапазона, то есть ровно туда, где это переоценивает
+    покрытие (Н-35). `None` означает «делить не на что»: так зовут разбор и
+    тесты, и поведение там прежнее.
     """
+    if train_scenarios is not None:
+        chosen = controls.index.get_level_values("scenario").isin(set(train_scenarios))
+        controls = controls[chosen]
     return TrainingEnvelope.fit(controls.to_dict("records"))
 
 

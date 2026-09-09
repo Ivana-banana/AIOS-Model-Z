@@ -122,6 +122,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=config_module.DEFAULT_PATH)
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     # суррогату нужны те же два входа, что и в цикле: состояние фонда из выгрузки
     # базового прогона и опорное расписание дека. Без них он предскажет что

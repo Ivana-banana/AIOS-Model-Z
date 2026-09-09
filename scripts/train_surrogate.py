@@ -58,8 +58,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     settings = config_module.load(arguments.config)
-    frame = load_datasets(arguments.dataset)
+    try:
+        frame = load_datasets(arguments.dataset)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
     frozen = holdout_module.load(Path(arguments.holdout))
     if frozen is None:
         print(f"внешнего теста нет ({arguments.holdout}): сравнение моделей между "
@@ -176,6 +184,18 @@ def load_datasets(paths: list[str]) -> pd.DataFrame:
     labels = [Path(path).stem for path in ordered]
     if len(labels) != len(set(labels)):
         raise ValueError("имена файлов датасетов должны различаться")
+
+    # Пропавший пакет — обычный первый запуск: каталог `data/` под `.gitignore`
+    # и собирается из `runs/`. Отказ словами, а не FileNotFoundError из глубины
+    # pandas; через эту же функцию ходят `holdout_wells` и `freeze_holdout`,
+    # поэтому чинить достаточно здесь (Р-62).
+    absent = [path for path in ordered if not Path(path).is_file()]
+    if absent:
+        raise ValueError(
+            "нет пакетов DoE: " + ", ".join(absent)
+            + ". Каталог data/ не ведётся в git — соберите его "
+              "scripts/build_dataset.py по каталогам прогонов"
+        )
 
     frames = []
     for path, label in zip(ordered, labels, strict=True):

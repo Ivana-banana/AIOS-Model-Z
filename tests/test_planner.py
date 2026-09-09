@@ -325,6 +325,43 @@ def test_injection_inside_the_corridor_is_left_alone(norms):
     assert result == steps
 
 
+def test_the_corridor_ignores_rows_the_methodology_throws_away(norms):
+    """Строку с отрицательным приращением методика выбрасывает целиком — и коридор тоже.
+
+    Планировщик считал отбор только по годным строкам, а закачку — по всем:
+    `bucket["planned"] += max(row["WWIT_Diff"], 0.0)` без фильтра. Аудит
+    (`balance.by_year`, `compensation_problems`) такую строку не видит вовсе.
+    Получалось, что планировщик режет закачку там, где нарушения нет: на
+    синтетике ниже он видел компенсацию 4,28 при потолке 1,30 и резал вчетверо,
+    а аудит на тех же данных не находил ничего.
+
+    У суррогата нефизичных строк бывают тысячи — 22 563 на сценарии с ВНС.
+    """
+    forecast = [
+        produced("2007-01-01", "1", 100.0, 900.0),
+        injected("2007-01-01", "9", 1000.0),
+        # строка, выброшенная методикой целиком: отрицательное приращение нефти
+        {**injected("2007-02-01", "9", 9000.0), "WOMT_Diff": -1.0},
+    ]
+    steps = [step(producers=[prod("1", 30.0)], injectors=[inj("9", 33.0)])]
+
+    assert not balance.compensation_problems(forecast, FLUIDS, ceiling=1.3), (
+        "синтетика подобрана неверно: аудит обязан молчать"
+    )
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(water_balance_rule="compensation", water_tolerance=1.3),
+        FLUIDS,
+    )
+
+    assert decisions == [], (
+        "планировщик режет закачку по строке, которой нет в экономике: "
+        + "; ".join(str(one) for one in decisions)
+    )
+    assert result == steps
+
+
 def test_nothing_to_raise_when_there_are_no_injectors(norms):
     """Расписанием такое не лечится — планировщик молчит, ловит аудит по факту."""
     forecast = [produced("2007-01-01", "1", 100.0, 900.0)]
@@ -1756,9 +1793,17 @@ def test_a_conceded_event_spends_every_quota_bucket(norms):
     _, decisions = planner.enforce(steps, [], norms, limits, FLUIDS)
     conceded = [one for one in decisions if "вопреки квоте" in one.reason]
 
-    assert len(conceded) == 2, "две уступки из трёх мероприятий: первое прошло по квоте"
-    assert any("месяц 2027-02" in one.reason or "год 2027" in one.reason
-               for one in conceded)
+    assert {one.well for one in conceded} == {"B", "C"}, (
+        "две уступки из трёх мероприятий: первое прошло по квоте"
+    )
+    # По каждой исчерпанной корзине — своё объявление. Раньше называлась только
+    # первая (год), и месячное нарушение оставалось необъявленным: приёмка ищет
+    # «на месяц …», не находит и отвергает кандидата, чьё превышение планировщик
+    # объявил вслух (Р-45).
+    for well in ("B", "C"):
+        buckets = {one.resource for one in conceded if one.well == well}
+        assert buckets == {"квота мероприятий, год 2027",
+                           "квота мероприятий, месяц 2027-02"}, buckets
 
 
 def test_a_postponed_event_is_reported_once_not_every_month(norms):
@@ -2337,3 +2382,79 @@ def test_a_recount_after_a_cancelled_event_keeps_the_idle_well_idle():
         "считается вернувшейся из-под закачки"
     )
 
+
+def test_the_annual_volume_cut_names_every_well_it_cut(norms):
+    """Решение выписывается каждой урезанной скважине, а не одной за весь год.
+
+    Годовой и горизонтный объём режут **весь фонд** одним множителем, а решение
+    выпускалось одно на год: от имени первой попавшейся скважины и с её
+    собственной уставкой в `before`/`after`. На сдаваемом расписании это 19
+    решений «скв. 1» при 71 действительно урезанной скважине, и `explain()`
+    печатал «урезано 1 скважин, суммарно 564 м³/сут» при фактических
+    307 362 — занижение в 545 раз. Число уходит не только в текст:
+    `aios/explain.py` кладёт его в слой интерпретируемости, а страница цикла
+    печатает «скважин: 1» (Н-31).
+
+    Дедупликация по году остаётся: внутри года множитель один, и повторять
+    решение каждый месяц незачем.
+    """
+    steps = [ScheduleStep(date(2007, month, 1),
+                          tuple(prod(f"p{number}", 100.0) for number in range(20)),
+                          tuple(inj(f"i{number}", 100.0) for number in range(10)))
+             for month in range(1, 13)]
+    forecast = [make_row(f"2007-{month:02d}-01", f"p{number}", wlpr=100.0,
+                         liquid=3000.0, oil=300.0)
+                for month in range(1, 13) for number in range(20)]
+    forecast += [make_row(f"2007-{month:02d}-01", f"i{number}", wwir=100.0,
+                          injection=3000.0)
+                 for month in range(1, 13) for number in range(10)]
+
+    result, decisions = planner.enforce(
+        steps, forecast, norms,
+        planner.Limits(enforce_water_balance=False,
+                       max_field_liquid_m3_per_year=500_000.0,
+                       max_field_injection_m3_per_year=200_000.0),
+        FLUIDS,
+    )
+
+    assert len({one.well for one in decisions}) == 30, (
+        f"решения выписаны не всем урезанным: {len(decisions)} штук на 30 скважин"
+    )
+    # по одному решению на скважину за год, а не по одному на каждый месяц
+    assert len(decisions) == 30
+
+    produced_cut = (sum(control.liquid_rate for control in steps[0].producers)
+                    - sum(control.liquid_rate or 0.0 for control in result[0].producers))
+    injected_cut = (sum(control.rate for control in steps[0].injectors)
+                    - sum(control.rate or 0.0 for control in result[0].injectors))
+
+    assert sum(one.cut for one in decisions) == pytest.approx(
+        produced_cut + injected_cut, rel=1e-6), (
+        "сумма по решениям расходится с фактической срезкой — отчёт врёт о том, "
+        "что сделал планировщик"
+    )
+
+
+def test_a_zero_capacity_cut_closes_the_injector_like_every_other_cut(norms):
+    """Ноль закрывает нагнетательную — во всех срезках, а не во всех кроме одной.
+
+    `_fit_injection_to_capacity` собирала запись напрямую, минуя `_injecting`, и
+    при нулевом пределе оставляла открытую скважину с приёмистостью 0 — то есть
+    расписание, которое `schedule.validate` сама же бракует («открытая скважина
+    не может закачивать ноль»). Из `config.toml` ноль недостижим, но `casecheck`
+    и всякий прямой конструктор `Limits` читают его как настоящий предел (Р-60).
+    """
+    from aios.schedule import validate as validate_schedule
+
+    steps = [step(injectors=[inj("9", 33.0)])]
+
+    result, _decisions = planner.enforce(
+        steps, [], norms,
+        planner.Limits(enforce_water_balance=False,
+                       max_field_injection_m3_per_day=0.0),
+        FLUIDS,
+    )
+
+    assert result[0].injectors[0].status == "SHUT"
+    assert result[0].injectors[0].rate is None
+    assert validate_schedule(result, {"9"}) == []

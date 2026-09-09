@@ -35,6 +35,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="файл конфигурации (по умолчанию config.toml в корне)")
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     run_dir = Path(arguments.run_dir) if arguments.run_dir else config.case.run_dir
     model_dir = config.case.model_dir

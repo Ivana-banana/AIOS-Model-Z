@@ -64,13 +64,19 @@ def test_average_reading_checks_the_year_not_the_month():
 
 
 def test_annual_volume_is_checked_by_calendar_year():
+    """Корзина — календарный год, а объём шага — его настоящая длительность.
+
+    Числа обновлены 09.09 вместе с Н-24: уставка держится до **следующей**
+    записи, а не до конца своего месяца. Здесь между записями год, поэтому
+    100 м³/сут дают 36 500 м³ за 2007-й, а не 3 100 за один январь.
+    """
     steps = [step(2007, 1, injectors=[inj("9", 100.0)]),
              step(2008, 1, injectors=[inj("9", 10.0)])]
 
     checks = casecheck.check(steps, [], planner.Limits(
         max_field_injection_m3_per_year=1_000.0))
 
-    assert checks[0].value == pytest.approx(3_100.0) and checks[0].where == "2007"
+    assert checks[0].value == pytest.approx(36_500.0) and checks[0].where == "2007"
     assert not checks[0].satisfied
 
 
@@ -367,13 +373,19 @@ def test_minimum_rate_is_the_only_check_that_looks_downward():
     assert check.value == pytest.approx(3.0), "недобор 5 − 2"
     assert "скв. мало" in check.where
 def test_horizon_volume_is_one_basket_not_yearly_ones():
+    """Одна корзина на весь горизонт. Числа — по настоящей длительности шагов.
+
+    Обновлено 09.09 вместе с Н-24: первый шаг держится до второго (365 суток),
+    второй — до конца своего месяца (31), потому что чем он кончится,
+    расписание не говорит.
+    """
     steps = [step(2027, 1, injectors=[inj("W", 100.0)]),
              step(2028, 1, injectors=[inj("W", 100.0)])]
 
     check = casecheck.check(steps, [], planner.Limits(
         max_field_injection_m3_total=1_000.0))[0]
 
-    assert check.value == pytest.approx(6_200.0)
+    assert check.value == pytest.approx(39_600.0)
     assert not check.satisfied and "2027-01 … 2028-01" in check.where
 def test_minimum_rate_sees_an_open_well_with_zero_rate():
     """Открытая запись с нулём — то состояние, которое производят объёмные срезки.
@@ -595,3 +607,124 @@ def test_a_zero_cap_reports_the_first_offender():
     )
     assert breach.value == 100.0, f"в отчёт попал расход не первой скважины: {breach.value}"
 
+
+def test_object_limits_are_read_from_the_fund_state_not_from_step_records():
+    """Шаг без скважины означает «режим не менялся», а не «скважина не работает».
+
+    Объектные пределы считались по составу шага: расписание, где 2030-01
+    назначает двум скважинам по 200 м³/сут, а 2030-02 третьей ещё 200, давало
+    «400 при пределе 500 — соблюдено» вместо настоящих 600, и годовой объём
+    занижался на 38 %. `planner.enforce` разворачивает свой вход с 02.09 — там
+    же в докстринге сказано, что это «одна и та же ошибка в шести функциях», —
+    а приёмка кейса не разворачивала. Внутри того же вызова `max_active_wells`
+    считал по фонду и честно видел три скважины: два ответа на один вопрос.
+    """
+    steps = [
+        ScheduleStep(date(2030, 1, 1),
+                     (ProducerControl("W1", "OPEN", "LRAT", 200.0, 50.0),
+                      ProducerControl("W2", "OPEN", "LRAT", 200.0, 50.0)), ()),
+        ScheduleStep(date(2030, 2, 1),
+                     (ProducerControl("W3", "OPEN", "LRAT", 200.0, 50.0),), ()),
+    ]
+
+    found = {one.key: one for one in casecheck.check(
+        steps, [], planner.Limits(max_field_liquid_m3_per_day=500.0, max_active_wells=2))}
+
+    assert found["max_field_liquid_m3_per_day"].value == 600.0, (
+        "объектный предел посчитан по записям шага, а не по действующему фонду"
+    )
+    assert not found["max_field_liquid_m3_per_day"].satisfied
+    assert found["max_active_wells"].value == 3.0
+
+
+def test_step_length_is_measured_to_the_next_step_not_to_the_end_of_its_month():
+    """Уставка держится до следующей записи, а не до конца календарного месяца.
+
+    Объёмные пределы считали шаг равным его месяцу. На квартальном расписании
+    при уставке 1 000 м³/сут годовой объём выходил 123 000 м³ вместо 365 000, и
+    предел 200 000 объявлялся соблюдённым при превышении почти вдвое. Шаг
+    бывает не месячным и у нас (`--horizon`), и в чужом деке кейса.
+
+    Последний шаг считается до конца своего месяца: чем он кончится, расписание
+    не говорит, и месяц — самое короткое честное допущение. В сдаваемом файле
+    горизонт закрыт отдельной датой без режимов, поэтому на нём это допущение не
+    работает вовсе.
+    """
+    steps = [ScheduleStep(date(2030, month, 1),
+                          (ProducerControl("W1", "OPEN", "LRAT", 1000.0, 50.0),), ())
+             for month in (1, 4, 7, 10)]
+
+    found = {one.key: one for one in casecheck.check(
+        steps, [], planner.Limits(max_field_liquid_m3_per_year=200_000.0))}
+
+    # 90 + 91 + 92 суток по квартальным шагам + 31 сутки хвоста октября
+    assert found["max_field_liquid_m3_per_year"].value == 304_000.0
+    assert not found["max_field_liquid_m3_per_year"].satisfied
+
+
+def test_a_monthly_schedule_is_measured_month_by_month_as_before():
+    """На месячном шаге правило прежнее — иначе правка меняла бы наши же числа."""
+    steps = [ScheduleStep(date(2030, month, 1),
+                          (ProducerControl("W1", "OPEN", "LRAT", 100.0, 50.0),), ())
+             for month in range(1, 13)]
+
+    found = {one.key: one for one in casecheck.check(
+        steps, [], planner.Limits(max_field_liquid_m3_per_year=1_000_000.0))}
+
+    assert found["max_field_liquid_m3_per_year"].value == 100.0 * 365
+
+
+def test_an_addressed_cap_beats_the_type_wide_ceiling_in_the_check_too():
+    """Адресный потолок сильнее потолка по типу — и у планировщика, и у приёмки.
+
+    Проект решил это осознанно (`docs/decisions.md`: «адресный список сильнее
+    потолка по типу: у скважины бывает свой паспорт насоса»), и планировщик так
+    и делает: `cap_for` возвращает адресное значение, даже когда оно выше. А
+    приёмка применяла потолок по типу ко всем без исключения — кейс, назвавший и
+    общий паспорт, и адресное исключение над ним, объявлял недопустимым любого
+    кандидата, включая бездействие (фаззер ревизии, 4 попадания из 400).
+    """
+    steps = [ScheduleStep(date(2007, 1, 1),
+                          (ProducerControl("1", "OPEN", "LRAT", 58.6, 50.0),
+                           ProducerControl("2", "OPEN", "LRAT", 58.6, 50.0)), ())]
+    limits = planner.Limits(max_well_liquid_m3_per_day=45.7,
+                            well_caps_m3_per_day={"1": 58.6})
+
+    found = {one.key: one for one in casecheck.check(steps, [], limits)}
+
+    assert found["max_well_liquid_m3_per_day"].where.startswith("скв. 2"), (
+        "потолок по типу применён к скважине с собственным паспортом"
+    )
+    assert not found["max_well_liquid_m3_per_day"].satisfied, (
+        "скважина без адресного потолка обязана остаться под проверкой"
+    )
+    assert found["well_caps_m3_per_day"].satisfied, (
+        "адресный потолок соблюдён, а проверка говорит обратное"
+    )
+
+
+def test_a_step_crossing_the_new_year_is_split_between_both_years():
+    """Шаг длиннее месяца переходит через новый год — и объём делится.
+
+    Запись с 2007-12-01 до 2008-03-01 держится 91 сутки: 31 в 2007-м и 60 в
+    2008-м. Пока весь срок относился к году НАЧАЛА, годовая корзина 2008-го
+    оказывалась короче на квартал, и годовой предел объявлялся соблюдённым при
+    превышении — та же ложь, что в Н-24, только сдвинутая на границу года
+    (Р-48, ревью ночного дифа).
+    """
+    steps = [
+        ScheduleStep(date(2007, 12, 1),
+                     (ProducerControl("1", "OPEN", "LRAT", 1000.0, 50.0),), ()),
+        ScheduleStep(date(2008, 3, 1),
+                     (ProducerControl("1", "OPEN", "LRAT", 1000.0, 50.0),), ()),
+    ]
+
+    assert casecheck._days_by_year(steps) == [{2007: 31, 2008: 60}, {2008: 31}]
+
+    found = {one.key: one for one in casecheck.check(
+        steps, [], planner.Limits(max_field_liquid_m3_per_year=50_000.0))}
+
+    # 2008-й: 60 суток первого шага + 31 второго = 91 000 м³, а не 31 000
+    assert found["max_field_liquid_m3_per_year"].value == 91_000.0
+    assert found["max_field_liquid_m3_per_year"].where == "2008"
+    assert not found["max_field_liquid_m3_per_year"].satisfied

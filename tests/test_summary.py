@@ -734,3 +734,63 @@ def test_a_drop_exactly_at_the_tolerance_is_not_reported():
     ]
     assert any("уменьшилось" in one for one in summary.sanity_problems(bigger))
 
+
+def test_a_non_numeric_value_is_named_and_not_taken_for_a_zero():
+    """NaN — отсутствие данных, а не ноль, и различать их обязаны мы.
+
+    Эталонный расчётчик подставляет ноль молча (`chdd_model.to_number`:
+    `number if math.isfinite(number) else 0.0`), а всякое сравнение с NaN ложно,
+    поэтому остальные санити-чеки её не видят. Замер ревизии 09.09: одна NaN в
+    `WOMT_Diff` из трёх месяцев — минус 34 % ЧДД при пустом списке нарушений и
+    пустых `diagnostics.warnings`. Ровно тот класс, который CLAUDE.md требует
+    ловить явно: отсутствие данных неотличимо от простоя (Н-33).
+    """
+    good = make_row("2007-01-01", "1", wlpr=10.0, womr=5.0, liquid=10.0, oil=5.0)
+    broken = {**good, "WOMT_Diff": float("nan")}
+
+    assert summary.sanity_problems([good]) == []
+
+    problems = summary.sanity_problems([broken])
+
+    assert problems, "NaN прошла все проверки молча"
+    assert "нечисловое WOMT_Diff" in problems[0]
+    assert "скв. 1" in problems[0] and "2007-01-01" in problems[0]
+
+
+def test_an_infinite_value_is_caught_too():
+    """Бесконечность расчётчик обнуляет тем же правилом, что и NaN."""
+    row = {**make_row("2007-01-01", "1", wlpr=10.0, liquid=10.0),
+           "WLPR": float("inf")}
+
+    assert any("нечисловое WLPR" in one for one in summary.sanity_problems([row]))
+
+
+def test_the_efficiency_column_is_one_not_zero():
+    """`WEFF` — коэффициент эксплуатации, и его умолчание единица, а не ноль.
+
+    Мутационный прогон ревизии: подмена `1.0 → 0` в `monthly_rows` выжила — ни
+    один тест не смотрел на эту колонку. Сегодня цена нулевая: эталонный
+    расчётчик `WEFF` не считает, колонка у него только в списке обязательных.
+    Но колонка входит в контракт «симулятор → экономика», и скрипт выгрузки
+    организаторов пишет туда настоящий коэффициент: на их кейсе ноль означал бы
+    «скважина не работала ни дня» (Р-57).
+    """
+    rows = summary.monthly_rows.__doc__ is not None  # модуль на месте
+    assert rows
+
+    assert "WEFF" in economics.REQUIRED_COLUMNS
+
+    made = make_row("2007-01-01", "1", wlpr=10.0, liquid=10.0)
+    assert made["WEFF"] == 1.0, "коэффициент эксплуатации по умолчанию не единица"
+
+
+def test_wells_sort_numbers_before_names_and_names_alphabetically():
+    """Порядок скважин при смешанных именах закреплён, а не подразумевается.
+
+    Мутация `(1, 0, name)` → `(0, 0, name)` выжила: тестов на фонд из цифровых и
+    буквенных имён не было. У Модели Z имена цифровые, поэтому здесь тихо;
+    валидационный кейс приходит со своим объектом, и имена там любые (Р-58).
+    """
+    names = ["10", "P-2", "2", "A", "1"]
+
+    assert sorted(names, key=summary._well_key) == ["1", "2", "10", "A", "P-2"]

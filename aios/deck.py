@@ -35,6 +35,12 @@ _MONTHS = {
     "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
 }
 _MONTH_NAMES = {number: name for name, number in _MONTHS.items()}
+#: `JLY` — второе каноническое сокращение июля в Eclipse, и деки им пользуются.
+#: Таблица `aios/deckcheck.py` его знала, а разбор — нет: входной контроль дек
+#: пропускал, а `parse_date_record` валилась голым `KeyError('JLY')`. Алиас
+#: добавляется **после** обратной таблицы, чтобы генератор по-прежнему писал
+#: `JUL`: наш файл читает их симулятор, и вторая форма ему не нужна.
+_MONTHS["JLY"] = 7
 
 _TOKEN_RE = re.compile(r"'[^']*'|\"[^\"]*\"|/|\S+")
 _REPEAT_RE = re.compile(r"^(\d+)\*(.*)$")
@@ -366,7 +372,15 @@ def parse_date_record(record: tuple[str | None, ...]) -> date:
     if len(record) < 3 or any(part is None for part in record[:3]):
         raise ValueError(f"Некорректная запись DATES: {record!r}")
     day, month, year = record[0], record[1], record[2]
-    return date(int(str(year)), _MONTHS[str(month).upper()[:3]], int(str(day)))
+    name = str(month).upper()[:3]
+    if name not in _MONTHS:
+        # Голый KeyError('XXX') отсюда уезжал трассировкой во все точки входа,
+        # читающие дек: ни какого месяца не хватает, ни где он встретился.
+        raise ValueError(
+            f"неизвестный месяц в записи DATES: {month!r}. "
+            "Допустимы " + ", ".join(sorted(_MONTHS)) + f"; запись: {record!r}"
+        )
+    return date(int(str(year)), _MONTHS[name], int(str(day)))
 
 
 def format_date_record(value: date) -> str:
@@ -386,8 +400,21 @@ def _tokenize(text: str) -> list[tuple[str, bool]]:
         line = strip_comment(line)
         if not line.strip():
             continue
-        for position, token in enumerate(_TOKEN_RE.findall(line)):
+        position = 0
+        for token in _TOKEN_RE.findall(line):
+            # Пробел перед терминатором формат не требует: `50/` и `2*/` —
+            # законная запись Eclipse, а `\S+` втягивал косую черту в значение,
+            # и блок оказывался «не закрыт одиночным /». Разбор на этом отказывал
+            # целиком. Отрезается только **хвостовая** косая черта: внутри токена
+            # она часть пути (`INCLUDE model/sch.inc` без кавычек — законная
+            # форма, её пишет SPE9 из opm-data).
+            if len(token) > 1 and token.endswith("/") and not token.startswith(("'", '"')):
+                tokens.append((token[:-1], position == 0))
+                tokens.append(("/", False))
+                position += 2
+                continue
             tokens.append((token, position == 0))
+            position += 1
     return tokens
 
 
