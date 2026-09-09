@@ -1632,3 +1632,40 @@ def test_the_shipped_trust_passport_matches_the_shipped_model():
     assert raw["model_hash"] == hashlib.sha256(model.read_bytes()).hexdigest(), (
         "паспорт собран не тем суррогатом, который сдаётся"
     )
+
+
+def test_the_training_report_ships_with_the_model_it_describes():
+    """Отчёт об обучении лежит в репозитории и описывает сдаваемую модель.
+
+    Сама модель в git с Р-197, а отчёт — нет: интерфейс на клоне проверяющего
+    печатал «Модель ещё не обучена: отчёт artifacts/surrogate-metrics.json
+    отсутствует», стоя рядом с файлом модели, и `_neural_available()` из-за
+    этого отключал нейросетевой путь целиком. При том что «качество суррогата»
+    — критерий трека 2, а README называет отчёт в комплекте поставки (Р-266).
+
+    Связь проверяется по содержанию, а не по наличию файла: seed и хэши
+    обучающих CSV в отчёте обязаны совпасть с теми, что зашиты в артефакт, —
+    иначе переобучение разойдётся с документом молча.
+    """
+    import json as json_module
+    import subprocess
+
+    import joblib
+
+    report = ROOT / "artifacts" / "surrogate-metrics.json"
+    assert report.is_file(), "отчёта об обучении нет"
+    tracked = subprocess.run(["git", "ls-files", "artifacts/surrogate-metrics.json"],
+                             cwd=ROOT, capture_output=True, text=True).stdout
+    assert tracked.strip(), "отчёт есть на диске, но не в git — клон его не получит"
+
+    raw = json_module.loads(report.read_text(encoding="utf-8"))
+    model = ROOT / "artifacts" / "surrogate.joblib"
+    if not model.is_file():
+        pytest.skip("нет artifacts/surrogate.joblib")
+
+    bundle = joblib.load(model)
+    assert raw["training"]["seed"] == bundle.metadata["seed"]
+    assert ({one["sha256"] for one in raw["training"]["datasets"]}
+            == {one["sha256"] for one in bundle.metadata["datasets"]}), (
+        "отчёт описывает не ту обучающую выборку, на которой собран артефакт"
+    )

@@ -128,6 +128,15 @@ __pycache__/
 # (`scripts/trust_gate.py --model artifacts/surrogate.joblib --pairs
 # docs/data/margin-pairs-search.csv`), и он в git (Р-265).
 !/artifacts/trust-gate.json
+
+# И пятое: **отчёт об обучении суррогата**, 9 КБ. Найдено той же сверкой с ТЗ:
+# сама модель в git есть (5,4 МБ), а отчёта не было — и интерфейс на клоне
+# проверяющего печатал «Модель ещё не обучена: отчёт отсутствует», стоя рядом с
+# файлом модели. Хуже: `_neural_available()` требует отчёт, то есть без него
+# страница цикла не предлагала нейросетевой путь вовсе. При этом README и
+# `docs/surrogate.md` называют отчёт в комплекте поставки, а «качество
+# суррогата» — критерий трека 2 (Р-266).
+!/artifacts/surrogate-metrics.json
 *.UNSMRY
 *.UNRST
 *.SMSPEC
