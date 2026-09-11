@@ -146,7 +146,11 @@ def measure(deck: Path, chrome: str, timeout: int = 120) -> list[dict]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("deck", nargs="?", type=Path, default=ROOT / "docs" / "slides.html")
+    # Колода задаётся явно. Умолчанием была `docs/slides.html` — наша колода в
+    # репозитории; 11.09 она удалена, действующая презентация собирается вне
+    # репозитория. Умолчание на несуществующий файл молча роняло бы запуск без
+    # аргумента, поэтому путь обязателен.
+    parser.add_argument("deck", type=Path)
     args = parser.parse_args(argv)
 
     if not args.deck.is_file():

@@ -928,7 +928,6 @@ JURY_DOCUMENTS = (
 #: проговаривает словами, — но именно в нём 01.09 нашлось «5 процентов при допуске
 #: в пару», пережившее правку presentation.md.
 LIVE_DOCUMENTS = JURY_DOCUMENTS + (
-    "docs/slides.html",
     "docs/defence-final.md",
     "docs/tz-compliance.md",
     "docs/onboarding-team.md",
@@ -1108,7 +1107,6 @@ DUAL_BASE_DOCUMENTS = (
     "docs/tz-compliance.md",
     "docs/kt2-plan.md",
     "docs/kt2-explained.md",
-    "docs/slides.html",
     "docs/presentation.md",
     "docs/submission.md",
     "docs/submission-day.md",
@@ -1156,156 +1154,16 @@ def test_the_spoken_defence_claims_the_current_triple():
 
 # --- Слайды: показываемый файл обязан говорить то же, что сценарий -----------
 
-def test_slides_carry_the_claimed_triple_and_the_reference_check():
-    """Слайды собраны из docs/presentation.md — числа обязаны совпасть.
-
-    Слайд живёт отдельным файлом и правится отдельно от сценария; именно так
-    26.08 отозванный прирост цикла пережил правку записи и дожил до речи
-    прописью.
-    """
-    slides = _read("docs/slides.html")
-
-    for number in ("13 133,8", "11 851,8", "+1 281,9", "+10,8 %"):
-        assert number in slides, f"слайды не называют {number}"
-    for number in ("5 218,9", "5 207,7", "5 157,0", "1,20 %"):
-        assert number in slides, f"слайды не называют число сверки {number}"
-    for forbidden in ("774,9", "60,4 %", "4 771"):
-        assert forbidden not in slides, f"слайды называют отозванное: {forbidden}"
 
 
-def test_slides_keep_the_nine_speaking_slides_and_mark_the_spares():
-    """Девять слайдов доклада и три запасных — ровно так расписан хронометраж."""
-    slides = _read("docs/slides.html")
-
-    assert slides.count("<section") == 12
-    assert slides.count('class="backup"') == 3
-    for mark in ("1 / 9", "5 / 9 · 1:00 · главный", "7 / 9 · 1:00 · не сокращать", "9 / 9"):
-        assert mark in slides, f"в слайдах нет отметки «{mark}»"
 
 
-def test_slides_name_the_limits_count_the_code_actually_has():
-    """«Сколько ключей ограничений» слайды берут не из памяти, а из `Limits`.
-
-    Слайды собраны 01.09, когда ключей было 27; за ночь 01→02.09 их стало 33, и
-    все документы это подхватили — кроме показываемого файла. Расхождение нашлось
-    02.09 сверкой слайдов с кодом, а не тестом: сторожа на это число не было.
-    Ставим его здесь, потому что слайд — единственный документ, который жюри
-    видит глазами, и правится он отдельно от всех остальных.
-    """
-    import dataclasses
-    import sys
-
-    sys.path.insert(0, str(ROOT))
-    from aios.config import Limits
-
-    count = len(dataclasses.fields(Limits))
-    slides = _read("docs/slides.html")
-
-    assert count == 33, "число ключей изменилось — обновить слайды и этот тест"
-    assert f"{count} ключа" in slides, f"слайды не называют {count} ключей [limits]"
-    assert "27 ключ" not in slides, "в слайдах осталось прежнее число ключей"
 
 
-def _speed_measurement() -> tuple[float, float]:
-    """Замер 01.09: секунды полного расчёта ГГДМ и во сколько раз быстрее MLP.
-
-    Источник — запись «Ускорение прогноза измерено» в `docs/experiments.md`: она
-    в репозитории и есть на любой машине. Машиночитаемый слепок
-    `artifacts/forecast-speed.json` лежит только у той машины, что мерила
-    (`artifacts/` не отслеживается), поэтому читать его как **единственный**
-    источник значило бы ронять сбор у всех остальных и в чистом клоне, где
-    `docs/clean-clone-check.md` требует «0 падений». Слепок не выброшен: когда он
-    есть, он сверяется с журналом — расхождение между тем, что померили, и тем,
-    что записали, ловится здесь же (Р-161).
-    """
-    import json
-    import re
-
-    section = _read("docs/experiments.md").split("## Ускорение прогноза измерено", 1)[1]
-    section = section.split('\n## ', 1)[0]
-    ggdm_seconds = float(re.search(r"\| полный расчёт.*?\*\*(\d+) с\*\*", section).group(1))
-    speedup = float(
-        re.search(r"\| обученный суррогат.*?\*\*в ([\d ]+) раз\*\*", section)
-        .group(1).replace(" ", ""))
-
-    artifact = ROOT / "artifacts" / "forecast-speed.json"
-    if artifact.is_file():
-        speed = json.loads(artifact.read_text(encoding="utf-8"))
-        mlp = next(one for one in speed["замеры"] if one["модель"] == "MLP по сценариям DoE")
-        assert speed["ггдм_секунд"] == ggdm_seconds, (
-            "журнал разошёлся с замером по времени ГГДМ")
-        assert round(mlp["быстрее ГГДМ, раз"]) == speedup, (
-            "журнал разошёлся с замером по ускорению")
-
-    return ggdm_seconds, speedup
 
 
-def test_slides_price_of_transfer_follows_the_speed_measurement():
-    """Цена переноса в часах пересчитывается из замера, а не переписывается.
-
-    В слайдах стояло «≈ 60 прогонов ≈ 11 часов» при 825 с на расчёт: 11 часов —
-    это 60 × 660 с, то есть замер **первой** машины, тогда как ускорение 1 668 раз
-    рядом взято из замера второй. Ровно тот след дублирования, о котором
-    предупреждает `HANDOFF.md`: числа из двух разных замеров сошлись на одном
-    слайде.
-    """
-    ggdm_seconds, speedup_times = _speed_measurement()
-
-    hours = round(60 * ggdm_seconds / 3600)
-    speedup = f"{speedup_times:,.0f}".replace(",", " ")
-
-    slides = _read("docs/slides.html")
-    assert hours == 14, "замер изменился — обновить слайды"
-    assert f"≈ 60 прогонов ≈ {hours} часов" in slides, "слайды не называют цену переноса замером"
-    assert f"{speedup} раз" in slides, "слайды не называют измеренное ускорение"
-    assert "11 часов" not in slides, "в слайдах осталась цена переноса из чужого замера"
 
 
-def test_the_spare_slide_names_the_donor_transfer_with_both_numbers():
-    """Запасной слайд про масштабируемость обязан нести перенос донорами.
-
-    Им отвечают на замечание трекера про MLP, и оба числа называются вместе:
-    85 % по нефти и 25 % по закачке. Перенос неравноценный, и подавать его без
-    второго числа — та же подача, что скорость без точности (Р-193).
-    """
-    slides = _read("docs/slides.html")
-    start = slides.index("Масштабируемость и цена переноса")
-    section = slides[start:slides.index("</section>", start)]
-
-    assert "донор" in section, "слайд не называет механизм переноса"
-    assert "85 %" in section and "25 %" in section, "названо не оба числа"
-
-
-def test_no_slide_carries_more_text_than_the_measured_maximum():
-    """Вес текста слайда не выше того, что уже мерилось браузером.
-
-    Переполнение сцены 1920×1080 меряется только в браузере, и на машине без
-    него добавлять текст вслепую нельзя. Консервативная граница: ни один слайд
-    не тяжелее самого тяжёлого из **измеренных** 02.09 — тогда все двенадцать
-    занимали 431–796 из 880 пикселей. Слайд, перешагнувший эту границу, обязан
-    быть перемерен, а не принят на веру.
-    """
-    import re
-
-    slides = _read("docs/slides.html")
-    measured = 773  # слайд «Заявляемое число»: 796 из 880 пикселей при 773 знаках
-
-    worst = []
-    for section in re.findall(r"<section[^>]*>.*?</section>", slides, re.S):
-        body = re.search(r'<div class="slide-body">(.*?)</div>\s*<div class="src"',
-                         section, re.S)
-        if body is None:
-            continue
-        text = " ".join(re.sub(r"<[^>]+>", " ", body.group(1)).split())
-        if len(text) > measured:
-            head = re.search(r"<h[12][^>]*>(.*?)</h[12]>", section, re.S)
-            name = " ".join(re.sub(r"<[^>]+>", "", head.group(1)).split()) if head else "?"
-            worst.append(f"{name}: {len(text)} знаков")
-
-    assert not worst, (
-        "слайд тяжелее измеренного максимума — перемерить в браузере: "
-        + "; ".join(worst)
-    )
 
 
 def test_the_reference_gap_names_the_flag_it_was_measured_with():
@@ -1495,59 +1353,21 @@ def test_the_rehearsal_numbers_are_the_same_in_every_document_that_names_them():
         )
 
 
-def test_no_slide_overflows_the_stage_on_a_machine_with_a_browser():
-    """Ни один слайд не выходит за сцену 1920×1080 — проверено браузером.
-
-    До 05.09 это была ручная работа перед защитой: Р-207 записал «слайды стоит
-    перемерить на машине с браузером» и действовал вместо замера консервативной
-    границей по числу знаков. Граница подвела — первый же замер нашёл **два**
-    непоместившихся слайда из двенадцати: главный «Заявляемое число» на 44
-    пикселя и запасной 3 на 15.
-
-    Цена молчаливая: `checkOverflow` рисует красную рамку только в браузере и
-    только у показанного слайда, а в печати рамка скрыта намеренно. То есть в
-    PDF, который уходит жюри, лишнее срезается без единого признака — так 02.09
-    уже пропал пункт со слайда 5.
-
-    Пропуск без браузера: на машине без Chromium мерить нечем, и это законный
-    исход — но тогда замер обязателен на машине с браузером перед защитой.
-    """
-    import sys
-
-    import pytest
-
-    sys.path.insert(0, str(ROOT / "scripts"))
-    try:
-        import measure_slides
-    finally:
-        sys.path.pop(0)
-
-    chrome = measure_slides.browser()
-    if chrome is None:
-        pytest.skip("Chromium на этой машине нет — слайды мерить нечем")
-
-    slides = measure_slides.measure(ROOT / "docs" / "slides.html", chrome)
-
-    assert len(slides) == 12, f"колода изменилась: слайдов {len(slides)}, ждали 12"
-    over = [f"{one['n']} ({one['stamp']}): лишних {one['over']} px"
-            for one in slides if one["flagged"]]
-    assert not over, "слайды не помещаются в сцену, в PDF они срежутся молча: " + "; ".join(over)
 
 
-def test_the_deck_cites_the_tag_that_is_actually_current():
-    """Слайд заявки ссылается на действующий тег, а не на тег отозванной заявки.
+def test_the_passport_names_exactly_one_current_tag():
+    """Паспорт дня отправки называет действующий тег ровно один раз.
 
-    Слайд 2 — «Заявляемое число», единственное место, где жюри видит источник
-    нашей тройки. До 05.09 он называл `submit-2026-08-24.1` — тег состояния, где
-    заявлялось 13 133,8 при базе дисконтирования 2007. Само число на слайде при
-    этом было действующее (5 579,5 при базе 1991): слайд отправлял проверяющего
-    к тегу, который его не подтверждает.
-
-    Действующий тег берётся из паспорта дня отправки, а не из памяти — но по
-    **явному якорю**, а не по порядку упоминаний. До 08.09 тест брал первый
-    попавшийся в паспорте тег и сломался, как только исторический протокол
-    холостого прогона 04.09 законно назвал тег, действовавший в тот день:
+    Якорь «**Действующий тег заявки — `…`**» — единственный способ отличить
+    действующий тег от тегов, законно упомянутых в исторических протоколах. До
+    08.09 тест брал первый попавшийся в паспорте тег и сломался, как только
+    протокол холостого прогона 04.09 назвал тег, действовавший в тот день:
     правило «первый упомянутый» объявляло действующей запись о прошлом.
+
+    До 11.09 тест сверял с этим якорем ещё и колоду `docs/slides.html` — слайд
+    заявки называл тег, и до 05.09 называл тег отозванной заявки. Колода
+    удалена: действующая презентация собирается вне репозитория, и сверять в
+    ней нечего. Проверка паспорта остаётся — она и была первой половиной.
     """
     import re
 
@@ -1559,13 +1379,7 @@ def test_the_deck_cites_the_tag_that_is_actually_current():
         "в паспорте дня отправки действующий тег назван не ровно один раз: "
         f"{anchored}"
     )
-    tag = anchored[0]
-
-    slides = _read("docs/slides.html")
-    named = set(re.findall(r"submit-\d{4}-\d{2}-\d{2}(?:\.\d+)?", slides))
-    assert named <= {tag}, (
-        f"слайды называют не действующий тег: {sorted(named - {tag})}, действует {tag}"
-    )
+    assert anchored[0].startswith("submit-"), anchored
 
 
 def test_jury_documents_do_not_discount_the_claim_from_the_retracted_base():
@@ -1588,7 +1402,7 @@ def test_jury_documents_do_not_discount_the_claim_from_the_retracted_base():
     year = trace["startYear"]
     assert year == 2007, f"окно заявки изменилось на {year} — обновить документы и этот тест"
 
-    for name in ("docs/slides.html", "docs/presentation.md", "docs/defence-final.md",
+    for name in ("docs/presentation.md", "docs/defence-final.md",
                  "docs/team-brief.md"):
         document = _read(name)
         for wrong in ("заявка считается от 1991", "заявка считается от 1991 года"):
