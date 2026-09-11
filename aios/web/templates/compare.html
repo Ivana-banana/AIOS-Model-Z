@@ -33,17 +33,19 @@
     </div>
     <div class="tile">
       <div class="label">Пусков и остановок</div>
-      <div class="value">{{ right_npv.start_stop_count - left_npv.start_stop_count }}</div>
+      <div class="value">{{ '%+d'|format(right_npv.start_stop_count - left_npv.start_stop_count) }}</div>
     </div>
     <div class="tile">
       <div class="label">Переводов под закачку</div>
-      <div class="value">{{ right_npv.conversion_count - left_npv.conversion_count }}</div>
+      <div class="value">{{ '%+d'|format(right_npv.conversion_count - left_npv.conversion_count) }}</div>
     </div>
   </div>
   <p class="muted" style="margin-top:12px">
     Оба числа посчитаны эталонным расчётчиком организаторов от
     {{ settings.economics.start_date }} — сравнение корректно только потому, что
-    считает их одна и та же программа с одними нормативами.
+    считает их одна и та же программа с одними нормативами. Плитки со знаком —
+    это <strong>разница</strong> «{{ right.name }}» минус «{{ left.name }}», а не
+    счёт по одному сценарию: ноль означает «столько же, сколько в базе».
   </p>
 </section>
 

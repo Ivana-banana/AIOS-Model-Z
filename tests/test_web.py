@@ -556,6 +556,44 @@ def test_compare_shows_both_numbers_and_the_difference(two_runs):
     assert "Кто дал разницу" in response.text
 
 
+def test_compare_marks_the_event_tiles_as_differences(two_runs):
+    """Счётчики событий на `/compare` — разница, и это должно быть видно.
+
+    Плитки «Пусков и остановок» и «Переводов под закачку» печатали голую
+    разность, а соседние (нефть, жидкость, закачка) — со знаком. Совпадение
+    сценариев по событиям давало «0», неотличимый от абсолютного счёта: на
+    слайде интерфейса 11.09 это читалось как «система не сделала ни одного
+    перевода под закачку», тогда как в сдаваемом файле их десять
+    (`scripts/check_submission.py`). Знак и подпись под плитками отличают
+    «столько же, сколько в базе» от «ни одного».
+    """
+    client = TestClient(create_app(two_runs))
+    text = client.get("/compare", params={"a": "base", "b": "tuned"}).text
+
+    # Сверять подстрокой «+0» нельзя: соседние плитки печатают «+0.0», и
+    # сторож остаётся зелёным со снятым фиксом. Берём значение именно той
+    # плитки, чья подпись проверяется.
+    def tile(label: str) -> str:
+        found = re.search(
+            r'<div class="label">' + re.escape(label)
+            + r'</div>\s*<div class="value">\s*([^<]*?)\s*</div>',
+            text,
+        )
+        assert found, f"плитки «{label}» нет на странице"
+        return found.group(1)
+
+    for label in ("Пусков и остановок", "Переводов под закачку"):
+        value = tile(label)
+        assert value.startswith(("+", "-", "−")), (
+            f"«{label}» печатает {value!r} без знака — ноль тут неотличим от "
+            "абсолютного счёта событий"
+        )
+
+    assert "разница" in text and "минус" in text, (
+        "под плитками нет подписи, объясняющей, что это разница, а не счёт"
+    )
+
+
 def test_compare_attributes_the_difference_to_wells(two_runs):
     """Разница, собранная на двух-трёх скважинах, — признак хрупкого решения."""
     client = TestClient(create_app(two_runs))
