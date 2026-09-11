@@ -25,12 +25,14 @@
 from __future__ import annotations
 
 from calendar import monthrange
+from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from aios.deck import ScheduleStep
 from aios.margin import counted_by_methodology
-from aios.planner import Limits, events_of, fund_states
+from aios.planner import Limits, events_of, expand_deltas, fund_states
 
 
 @dataclass(frozen=True)
@@ -72,8 +74,19 @@ def check(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     Возвращает по одной записи на объявленный ключ — в том числе на соблюдённый:
     «условие проверено и держится» такой же результат приёмки, как нарушение, и
     именно его требует протокол.
+
+    **Шаги разворачиваются в состояние фонда, а не читаются как записи.** В деке
+    запись действует до следующей записи по той же скважине: шаг, где скважина не
+    упомянута, означает «режим не менялся», а не «скважина не работает». Пока
+    развёртки здесь не было, объектные пределы считались по составу шага —
+    расписание, где 2030-01 назначает двум скважинам по 200 м³/сут, а 2030-02
+    третьей ещё 200, давало «400 при пределе 500 — соблюдено» вместо настоящих
+    600, и годовой объём занижался на 38 %. `planner.enforce` разворачивает свой
+    вход с 02.09 (там же в докстринге: «три high из ревизии — одна и та же ошибка
+    в шести функциях»), а приёмка кейса — нет; внутри этого модуля `_active_wells`
+    уже считал по фонду и потому в том же вызове честно видел три скважины.
     """
-    steps = list(steps)
+    steps = expand_deltas(list(steps))
     checks: list[LimitCheck] = []
 
     if limits.max_field_liquid_m3_per_day is not None:
@@ -86,6 +99,7 @@ def check(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                                   average=limits.field_limits_are_annual_average))
     if limits.max_well_liquid_m3_per_day is not None:
         checks.append(_well_rate(steps, limits.max_well_liquid_m3_per_day,
+                                 addressed=frozenset(limits.well_caps_m3_per_day or {}),
                                  key="max_well_liquid_m3_per_day", producers=True))
     if limits.max_well_injection_m3_per_day is not None:
         checks.append(_well_rate(steps, limits.max_well_injection_m3_per_day,
@@ -164,11 +178,11 @@ def _field_rate(steps: list[ScheduleStep], limit: float, *, key: str,
 
     volume: dict[int, float] = {}
     days: dict[int, int] = {}
-    for step in steps:
-        span = monthrange(step.date.year, step.date.month)[1]
-        volume[step.date.year] = volume.get(step.date.year, 0.0) + \
-            sum(_rates(step, producers=producers).values()) * span
-        days[step.date.year] = days.get(step.date.year, 0) + span
+    for step, parts in zip(steps, _days_by_year(steps), strict=True):
+        rate = sum(_rates(step, producers=producers).values())
+        for year, span in parts.items():
+            volume[year] = volume.get(year, 0.0) + rate * span
+            days[year] = days.get(year, 0) + span
     best, where = 0.0, "—"
     for year, total in volume.items():
         rate = total / days[year]
@@ -178,10 +192,24 @@ def _field_rate(steps: list[ScheduleStep], limit: float, *, key: str,
 
 
 def _well_rate(steps: list[ScheduleStep], limit: float, *, key: str,
-               producers: bool) -> LimitCheck:
+               producers: bool, addressed: frozenset[str] = frozenset()) -> LimitCheck:
+    """Потолок по типу — для скважин, у которых нет своего.
+
+    `addressed` — скважины, названные в `well_caps_m3_per_day`. Проект решил
+    (`docs/decisions.md`, «адресный список сильнее потолка по типу»), что у
+    скважины бывает свой паспорт насоса и он побеждает; планировщик так и
+    делает — `cap_for` возвращает адресное значение, даже когда оно выше. А
+    приёмка применяла потолок по типу ко всем без исключения, и кейс, назвавший
+    и общий паспорт, и адресное исключение над ним, объявлял недопустимым любого
+    кандидата, включая бездействие (фаззер ревизии, 4 попадания из 400).
+
+    Названные скважины проверяет `_well_caps` — своим, адресным числом.
+    """
     best, where = 0.0, "—"
     for step in steps:
         for well, rate in _rates(step, producers=producers).items():
+            if well in addressed:
+                continue
             if rate > best:
                 best, where = rate, f"скв. {well}, {_stamp(step)}"
     return LimitCheck(key=key, limit=limit, value=best, where=where, unit="м³/сут")
@@ -198,13 +226,59 @@ def _group_rate(steps: list[ScheduleStep], members: frozenset[str], limit: float
     return LimitCheck(key=key, limit=limit, value=best, where=where, unit="м³/сут")
 
 
+def _spans(steps: list[ScheduleStep]) -> list[int]:
+    """Сколько суток действует каждый шаг: до следующего, а не до конца месяца.
+
+    Уставка в деке держится до следующей записи. Считать шаг равным его
+    календарному месяцу верно ровно тогда, когда шаг месячный, — а `--horizon`
+    и чужой дек бывают квартальными и годовыми. На квартальном расписании при
+    уставке 1 000 м³/сут годовой объём выходил 123 000 м³ вместо 365 000, и
+    предел 200 000 объявлялся соблюдённым при превышении почти вдвое (Н-24).
+
+    Последний шаг длится до конца своего месяца: чем он кончится, расписание не
+    говорит, и месяц — самое короткое честное допущение.
+    """
+    spans: list[int] = []
+    for index, step in enumerate(steps):
+        if index + 1 < len(steps):
+            spans.append(max((steps[index + 1].date - step.date).days, 0))
+        else:
+            spans.append(monthrange(step.date.year, step.date.month)[1]
+                         - step.date.day + 1)
+    return spans
+
+
+def _days_by_year(steps: list[ScheduleStep]) -> list[dict[int, int]]:
+    """Сутки каждого шага, разложенные по календарным годам.
+
+    Шаг длиннее месяца переходит через новый год: запись с 2007-12-01 до
+    2008-03-01 держится 91 сутки, из них 31 в 2007-м и 60 в 2008-м. Пока весь
+    срок относился к году **начала**, годовая корзина 2008-го оказывалась
+    короче на квартал — и годовой предел объявлялся соблюдённым при превышении.
+    Та же ложь, что в Н-24, только сдвинутая на границу года (Р-48, ревью
+    ночного дифа).
+    """
+    by_step: list[dict[int, int]] = []
+    for step, span in zip(steps, _spans(steps), strict=True):
+        parts: dict[int, int] = {}
+        left, moment = span, step.date
+        while left > 0:
+            end_of_year = date(moment.year, 12, 31)
+            days = min(left, (end_of_year - moment).days + 1)
+            parts[moment.year] = parts.get(moment.year, 0) + days
+            left -= days
+            moment = date(moment.year + 1, 1, 1)
+        by_step.append(parts)
+    return by_step
+
+
 def _annual_volume(steps: list[ScheduleStep], limit: float, *, key: str,
                    producers: bool) -> LimitCheck:
     volume: dict[int, float] = {}
-    for step in steps:
-        span = monthrange(step.date.year, step.date.month)[1]
-        volume[step.date.year] = volume.get(step.date.year, 0.0) + \
-            sum(_rates(step, producers=producers).values()) * span
+    for step, parts in zip(steps, _days_by_year(steps), strict=True):
+        rate = sum(_rates(step, producers=producers).values())
+        for year, span in parts.items():
+            volume[year] = volume.get(year, 0.0) + rate * span
     best, where = 0.0, "—"
     for year, total in volume.items():
         if total > best:
@@ -216,8 +290,7 @@ def _horizon_volume(steps: list[ScheduleStep], limit: float, *, key: str,
                     producers: bool) -> LimitCheck:
     """Объём за весь горизонт — одна корзина вместо годовых."""
     total = 0.0
-    for step in steps:
-        span = monthrange(step.date.year, step.date.month)[1]
+    for step, span in zip(steps, _spans(steps), strict=True):
         total += sum(_rates(step, producers=producers).values()) * span
     span_from = f"{steps[0].date:%Y-%m}" if steps else "—"
     span_to = f"{steps[-1].date:%Y-%m}" if steps else "—"
@@ -317,6 +390,24 @@ def _events_per_period(steps: list[ScheduleStep], limit: int, *, period: str) ->
     name = "max_events_per_year" if period == "year" else "max_events_per_month"
     return LimitCheck(key=name, limit=float(limit), value=float(best),
                       where=where, unit="мероприятий")
+
+
+def announced_for(check: LimitCheck, decisions: Iterable[Any]) -> bool:
+    """Объявил ли планировщик уступку **в том же периоде**, где нарушение.
+
+    Совпадения по виду условия мало: годовая и месячная квоты считаются по
+    разным периодам, и уступка в одном году ничего не говорит о другом. Пока
+    цикл спрашивал только «была ли уступка вообще», одна объявленная уступка
+    гасила квоту целиком: 22 мероприятия против предела 1 в 2019 проходили
+    fail-closed, если уступка объявлена хоть в каком-нибудь году (Н-19).
+
+    Правило одно на цикл и на репетицию: два ответа на один вопрос разошлись бы
+    молча, а здесь цена расхождения — пропущенное нарушение условия кейса.
+    """
+    period = "год" if check.key.endswith("_per_year") else "месяц"
+    needle = f"на {period} {check.where}"
+    return any("вопреки квоте" in decision.reason and needle in decision.reason
+               for decision in decisions)
 
 
 def _active_wells(steps: list[ScheduleStep], limit: int) -> LimitCheck:

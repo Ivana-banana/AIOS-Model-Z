@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -66,8 +67,39 @@ addEventListener('load', () => setTimeout(() => {
 """
 
 
+#: Кэш браузеров playwright: `playwright install chromium` кладёт Chromium сюда,
+#: в профиль пользователя, а не в систему. Для машины без Chrome и Edge это
+#: единственный способ получить браузер, не ставя его всем пользователям и не
+#: требуя прав администратора — а замер обязателен перед защитой (Р-232).
+#: Каталог версионирован (`chromium-1200`), поэтому ищется маской.
+PLAYWRIGHT_CACHES = (
+    Path.home() / "AppData" / "Local" / "ms-playwright",
+    Path.home() / ".cache" / "ms-playwright",
+    Path.home() / "Library" / "Caches" / "ms-playwright",
+)
+PLAYWRIGHT_BINARIES = (
+    "chromium-*/chrome-win64/chrome.exe",
+    "chromium-*/chrome-win/chrome.exe",
+    "chromium-*/chrome-linux/chrome",
+    "chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+)
+
+
+#: Признак «браузера на этой машине считать, что нет».
+#:
+#: `PLAYWRIGHT_BROWSERS_PATH` прячет только кэш playwright и не может спрятать
+#: Chrome, установленный в систему: его находит `shutil.which` первой же
+#: строкой. Значит, клон с системным браузером снова отвечал бы 21 пропуском
+#: против обещанных жюри 22 — ровно тем отказом, который Р-259 и закрывал,
+#: только другим путём (Р-262). Спрятать браузер нечем, кроме явного признака:
+#: подменять `PATH` нельзя — по нему подпроцесс ищет и сам Python.
+NO_BROWSER = "AIOS_NO_BROWSER"
+
+
 def browser() -> str | None:
     """Путь к Chromium-браузеру или None, если его на машине нет."""
+    if os.environ.get(NO_BROWSER):
+        return None
     for name in ("google-chrome", "chromium", "chromium-browser", "chrome"):
         found = shutil.which(name)
         if found:
@@ -75,6 +107,19 @@ def browser() -> str | None:
     for path in BROWSERS:
         if Path(path).is_file():
             return path
+    # `PLAYWRIGHT_BROWSERS_PATH` — переменная самого playwright, а не наша
+    # выдумка: ею задают каталог браузеров. Её же выставляет `clean_clone_check`,
+    # чтобы клон мерил ту среду, которую README обещает жюри, — установку по
+    # `requirements-dev.txt`, где браузера нет.
+    chosen = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    caches = (Path(chosen),) if chosen else PLAYWRIGHT_CACHES
+    for cache in caches:
+        for pattern in PLAYWRIGHT_BINARIES:
+            # sorted — чтобы из нескольких установленных версий бралась одна и
+            # та же: замер обязан повторяться, а не зависеть от порядка обхода
+            for path in sorted(cache.glob(pattern)):
+                if path.is_file():
+                    return str(path)
     return None
 
 

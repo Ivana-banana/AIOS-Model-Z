@@ -38,7 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=holdout_module.DEFAULT_PATH)
     arguments = parser.parse_args(argv)
 
-    frame = load_datasets(arguments.dataset)
+    try:
+        frame = load_datasets(arguments.dataset)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
     scenarios = sorted(frame["scenario"].astype(str).unique())
     try:
         frozen = holdout_module.freeze(

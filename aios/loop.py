@@ -205,6 +205,13 @@ def run_cycle(surrogate: Surrogate,
 
     origin = (base_steps if start_multipliers is None
               else optimise.apply_start(base_steps, start_multipliers))
+    # Предел дебита жидкости — из таблицы ЭЦН ТЕХ нормативов, по которым считается
+    # ЧДД этого прогона, а не литерал 500 от Модели Z. Считается один раз и идёт
+    # в оба места: в сборку кандидатов и в проверку результата. Пока он доходил
+    # только до проверки, на кейсе с верхним насосом до 320 м³/сут уставка
+    # зажималась до 500, проверка объявляла её запрещённой, и поиск не собирал
+    # ни одного кандидата с множителем больше единицы (Н-18).
+    rate_ceiling = liquid_limit(economics.load_norms(norms_file)[1])
     step("прогноз базы")
     base_rows = surrogate.predict(origin)
     base = _npv(base_rows, start_date, norms_file)
@@ -217,6 +224,14 @@ def run_cycle(surrogate: Surrogate,
             choices = optimise.choose_joint_rates(
                 surrogate, base_steps, start_date=start_date,
                 limits=limits, norms=norms, fluids=fluids,
+                # Тот же перенос истории, с каким приводит цикл: иначе поиск
+                # ранжирует кандидатов по числу, которого в цикле не будет
+                # (Н-39).
+                carried_water=_carried_water(
+                    history_rows,
+                    min((one.date.year for one in base_steps), default=None),
+                    limits, fluids,
+                ),
                 # набор множителей задаётся снаружи: узкий набор держит поиск
                 # ближе к обучающим сценариям, широкий уводит из области
                 # доверия — и то и другое надо уметь померить (Б31)
@@ -230,6 +245,8 @@ def run_cycle(surrogate: Surrogate,
                 # не мешает применить область одной модели к прогнозу другой.
                 # `None` у артефактов до 22.08 — поиск работает как раньше
                 region=getattr(getattr(surrogate, "bundle", None), "trust_region", None),
+                # тот же потолок кейса, каким собирается итоговое расписание
+                max_liquid_rate=rate_ceiling,
                 margin=margin,
                 seed=search_seed,
                 norms_file=norms_file,
@@ -243,6 +260,7 @@ def run_cycle(surrogate: Surrogate,
             # «прирост» сравнивал две разные точки отсчёта (2.1 #8).
             choices = optimise.choose_rates(
                 surrogate, origin, norms, start_date=start_date,
+                max_liquid_rate=rate_ceiling,
                 **({} if multipliers is None else {"multipliers": multipliers}),
             )
             frame = list(origin)
@@ -252,7 +270,8 @@ def run_cycle(surrogate: Surrogate,
         # бы от одного сценария, а расписание собиралось из другого (Р-190).
         # Множители осмысленны только в той системе координат, в которой их
         # искали, поэтому применяются к ней же.
-        tuned = optimise.apply_choices(frame, choices) if choices else list(origin)
+        tuned = (optimise.apply_choices(frame, choices, max_liquid_rate=rate_ceiling)
+                 if choices else list(origin))
 
     forecast = surrogate.predict(tuned)
     step("политика остановок")
@@ -271,6 +290,14 @@ def run_cycle(surrogate: Surrogate,
     shut_wells = {action.well for action in converted}
     actions = [action for action in actions if action.well not in shut_wells] + converted
     steps = apply(tuned, actions)
+    # Замысел кандидата — до планировщика. Расстояние до доверенной области
+    # меряется по нему, а не по приведённому расписанию (Р-190): обучающие точки
+    # области собраны из множителей DoE, то есть тоже из замыслов. Планировщик
+    # режет закачку по годам, у нагнетателей появляется признак «размах»,
+    # которого в обучении не было ни у одного сценария, и расстояние улетает.
+    # `optimise._value_of` так и делает с 03.09, а цикл продолжал мерить после
+    # планировщика — та же функция с двух разных входов (Н-15).
+    intent = list(steps)
 
     # последним слово за планировщиком: скважинные агенты предлагают, глядя каждый
     # на себя, а вода и мощность по жидкости принадлежат объекту целиком
@@ -286,7 +313,7 @@ def run_cycle(surrogate: Surrogate,
             limits, fluids,
         )
         step("приведение к ограничениям объекта")
-        steps, allocations = _enforce_to_fixed_point(
+        steps, allocations, converged = _enforce_to_fixed_point(
             surrogate, steps, norms, limits, fluids, carried
         )
 
@@ -301,10 +328,23 @@ def run_cycle(surrogate: Surrogate,
     rows = surrogate.predict(steps)
     result = _npv(rows, start_date, norms_file)
     region = getattr(getattr(surrogate, "bundle", None), "trust_region", None)
-    distance = optimise._distance_of(surrogate, steps, region)
+    distance = optimise._distance_of(surrogate, intent, region)
     safe_chdd = trust.safe_value(result.chdd_m, distance, margin)
 
     warnings = list(surrogate.in_training_range(steps))
+    if limits is not None and not converged:
+        # Выход по исчерпанию проходов не помечался ничем, и расписание уезжало
+        # молча. А чередование «объёмный предел режет — нижняя граница коридора
+        # добирает» не сходится в принципе: чем кончится, решает чётность числа
+        # проходов, а не сходимость (фаззер ревизии, 400 сценариев). Само
+        # нарушение назовёт `_case_problems`; здесь называется его причина,
+        # иначе оператор ищет её в кандидате, а она в противоречии условий.
+        warnings.insert(0, (
+            f"приведение к ограничениям не сошлось за {MAX_ENFORCE_PASSES} прохода: "
+            "срезка и добор чередуются. Итог зависит от числа проходов, а не от "
+            "сходимости — проверьте, не противоречат ли объёмный предел закачки и "
+            "нижняя граница коридора компенсации друг другу"
+        ))
     warnings.extend(_baseline_outside_the_corridor(base_rows, limits, fluids,
                                                    history_rows))
     # Причины, по которым кандидат обязан пойти на полный расчёт, до 03.09
@@ -323,7 +363,7 @@ def run_cycle(surrogate: Surrogate,
     # ЧДД этого прогона, а не из литерала 500 от Модели Z (Б28)
     problems = validate(
         steps, known_wells,
-        max_liquid_rate=liquid_limit(economics.load_norms(norms_file)[1]),
+        max_liquid_rate=rate_ceiling,
         # предел давления нагнетания — свойство кейса, а не Модели Z: у неё во всей
         # истории 300 атм, и это умолчание, а не физический закон (ревизия 2.3 #5)
         **({} if limits is None or limits.max_injector_bhp_atm is None
@@ -331,7 +371,7 @@ def run_cycle(surrogate: Surrogate,
     )
     # Fail-closed: планировщик прошёл — это ещё не «условия кейса соблюдены».
     # Считается по тому же прогнозу, по которому посчитан ЧДД кандидата.
-    case_left = _case_problems(steps, rows, limits, fluids, allocations)
+    case_left = _case_problems(steps, rows, limits, fluids, allocations, history_rows)
 
     return CycleResult(
         base_chdd_m=base.chdd_m,
@@ -510,6 +550,7 @@ def _enforce_to_fixed_point(surrogate: Surrogate,
     """
     decisions: list[planner.Allocation] = []
     current = list(steps)
+    converged = False
     for _ in range(MAX_ENFORCE_PASSES):
         fitted, made = planner.enforce(
             current, surrogate.predict(current), norms, limits, fluids,
@@ -519,17 +560,61 @@ def _enforce_to_fixed_point(surrogate: Surrogate,
         # проход ничего не режет (потому и последний), и брать его список значило
         # бы отчитаться пустотой о расписании, которое на самом деле урезано.
         decisions.extend(made)
-        if fitted == current:
+        if _settled(fitted, current):
+            converged = True
             break
         current = fitted
-    return current, decisions
+    return current, decisions, converged
+
+
+def _settled(fitted: list[ScheduleStep], current: list[ScheduleStep]) -> bool:
+    """Совпали ли расписания по смыслу, а не побитово.
+
+    Точное `==` по float не годится: срезка «в точности до предела» пересобирает
+    сумму, и последний бит гуляет — предел снова «нарушен», решение печатается
+    снова. Фаззер ревизии на 400 сценариях: неподвижная точка не достигалась в
+    **94 случаях, и во всех 94 — только дрожание последнего бита**, ни одной
+    структурной разницы (статус скважины нигде не менялся). Цена — лишний прогон
+    суррогата в четверти случаев, фантомная строка «урезано» в отчёте и, после
+    Р-22, ложное предупреждение «приведение не сошлось» (Р-59).
+
+    Допуск относительный: уставки бывают и единицами, и десятками тысяч.
+    """
+    if len(fitted) != len(current):
+        return False
+    for one, other in zip(fitted, current, strict=True):
+        if one.date != other.date:
+            return False
+        if len(one.producers) != len(other.producers) or \
+                len(one.injectors) != len(other.injectors):
+            return False
+        for left, right in zip(one.producers, other.producers, strict=True):
+            if (left.well, left.status, left.mode) != (right.well, right.status, right.mode):
+                return False
+            if not _close(left.liquid_rate, right.liquid_rate):
+                return False
+        for left, right in zip(one.injectors, other.injectors, strict=True):
+            if (left.well, left.status, left.mode, left.fluid) != \
+                    (right.well, right.status, right.mode, right.fluid):
+                return False
+            if not _close(left.rate, right.rate):
+                return False
+    return True
+
+
+def _close(left: float | None, right: float | None) -> bool:
+    """Равны ли уставки с точностью до дрожания последнего бита."""
+    if left is None or right is None:
+        return left is right or left == right
+    return abs(left - right) <= 1e-9 * max(1.0, abs(left), abs(right))
 
 
 def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                    rows: list[dict[str, Any]],
                    limits: planner.Limits | None,
                    fluids: Fluids | None,
-                   allocations: list[planner.Allocation]) -> list[str]:
+                   allocations: list[planner.Allocation],
+                   history_rows: list[dict[str, Any]] | None = None) -> list[str]:
     """Условия кейса, которые получившееся расписание всё-таки нарушает.
 
     Планировщик приводит расписание к ограничениям объекта, но пройти его и
@@ -557,21 +642,35 @@ def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     """
     if limits is None:
         return []
+    # Уступка засчитывается только в ТОМ периоде, где она объявлена. Пока
+    # спрашивалось «была ли уступка вообще», одна объявленная гасила квоту
+    # целиком: 22 мероприятия против предела 1 в 2019 проходили fail-closed,
+    # если планировщик уступил хоть в каком-нибудь году (Н-19). Правило одно
+    # с репетицией кейса и живёт рядом с самой проверкой.
     conceded = ("max_events_per_year", "max_events_per_month")
-    declared = any("вопреки квоте" in one.reason for one in allocations)
     left = [str(check) for check in casecheck.violations(casecheck.check(steps, rows, limits))
-            if not (declared and check.key in conceded)]
+            if not (check.key in conceded
+                    and casecheck.announced_for(check, allocations))]
 
     if limits.enforce_water_balance:
+        # То же окно, каким коридор подбирает планировщик и каким судит
+        # подтверждение: накопленное за историю переносится, а не начинается с
+        # нуля (решение владельца 04.09, Р-204). Без переноса аудит судил
+        # управляемые годы в отрыве от истории — и на нетронутой истории Модели Z
+        # находил 16 нарушений там, где их нет, то есть fail-closed объявлял
+        # непригодным любого кандидата, включая бездействие.
+        first_year = min((int(str(row["DATA"])[:4]) for row in rows), default=None)
+        carried = _carried_water(history_rows, first_year, limits, fluids)
         if limits.water_balance_rule == "compensation":
             left += balance.compensation_problems(
-                rows, fluids, limits.water_tolerance, floor=limits.water_tolerance_min)
+                rows, fluids, limits.water_tolerance, floor=limits.water_tolerance_min,
+                carried=carried)
         elif limits.water_balance_rule == "external_water":
             left += balance.external_water_problems(
                 rows, fluids, limits.max_external_water_m3_per_day)
         else:
             left += balance.problems(rows, fluids, limits.water_tolerance,
-                                     floor=limits.water_tolerance_min)
+                                     floor=limits.water_tolerance_min, carried=carried)
 
     # мощность источника действует при любом правиле; при неизвестной мощности
     # функция возвращает справочную строку про пиковый месяц — она не нарушение

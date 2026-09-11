@@ -867,3 +867,30 @@ def test_design_validates_scenarios_by_the_limits_of_the_case():
 
     with pytest.raises(ValueError):
         doe.design(base, samples=2, seed=SEED, limits={"max_liquid_rate": 1.0})
+
+
+def test_cyclic_refuses_parameters_it_cannot_use():
+    """Неприменимый параметр отвергается, а не принимается молча.
+
+    Циклическое заводнение задаётся периодами противофазной пульсации закачки, и
+    ни диапазон множителей, ни округление к нулю, ни уровень сценария, ни доля
+    остановок, ни число периодов сюда не входят. Пока они принимались молча, два
+    вызова с совершенно разными параметрами давали побайтово одинаковые
+    сценарии — воспроизводимость по конфигу обещана регламентом, а конфиг ни на
+    что не влиял. `conversions` рядом отвергает неприменимое явно; теперь и этот
+    режим (Р-70).
+    """
+    steps = plan_with_injectors(["i1", "i2"])
+
+    for extra in ({"levels": (0.8, 1.2)}, {"shut_share": (0.1, 0.2)},
+                  {"periods": 3}, {"bounds": (0.5, 1.5)}, {"snap_to_zero": 0.2}):
+        with pytest.raises(ValueError, match="неприменимы"):
+            doe.design(steps, samples=4, seed=1, control_kind="cyclic", **extra)
+
+    # без них режим по-прежнему работает
+    assert doe.design(steps, samples=4, seed=1, control_kind="cyclic")
+
+    # у переводов под закачку та же болезнь была с `levels`
+    with pytest.raises(ValueError, match="неприменим"):
+        doe.design(steps, samples=4, seed=1, control_kind="conversions",
+                   levels=(0.8, 1.2))

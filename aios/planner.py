@@ -538,17 +538,6 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         )
         decisions.extend(yearly_liquid)
 
-    # Квота мероприятий идёт после всех срезок, и это обязательный порядок:
-    # мероприятие может появиться от самой срезки — предел по объекту, доведённый
-    # до нуля, это остановка. Считать квоту раньше значило бы считать не тот
-    # график, который в итоге уедет в файл.
-    # Мероприятие, порождённое самой срезкой, отменять нельзя: отмена вернула бы
-    # скважину в состояние, которое нарушает жёсткое ограничение. Такие события
-    # квоту расходуют, но не отменяются — найдено критиком 01.09 (Р-139).
-    #
-    # Месячная квота идёт первой: она строже по локальности, и год, приведённый
-    # ею, годовой квоте резать уже нечего. Обратный порядок оставил бы месяц с
-    # двенадцатью переключениями внутри годового лимита двенадцать.
     # Минимальный рентабельный дебит проверяется **после** всех срезок: любая из
     # них может опустить скважину ниже порога, и репетиция на реальных данных это
     # показала — после «успешной» срезки оставалась скважина на 3,4 м³/сут при
@@ -556,20 +545,6 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     if limits.min_producer_rate_m3_per_day is not None:
         result, small = _shut_below_minimum(result, limits.min_producer_rate_m3_per_day)
         decisions.extend(small)
-
-    if limits.max_events_per_month is not None or limits.max_events_per_year is not None:
-        # Защищены не только мероприятия, порождённые срезками, но и те, которыми
-        # держится состав фонда: отмена остановки возвращает скважину в работу, и
-        # предел числа действующих ломается — а перепроверять его после квоты
-        # некому (ревизия 02.09).
-        result, events = _fit_events_to_quota(
-            result,
-            per_month=limits.max_events_per_month,
-            per_year=limits.max_events_per_year,
-            protected=(events_of(result) - events_of(expand_deltas(steps)))
-            | _events_holding_the_fund(result, limits),
-        )
-        decisions.extend(events)
 
     # Баланс воды подбирается ПОСЛЕДНИМ, и это исправление, а не перестановка.
     #
@@ -627,6 +602,42 @@ def enforce(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
                 default_cap=limits.max_well_injection_m3_per_day,
             )
         decisions.extend(water)
+
+    # Квота мероприятий идёт ПОСЛЕДНЕЙ — после коридора воды, а не до него.
+    #
+    # Мероприятие может появиться от самой срезки: предел по объекту, доведённый
+    # до нуля, это остановка. Считать квоту раньше значило бы считать не тот
+    # график, который в итоге уедет в файл. Прежний комментарий это и обещал —
+    # «после всех срезок», — и до Р-189 это было правдой.
+    # Потом коридор переехал за квоту, и его собственные остановки перестали её
+    # расходовать: множитель 0 закрывает нагнетательную, то есть создаёт
+    # мероприятие, которого квота не видела и потому не защитила. Воспроизведено
+    # 09.09: при `max_events_per_year = 0` и потолке 1,0 коридор закрывает
+    # скважину, `casecheck` объявляет 1,00 против предела 0,00, уступки нет —
+    # и fail-closed (Р-165) отвергает кандидата, а планировщик о причине молчит.
+    #
+    # Правило Р-139 действует и здесь: мероприятие, порождённое ограничением
+    # объекта, квоту расходует, но не отменяется — иначе отмена вернула бы
+    # закачку, нарушающую коридор. Защита получается сама собой: `protected`
+    # считается как «что появилось относительно входа», а событие коридора
+    # именно таково — то есть уступка объявляется явно, а не молчанием.
+    #
+    # Месячная квота внутри идёт первой: она строже по локальности, и год,
+    # приведённый ею, годовой квоте резать уже нечего. Обратный порядок оставил
+    # бы месяц с двенадцатью переключениями внутри годового лимита двенадцать.
+    if limits.max_events_per_month is not None or limits.max_events_per_year is not None:
+        # Защищены не только мероприятия, порождённые срезками, но и те, которыми
+        # держится состав фонда: отмена остановки возвращает скважину в работу, и
+        # предел числа действующих ломается — а перепроверять его после квоты
+        # некому (ревизия 02.09).
+        result, events = _fit_events_to_quota(
+            result,
+            per_month=limits.max_events_per_month,
+            per_year=limits.max_events_per_year,
+            protected=(events_of(result) - events_of(expand_deltas(steps)))
+            | _events_holding_the_fund(result, limits),
+        )
+        decisions.extend(events)
 
     # Квота отменяет мероприятие снятием записи со шага, поэтому на выходе
     # расписание снова частично дельтовое — а вся арифметика ограничений (и наша,
@@ -1341,7 +1352,16 @@ def _fit_injection_to_annual_budget(
         return steps, []
 
     decisions: list[Allocation] = []
-    reported: set[int] = set()
+    # Ключ — год И скважина. Раньше здесь стояло `reported: set[int]`, то есть
+    # решение выпускалось **одно на год**: от имени первой попавшейся скважины и
+    # с её собственной уставкой в `before`/`after`, — а срезка шла всем. На
+    # сдаваемом расписании это 19 решений «скв. 1» при 71 действительно урезанной
+    # скважине, и `explain()` печатал «урезано 1 скважин, суммарно 564 м³/сут»
+    # при фактических 307 362 — занижение в 545 раз. Число уходило не только в
+    # текст: `explain.py` кладёт его в слой интерпретируемости, а страница цикла
+    # печатает «скважин: 1» (Н-31). Дедупликация по году остаётся: внутри года
+    # множитель один, и повторять решение каждый месяц незачем.
+    reported: set[tuple[int, str]] = set()
     result: list[ScheduleStep] = []
     for step in steps:
         factor = budget_m3[step.date.year] / over[step.date.year] \
@@ -1355,8 +1375,8 @@ def _fit_injection_to_annual_budget(
                 injectors.append(control)
                 continue
             reduced = control.rate * factor
-            if step.date.year not in reported:
-                reported.add(step.date.year)
+            if (step.date.year, control.well) not in reported:
+                reported.add((step.date.year, control.well))
                 decisions.append(Allocation(
                     well=control.well, resource=f"{reason}, {step.date.year}",
                     before=control.rate, after=reduced,
@@ -1399,7 +1419,16 @@ def _fit_liquid_to_annual_volume(
         return steps, []
 
     decisions: list[Allocation] = []
-    reported: set[int] = set()
+    # Ключ — год И скважина. Раньше здесь стояло `reported: set[int]`, то есть
+    # решение выпускалось **одно на год**: от имени первой попавшейся скважины и
+    # с её собственной уставкой в `before`/`after`, — а срезка шла всем. На
+    # сдаваемом расписании это 19 решений «скв. 1» при 71 действительно урезанной
+    # скважине, и `explain()` печатал «урезано 1 скважин, суммарно 564 м³/сут»
+    # при фактических 307 362 — занижение в 545 раз. Число уходило не только в
+    # текст: `explain.py` кладёт его в слой интерпретируемости, а страница цикла
+    # печатает «скважин: 1» (Н-31). Дедупликация по году остаётся: внутри года
+    # множитель один, и повторять решение каждый месяц незачем.
+    reported: set[tuple[int, str]] = set()
     result: list[ScheduleStep] = []
     for step in steps:
         factor = budget_m3[step.date.year] / over[step.date.year] \
@@ -1413,8 +1442,8 @@ def _fit_liquid_to_annual_volume(
                 producers.append(control)
                 continue
             reduced = control.liquid_rate * factor
-            if step.date.year not in reported:
-                reported.add(step.date.year)
+            if (step.date.year, control.well) not in reported:
+                reported.add((step.date.year, control.well))
                 decisions.append(Allocation(
                     well=control.well, resource=f"{reason}, {step.date.year}",
                     before=control.liquid_rate, after=reduced,
@@ -1816,14 +1845,20 @@ def _fit_events_to_quota(
             if (well, step.date) in (protected or set()):
                 for name, _ in step_buckets:
                     spent[name] = spent.get(name, 0) + 1
-                name, limit = full[0]
-                decisions.append(Allocation(
-                    well=well, resource=f"квота мероприятий, {name}",
-                    before=0.0, after=0.0,
-                    reason=(f"{kind} оставлен вопреки квоте {limit} на {name}: он "
-                            f"порождён ограничением объекта, и его отмена нарушила бы "
-                            f"это ограничение. Мероприятий уже {spent[name]}"),
-                ))
+                # Уступка объявляется по КАЖДОЙ исчерпанной корзине, а не только
+                # по первой. Корзин две — год и месяц, — и когда исчерпаны обе,
+                # объявление только про год оставляло месячное нарушение
+                # неучтённым: `casecheck.announced_for` ищет «на месяц …» и не
+                # находит, а fail-closed отвергает кандидата, чьё превышение
+                # планировщик объявил вслух (Р-45, ревью ночного дифа).
+                for name, limit in full:
+                    decisions.append(Allocation(
+                        well=well, resource=f"квота мероприятий, {name}",
+                        before=0.0, after=0.0,
+                        reason=(f"{kind} оставлен вопреки квоте {limit} на {name}: он "
+                                f"порождён ограничением объекта, и его отмена нарушила бы "
+                                f"это ограничение. Мероприятий уже {spent[name]}"),
+                    ))
                 continue
             cancelled.add(well)
             asked = next((c for c in step.producers if c.well == well), None) \
@@ -1938,12 +1973,14 @@ def _fit_injection_to_capacity(
                         ),
                     )
                 )
-            injectors.append(
-                InjectorControl(
-                    control.well, control.fluid, control.status, control.mode,
-                    reduced, control.bhp,
-                )
-            )
+            # `_injecting`, а не прямая сборка записи: ноль обязан закрывать
+            # скважину. Эта срезка была единственной, где ноль оставлял
+            # нагнетательную открытой, — то есть собирала расписание, которое
+            # `schedule.validate` сама же браковала («открытая скважина не может
+            # закачивать ноль»). Из config.toml ноль недостижим, но `casecheck` и
+            # всякий прямой конструктор `Limits` читают его как настоящий предел
+            # (Р-60).
+            injectors.append(_injecting(control, reduced))
         result.append(ScheduleStep(step.date, step.producers, tuple(injectors)))
     return result, decisions
 
@@ -1997,13 +2034,23 @@ def _fit_injection_to_external_water(
     planned = 0.0
     stamps: set[str] = set()
     for row in forecast:
+        # То же правило, что в коридоре компенсации и в аудите: строка с любым
+        # отрицательным приращением выброшена методикой целиком — **вместе со
+        # своим месяцем**. Календарь считался до фильтра, и в году, где все
+        # строки двух месяцев выброшены, планировщик делил на 365 суток, а
+        # аудит (`balance.by_year` добавляет месяц ПОСЛЕ фильтра) — на ~304:
+        # потребность выходила на пятую часть ниже, планировщик недорезал, и
+        # fail-closed отвергал кандидата, которого сам только что пропустил
+        # (Р-49, ревью ночного дифа).
+        if not counted_by_methodology(row):
+            continue
+        stamp = str(row.get("DATA", ""))[:7]
+        if len(stamp) == 7:
+            stamps.add(stamp)
         oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
         if liquid_t > 0 and 0 <= oil_t <= liquid_t:
             produced += (liquid_t - oil_t) * 1000.0 / fluids.water_density
         planned += max(row["WWIT_Diff"], 0.0)
-        stamp = str(row.get("DATA", ""))[:7]
-        if len(stamp) == 7:
-            stamps.add(stamp)
 
     if not stamps:
         # Тихо подставить 365 нельзя: на девятнадцатилетнем горизонте это занизило
@@ -2099,6 +2146,13 @@ def _fit_injection_to_water_corridor(
         year = int(stamp[:4])
         bucket = years.setdefault(year, {"base": 0.0, "produced": 0.0, "planned": 0.0})
         stamps_by_year.setdefault(year, set()).add(stamp)
+        # Строка с любым отрицательным приращением методикой выброшена целиком, и
+        # аудит (`balance.by_year`) её не видит. Здесь она в отборе не считалась,
+        # а закачка из неё считалась — планировщик резал закачку там, где аудит
+        # нарушения не находит (замер: срезка в 4 раза при компенсации 1,07 и
+        # потолке 1,3). У суррогата таких строк бывают тысячи.
+        if not counted_by_methodology(row):
+            continue
         oil_t, liquid_t = row["WOMT_Diff"], row["WLPT_Diff"]
         if liquid_t > 0 and 0 <= oil_t <= liquid_t:
             water_m3 = (liquid_t - oil_t) * 1000.0 / fluids.water_density
@@ -2124,9 +2178,17 @@ def _fit_injection_to_water_corridor(
         return steps, []
 
     planned_total = sum(one["planned"] for one in years.values())
-    base_total = sum(one["base"] for one in years.values())
-    if planned_total <= 0 or base_total <= 0:
+    if planned_total <= 0:
         return steps, []
+    # `base_total <= 0` из условия убрано: горизонт без единой строки отбора —
+    # это не «сверять нечего», а «возмещать нечего», и погодовая ветка ниже
+    # умеет отвечать на него нулевым множителем с обоснованием. Пока ранний
+    # выход срабатывал, закачка оставалась нетронутой: расписание тратило OPEX
+    # на воду без выручки, планировщик не печатал ни одного решения, а
+    # fail-closed потом отвергал кандидата по аудиту. Отбор закрывают
+    # ограничения, стоящие раньше коридора (max_active_wells, минимальный дебит,
+    # обязательные остановки, горизонтный бюджет по жидкости), так что случай не
+    # экзотический (Н-36).
 
     factors: dict[int, float] = {}
     reasons: dict[int, str] = {}

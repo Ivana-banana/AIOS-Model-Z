@@ -44,6 +44,7 @@ from aios.deckfiles import (  # noqa: E402
 )
 from aios.economics import load_norms  # noqa: E402
 from aios.margin import Norms  # noqa: E402
+from aios.schedule import liquid_limit  # noqa: E402
 
 #: Ключи, которые проверяются не `casecheck`, а своим механизмом. Список нужен,
 #: чтобы вывод не создавал иллюзию полного покрытия: условие может быть объявлено
@@ -109,15 +110,8 @@ def report(title: str, checks: list[casecheck.LimitCheck]) -> None:
 
 
 def _announced_for(check: casecheck.LimitCheck, decisions) -> bool:
-    """Объявил ли планировщик уступку **в том же периоде**, где нарушение.
-
-    Совпадения по виду условия мало: годовая и месячная квоты считаются по
-    разным периодам, и уступка в одном году ничего не говорит о другом.
-    """
-    period = "год" if check.key.endswith("_per_year") else "месяц"
-    needle = f"на {period} {check.where}"
-    return any("вопреки квоте" in decision.reason and needle in decision.reason
-               for decision in decisions)
+    """Уступка в том же периоде. Правило общее с циклом — `casecheck`."""
+    return casecheck.announced_for(check, decisions)
 
 
 def verdict(conceded: list[str], declared: int) -> list[str]:
@@ -158,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     started = time.monotonic()
+    refusal = config_module.refusal(args.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(Path(args.config))
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:
@@ -175,7 +173,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     steps = [step for step in parse_schedule(schedule_file).steps
              if step.date >= config.case.control_start]
-    forecast = pd.read_csv(args.rows).to_dict("records")
+    # Отказ словами, а не трассировка pandas: выгрузку кейса называет человек,
+    # и промах мимо неё — обычный первый запуск, а не поломка (Р-62).
+    rows_file = Path(args.rows)
+    if not rows_file.is_file():
+        print(f"нет выгрузки {rows_file}: репетиции нечего проверять. "
+              "Ожидается rows.csv из scripts/export_rows.py", file=sys.stderr)
+        return 1
+    try:
+        forecast = pd.read_csv(rows_file).to_dict("records")
+    except (OSError, ValueError) as error:
+        print(f"выгрузка {rows_file} не читается: {error}", file=sys.stderr)
+        return 1
+    if not forecast:
+        print(f"выгрузка {rows_file} пуста: репетиции нечего проверять",
+              file=sys.stderr)
+        return 1
     read_at = time.monotonic()
 
     print(f"конфигурация: {config.source}")
@@ -250,6 +263,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {line}")
         print()
 
+    # Физическая годность самой выгрузки — до всяких условий кейса и независимо
+    # от того, объявил ли он давление с обводнённостью. Репетиция звала
+    # `sanity_problems` только при объявленном отклике пласта и оставляла из
+    # ответа одни строки со словом «пластовое» — то есть выбрасывала всё
+    # остальное: отрицательные приращения, нефть больше жидкости, дебит выше
+    # предела ЭЦН. Кейс с `WLPR = 900` проходил репетицию с кодом 0, хотя на нём
+    # эталонный расчётчик просто отказывается считать (`if row["WLPR"] > 500`).
+    # Предел берётся из таблицы ЭЦН нормативов кейса, а не из литерала 500.
+    physical = [line for line in summary.sanity_problems(
+        forecast, max_liquid_rate=liquid_limit(
+            load_norms(config.economics.norms_file)[1]),
+    ) if "пластовое" not in line]
+    print(f"--- физическая годность выгрузки: "
+          f"{'нарушений нет' if not physical else len(physical)} ---")
+    for line in physical[:5]:
+        print(f"  {line}")
+    print()
+
     if (limits.min_reservoir_pressure_atm is not None
             or limits.max_reservoir_pressure_atm is not None
             or limits.max_watercut is not None):
@@ -298,6 +329,12 @@ def main(argv: list[str] | None = None) -> int:
             if "вопреки квоте" in decision.reason:
                 print(f"  {decision}")
         print()
+
+    if physical:
+        print("ВЫГРУЗКА НЕФИЗИЧНА — считать по ней ЧДД нельзя:")
+        for line in physical[:10]:
+            print(f"  {line}")
+        return 1
 
     if left:
         print("НАРУШЕНИЯ ОСТАЛИСЬ ПОСЛЕ СРЕЗКИ — условие объявлено, но не применяется:")

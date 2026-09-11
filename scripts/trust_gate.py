@@ -50,8 +50,26 @@ def load_profiles(paths: list[Path]) -> dict[str, dict[str, float]]:
     """
     profiles: dict[str, dict[str, float]] = {}
     for path in paths:
-        frame = pd.read_csv(path, usecols=["scenario", "DATA", "well", "multiplier",
-                                           "production_multiplier", "injection_multiplier"])
+        # Раздельные множители по фазам появились не сразу: пакеты старого вида
+        # (`data/dataset-levels.csv` — тот самый, что стоит умолчанием в
+        # `train_surrogate.py`) несут только общий `multiplier`. Требовать их
+        # безусловно значило падать трассировкой `Usecols do not match columns`
+        # на собственных датасетах — притом что ветка «взять общий множитель»
+        # ниже написана ровно под этот случай и была недостижима (Н-30).
+        present = set(pd.read_csv(path, nrows=0).columns)
+        needed = ["scenario", "DATA", "well", "multiplier"]
+        absent = [name for name in needed if name not in present]
+        if absent:
+            raise ValueError(
+                f"в пакете {path} нет обязательных колонок: {', '.join(absent)}. "
+                "Ожидается выгрузка DoE от scripts/build_dataset.py"
+            )
+        optional = [name for name in ("production_multiplier", "injection_multiplier")
+                    if name in present]
+        frame = pd.read_csv(path, usecols=needed + optional)
+        for name in ("production_multiplier", "injection_multiplier"):
+            if name not in optional:
+                frame[name] = float("nan")
         frame["DATA"] = pd.to_datetime(frame["DATA"])
         for name, block in frame.groupby("scenario"):
             months: dict = {}
@@ -269,6 +287,10 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
 
     from aios.neural import NeuralBundle, NeuralSurrogate
 
+    refusal = config_module.refusal(config_path)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(config_path)
     if not model.is_file():
         # артефакт лежит в `artifacts/`, а этот каталог в git не ведётся: промах
@@ -340,6 +362,54 @@ def judge(model: Path, schedule: Path, config_path: Path, *,
     return 2 if reasons else 0
 
 
+def passport(model: Path, out: Path, *, pairs: list[Pair], alpha: float) -> int:
+    """Записать паспорт шлюза из обученного артефакта — без пакетов DoE.
+
+    Область берётся ТА ЖЕ, которой судит поиск и режим `--schedule`: она лежит
+    внутри `artifacts/surrogate.joblib`. Запас на оптимизм считается по
+    калибровочным парам, которые в репозитории есть. Значит, на чистом клоне
+    паспорт собирается одной командой, а интерфейс показывает калиброванный
+    шлюз вместо «область не собрана».
+    """
+    import joblib
+
+    from aios.neural import NeuralBundle
+
+    if not model.is_file():
+        print(f"нет обученного суррогата: {model}", file=sys.stderr)
+        return 1
+    raw = model.read_bytes()
+    bundle = joblib.load(model)
+    if not isinstance(bundle, NeuralBundle):
+        print(f"это не обученный суррогат: {type(bundle).__name__}", file=sys.stderr)
+        return 1
+    region = bundle.trust_region
+    if region is None:
+        print(f"в артефакте {model} нет доверенной области", file=sys.stderr)
+        return 1
+
+    margin = trust.OptimismMargin.fit(
+        [(pair.predicted, pair.actual) for pair in pairs], alpha=alpha)
+
+    print(f"область из артефакта: сценариев {len(region.scenarios)}, "
+          f"признаков {len(region.features)}")
+    print(f"порог t = {region.threshold:.3f} "
+          f"(квантиль {region.quantile:.2f} leave-one-out расстояний)")
+    print(show_margin(margin))
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    written = trust.contract(
+        region, margin,
+        dataset_hash=";".join(sorted(
+            str(one.get("path", "")).rsplit("/", 1)[-1]
+            for one in bundle.metadata.get("datasets", []))),
+        model_hash=hashlib.sha256(raw).hexdigest(),
+    )
+    out.write_text(json.dumps(written, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\nартефакт доверия: {out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, action="append",
@@ -383,13 +453,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.pairs is not None:
         print(note)
 
-    if args.model or args.schedule:
-        if not (args.model and args.schedule):
-            print("режиму кандидата нужны оба ключа: --model и --schedule",
-                  file=sys.stderr)
-            return 1
+    if args.model and args.schedule:
         return judge(args.model, args.schedule, args.config,
                      pairs=pairs, alpha=args.alpha)
+
+    if args.model:
+        # Паспорт из самого артефакта. Прежде он собирался ТОЛЬКО из пакетов
+        # DoE (`--dataset`), а те в git не ведутся — на чистом клоне собрать его
+        # было нечем, и интерфейс честно печатал «доверенная область не
+        # собрана», пока README обещал калиброванный шлюз с числом. Хуже того,
+        # число это было чужим: область из пакетов DoE (60 сценариев) даёт
+        # порог 21,622, а поиск и `--schedule` судят областью ИЗ АРТЕФАКТА
+        # (45 обучающих сценариев, порог 24,133) — то есть документ описывал
+        # шлюз, который не сторожит (найдено сверкой с ТЗ 09.09).
+        #
+        # Аудита сдвинутых режимов здесь нет намеренно: он строится по профилям
+        # обучающих сценариев, а их в артефакте нет. Поле необязательное, и
+        # интерфейс печатает блок только когда оно есть.
+        return passport(args.model, args.out, pairs=pairs, alpha=args.alpha)
+
+    if args.schedule:
+        print("режиму кандидата нужны оба ключа: --model и --schedule",
+              file=sys.stderr)
+        return 1
 
     if not args.dataset:
         print("нечего делать: задайте --dataset (собрать область заново) либо "
@@ -398,6 +484,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     profiles = load_profiles(args.dataset)
+    if len(profiles) <= args.k:
+        # Пустой или короткий пакет — обычное состояние на чистом клоне: каталог
+        # `data/` под .gitignore и собирается из `runs/` командой build_dataset.
+        # До 09.09 это отвечало трассировкой из глубины `TrustRegion.fit`
+        # («сценариев 0, а нужно больше k = 5»), и читать её приходилось тому,
+        # кто просто повторил команду из README (Н-30).
+        print(
+            f"в пакетах {', '.join(str(one) for one in args.dataset)} "
+            f"сценариев {len(profiles)}, а области нужно больше k = {args.k}: "
+            "расстояние до k-го соседа при таком наборе не определено.\n"
+            "Датасеты DoE не ведутся в git (каталог data/ под .gitignore) — "
+            "соберите их командой scripts/build_dataset.py по каталогам прогонов "
+            "или укажите --dataset на готовый пакет.",
+            file=sys.stderr)
+        return 1
     region = trust.TrustRegion.fit(profiles, k=args.k, quantile=args.quantile)
     margin = trust.OptimismMargin.fit(
         [(pair.predicted, pair.actual) for pair in pairs], alpha=args.alpha)

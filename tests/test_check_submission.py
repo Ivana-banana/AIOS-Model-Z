@@ -171,6 +171,26 @@ def test_a_conversion_in_one_step_is_not_also_a_stop_and_a_start():
     assert events(parsed.steps) == {"остановок": 0, "пусков": 0, "переводов под закачку": 1}
 
 
+def test_a_conversion_on_the_very_first_step_is_counted():
+    """Перевод под закачку на первом же шаге файла — тоже перевод.
+
+    Заявка с 08.09 сдаётся хвостом за период управления, поэтому «состояния до»
+    в файле нет вовсе: оно осталось в истории организаторов. Признак перевода
+    при этом виден и без истории — одна и та же скважина закрыта на добычу и
+    открыта на закачку в одном шаге. В сдаваемом
+    `runs/matched-0995/submission/wells_schedule.inc` так переводится скважина
+    102 на 2007-01-01: эталонный расчётчик её перевод считает
+    (`conversionTransitions`, 5,0 млн руб.), а счётчик расписания терял, потому
+    что на первом шаге у него нет предыдущего состояния.
+    """
+    parsed = parse_schedule_text(render(steps(
+        (date(2007, 1, 1), (producer("1", 100.0, status="SHUT"),), (injector("1", 200.0),)),
+        (date(2007, 2, 1), (), (injector("1", 200.0),)),
+    )))
+
+    assert events(parsed.steps) == {"остановок": 0, "пусков": 0, "переводов под закачку": 1}
+
+
 def test_a_control_before_the_first_dates_is_checked_too_not_skipped():
     """Режим до первого DATES обязан проверяться наравне с остальными.
 

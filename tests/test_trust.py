@@ -394,14 +394,24 @@ def test_the_gate_judges_a_candidate_by_the_region_inside_the_artifact(tmp_path,
 
 
 def test_the_gate_refuses_half_of_the_candidate_mode(tmp_path, capsys):
-    """Один ключ из двух — отказ строкой, а не молчаливая сборка области."""
+    """Один ключ из двух — отказ строкой, а не молчаливая сборка области.
+
+    С 09.09 половины стали разными. `--model` без `--schedule` — законный режим:
+    паспорт шлюза собирается из самого артефакта, и на клоне проверяющего это
+    единственный способ его получить (Р-265). А вот `--schedule` без `--model`
+    судить нечем: область живёт в артефакте.
+    """
     import sys
 
     sys.path.insert(0, str(ROOT / "scripts"))
     import trust_gate
 
-    assert trust_gate.main(["--model", str(tmp_path / "нет.joblib")]) == 1
+    assert trust_gate.main(["--schedule", str(tmp_path / "нет.inc")]) == 1
     assert "оба ключа" in capsys.readouterr().err
+
+    # а промах мимо артефакта в режиме паспорта называется своим именем
+    assert trust_gate.main(["--model", str(tmp_path / "нет.joblib")]) == 1
+    assert "нет обученного суррогата" in capsys.readouterr().err
 
 
 def test_the_gate_refuses_a_pairs_file_that_is_not_there(tmp_path, capsys):
@@ -1123,3 +1133,97 @@ def test_the_gate_refuses_without_the_deck_instead_of_falling_over(tmp_path):
         f"\n{done.stderr}")
     assert "Дек не читается" in done.stderr and "README.md" in done.stderr, (
         f"отказ не говорит, чего не хватает и где взять:\n{done.stderr}")
+
+
+def test_a_missing_spread_counts_as_no_change_not_as_a_full_multiplier():
+    """Нейтральный размах — ноль, а не единица.
+
+    Умолчание было общим на все признаки: управление, которого в пакете нет
+    вовсе, получало «размах 1,0» — величину, которой в обучении не бывает
+    (там размах сотых долей). Один отсутствующий ключ сдвигал масштаб и центр
+    всей координаты, и шлюз доверия менял строгость в разы: замер ревизии —
+    масштаб `inj:2|размах` с 0,00229 на 0,39325, расстояние того же кандидата
+    с 299,62 до 19,20 (Н-27).
+
+    Тест `test_a_missing_control_counts_as_the_neutral_multiplier` закрепляет
+    умолчание 1,0 и остаётся верным: он про ключи уровня.
+    """
+    from aios.trust import _neutral_get
+
+    assert _neutral_get({}, "inj:2|уровень") == 1.0
+    assert _neutral_get({}, "inj:2|размах") == 0.0
+    assert _neutral_get({"inj:2|размах": 0.5}, "inj:2|размах") == 0.5
+
+
+def test_a_package_without_injection_does_not_soften_the_gate():
+    """Добавление пакета без закачки не обязано смягчать шлюз впятнадцатеро.
+
+    Профиль сценария, где закачкой не управляли, не содержит ключей `inj:`.
+    Пока их размах подставлялся единицей, такой сценарий выглядел «сильно
+    менявшим закачку», раздвигал масштаб координаты — и все кандидаты
+    оказывались к выборке ближе, чем они есть.
+    """
+    from aios.trust import TrustRegion
+
+    steady = {f"s{number}": {"inj:2|уровень": 1.0 + number / 100,
+                             "inj:2|размах": 0.002 + number / 10000}
+              for number in range(1, 9)}
+    region = TrustRegion.fit(steady)
+    spread = region.features.index("inj:2|размах")
+    scale_before = region.scale[spread]
+
+    with_gap = {**steady, "s9": {"inj:2|уровень": 1.05}}
+    scale_after = TrustRegion.fit(with_gap).scale[spread]
+
+    # Ноль вместо 0,002 масштаб слегка двигает — это честно: сценарий и правда
+    # закачкой не управлял. Единица двигала его на три порядка: 0,00023 → 0,313.
+    assert scale_after < scale_before * 10, (
+        f"отсутствующий ключ раздвинул масштаб размаха на порядки: "
+        f"{scale_before:.5f} → {scale_after:.5f}"
+    )
+    assert scale_after < 0.01, "масштаб размаха ушёл из порядка обучающих величин"
+
+
+def test_the_passport_is_built_from_the_artifact_without_any_doe_package(tmp_path, capsys):
+    """Паспорт шлюза собирается из суррогата — на клоне, где пакетов DoE нет.
+
+    До 09.09 собрать его можно было только ключом `--dataset`, а каталог `data/`
+    в git не ведётся. Значит, на клоне проверяющего главная страница отвечала
+    «доверенная область не собрана», пока README обещал калиброванный шлюз с
+    числом, — и число это было чужим: порог 21,622 принадлежит области из
+    пакетов DoE, а поиск судит областью из артефакта (Р-265).
+    """
+    import json as json_module
+    import sys
+
+    model = ROOT / "artifacts" / "surrogate.joblib"
+    if not model.is_file():
+        pytest.skip("нет artifacts/surrogate.joblib")
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import trust_gate
+
+    out = tmp_path / "trust-gate.json"
+    code = trust_gate.main([
+        "--model", str(model),
+        "--pairs", str(ROOT / "docs/data/margin-pairs-search.csv"),
+        "--out", str(out),
+    ])
+    printed = capsys.readouterr().out
+
+    assert code == 0, printed
+    assert out.is_file(), "паспорт не записан"
+    raw = json_module.loads(out.read_text(encoding="utf-8"))
+
+    import joblib
+
+    bundle = joblib.load(model)
+    assert raw["calibrated"] is True
+    assert raw["threshold_tau"] == pytest.approx(bundle.trust_region.threshold), (
+        "порог в паспорте не тот, которым судит поиск"
+    )
+    assert len(raw["training_scenario_ids"]) == len(bundle.trust_region.scenarios)
+    assert raw["model_hash"], "паспорт не привязан к артефакту хэшем"
+    # аудит сдвинутых режимов строится по профилям DoE — здесь его быть не может,
+    # и интерфейс печатает блок только когда поле есть
+    assert "shift_audit" not in raw

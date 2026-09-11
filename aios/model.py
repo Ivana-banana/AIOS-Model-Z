@@ -30,6 +30,7 @@ def for_cycle(
     history: list[dict],
     reference_steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     fluids: Fluids,
+    max_liquid_rate: float | None = None,
 ) -> CycleSurrogate:
     """Вернуть явно выбранную модель; `None` означает проверенный бейзлайн."""
     if neural_path is None:
@@ -43,7 +44,10 @@ def for_cycle(
         bundle = joblib.load(neural_path)
         if not isinstance(bundle, NeuralBundle):
             raise TypeError(f"ожидался NeuralBundle, получен {type(bundle).__name__}")
-        surrogate = NeuralSurrogate.create(bundle, reference_steps, fluids)
+        surrogate = NeuralSurrogate.create(
+            bundle, reference_steps, fluids,
+            **({} if max_liquid_rate is None else {"max_liquid_rate": max_liquid_rate}),
+        )
     except Exception as error:
         raise SurrogateLoadError(
             f"не удалось загрузить проверенный суррогат {neural_path}: {error}"

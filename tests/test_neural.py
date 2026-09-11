@@ -2013,3 +2013,76 @@ def test_the_chosen_model_cannot_be_swapped_after_loading(tmp_path):
     with pytest.raises(dataclasses.FrozenInstanceError):
         selected.joint_rate_search = False
 
+
+def test_the_trust_region_is_built_in_the_window_where_it_is_applied():
+    """Обучающие профили и профиль кандидата считаются одним окном месяцев.
+
+    Профиль кандидата берётся по расписанию периода управления
+    (`optimise._distance_of`), а обучающие профили строились по всей матрице
+    управлений — вместе с историей, где все множители нейтральны. На Модели Z
+    это 145 нейтральных месяцев из 370: уровень сценария с множителем 1,5
+    превращался в (145·1,0 + 225·1,5)/370 ≈ 1,30, а кандидат приходил со своими
+    1,5. Систематический сдвиг раздувал расстояние — равномерный кандидат ×1,1
+    давал 28,58 при пороге 24,13 и выбывал из поиска (Н-26).
+    """
+    from datetime import date as date_type
+
+    import pandas as pd
+
+    from aios import neural
+
+    control_start = date_type(2007, 1, 1)
+    # два года нейтральной истории и два года управления: ровно та пропорция,
+    # что и на Модели Z, где истории 145 месяцев из 370
+    months = pd.date_range("2005-01-01", "2008-12-01", freq="MS")
+    scenarios = {f"s{number}": 1.2 + 0.1 * number for number in range(1, 9)}
+    rows, index = [], []
+    for scenario, multiplier in scenarios.items():
+        for stamp in months:
+            rows.append({"prod:1": multiplier if stamp.date() >= control_start else 1.0})
+            index.append((scenario, stamp))
+    controls = pd.DataFrame(rows, index=pd.MultiIndex.from_tuples(
+        index, names=["scenario", "DATA"]))
+
+    whole = neural._trust_region(controls, set(scenarios))
+    windowed = neural._trust_region(controls, set(scenarios), control_start)
+
+    assert whole is not None and windowed is not None
+    level = windowed.features.index("prod:1|уровень")
+    average = sum(scenarios.values()) / len(scenarios)
+
+    assert windowed.centre[level] == pytest.approx(average, abs=0.01), (
+        "в окне управления центр уровня — среднее самих множителей"
+    )
+    assert whole.centre[level] < average - 0.1, (
+        "история обязана разбавлять профиль: именно этот сдвиг и раздувал "
+        f"расстояние (центр по всей матрице {whole.centre[level]:.3f})"
+    )
+
+
+def test_a_holdout_that_matches_nothing_is_refused_not_ignored():
+    """Заморозка, не нашедшая ни одного сценария, — отказ, а не тишина.
+
+    Имя сценария несёт имя пакета: `load_datasets` приписывает «<stem файла>:».
+    Заморозили по `dataset-all-wide.csv`, обучили по умолчанию
+    (`dataset.csv dataset-levels.csv`) — совпадений ноль, все «замороженные»
+    ушли в обучение, а `train_surrogate.py` напечатал «замороженный внешний
+    тест: N сценариев» и отчёт их перечислил. Дальше любое «стало лучше»
+    меряется по строкам, на которых модель обучалась, и заметить это нечем
+    (Н-38).
+    """
+    import pandas as pd
+
+    from aios import neural
+
+    rows = []
+    for scenario in ("пакет:s1", "пакет:s2", "пакет:s3", "пакет:s4"):
+        for month in range(1, 13):
+            rows.append({"scenario": scenario, "well": "1",
+                         "DATA": f"2007-{month:02d}-01", "multiplier": 1.0,
+                         "WLPT_Diff": 100.0, "WOMT_Diff": 20.0, "WWIT_Diff": 0.0,
+                         "WLPR": 10.0, "WWIR": 0.0, "THP": 100.0, "BHP": 80.0})
+    frame = pd.DataFrame(rows)
+
+    with pytest.raises(ValueError, match="ни один замороженный сценарий"):
+        neural.train(frame, seed=20260909, holdout=frozenset({"другой-пакет:s1"}))

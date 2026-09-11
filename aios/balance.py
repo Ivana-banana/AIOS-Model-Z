@@ -148,7 +148,8 @@ def days_of(stamps: set[str]) -> float:
 
 
 def problems(rows: list[dict[str, Any]], fluids: Fluids | None = None,
-             tolerance: float = 1.05, floor: float | None = None) -> list[str]:
+             tolerance: float = 1.05, floor: float | None = None,
+             carried: tuple[float, float] | None = None) -> list[str]:
     """Нарушения баланса воды.
 
     Проверка накопительная, а не помесячная: воду можно копить в системе
@@ -159,10 +160,18 @@ def problems(rows: list[dict[str, Any]], fluids: Fluids | None = None,
 
     `floor` — нижняя граница того же отношения, когда кейс задаёт коридор, а не
     один потолок. None — снизу не проверяем.
+
+    `carried` — отобранное и закачанное **до** первого года этих строк, м³. Нужен,
+    когда проверяются только управляемые годы, а история осталась за окном:
+    коридор планировщика и подтверждение судят с переносом (решение владельца
+    04.09, Р-204), и без того же переноса здесь одна и та же величина считалась
+    двумя окнами. На нетронутой истории Модели Z это давало 16 нарушений там, где
+    их нет: fail-closed объявлял непригодным любого кандидата, включая бездействие
+    (замер 09.09 на `runs/base/rows.csv`: 1,401 в 2011 без переноса против 1,239
+    в 2020 с ним, при потолке 1,3).
     """
     over: list[str] = []
-    produced = 0.0
-    injected = 0.0
+    produced, injected = carried if carried is not None else (0.0, 0.0)
 
     for year in by_year(rows, fluids):
         produced += year.water_m3
@@ -196,7 +205,8 @@ def compensation_problems(rows: list[dict[str, Any]],
                           ceiling: float = 1.5,
                           oil_fvf: float = 1.0,
                           water_fvf: float = 1.0,
-                          floor: float | None = None) -> list[str]:
+                          floor: float | None = None,
+                          carried: tuple[float, float] | None = None) -> list[str]:
     """Нарушения компенсации отбора закачкой — вторая, физическая формулировка.
 
     Отличие от `problems` принципиальное, и от него зависят деньги.
@@ -232,10 +242,18 @@ def compensation_problems(rows: list[dict[str, Any]],
     Какую из двух проверок применять на сдаче — открытый вопрос к организаторам
     (`BLOCKED.md`, п. 3). Обе доступны намеренно: подменять одну другой молча
     значит изменить ЧДД без решения человека.
+
+    `carried` — отобранное и закачанное **до** первого года этих строк, м³. Нужен,
+    когда проверяются только управляемые годы, а история осталась за окном:
+    коридор планировщика и подтверждение судят с переносом (решение владельца
+    04.09, Р-204), и без того же переноса здесь одна и та же величина считалась
+    двумя окнами. На нетронутой истории Модели Z это давало 16 нарушений там, где
+    их нет: fail-closed объявлял непригодным любого кандидата, включая бездействие
+    (замер 09.09 на `runs/base/rows.csv`: 1,401 в 2011 без переноса против 1,239
+    в 2020 с ним, при потолке 1,3).
     """
     over: list[str] = []
-    withdrawn = 0.0
-    injected = 0.0
+    withdrawn, injected = carried if carried is not None else (0.0, 0.0)
 
     for year in by_year(rows, fluids):
         withdrawn += year.oil_m3 * oil_fvf + year.water_m3 * water_fvf

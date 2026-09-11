@@ -184,7 +184,7 @@ class JointRateChoice:
         )
         period = f" с {self.since:%Y-%m-%d}" if self.since is not None else ""
         text = (
-            f"скв. {self.well}{period}: {what}, ЧДД фонда "
+            f"скв. {self.well}{period}: {what}, ЧДД фонда с запасом "
             f"{self.baseline_chdd_m:+.2f} → {self.chosen_chdd_m:+.2f} млн руб."
         )
         if not self.outside_training:
@@ -219,7 +219,8 @@ def choose_rates(surrogate: Surrogate,
                  norms: Norms,
                  *,
                  start_date: date,
-                 multipliers: tuple[float, ...] = SINGLE_MULTIPLIERS) -> list[RateChoice]:
+                 multipliers: tuple[float, ...] = SINGLE_MULTIPLIERS,
+                 max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> list[RateChoice]:
     """Перебрать множители дебита и выбрать по каждой скважине лучший.
 
     Возвращает решение по каждой добывающей скважине, включая «оставить как
@@ -235,7 +236,8 @@ def choose_rates(surrogate: Surrogate,
 
     scores: dict[float, dict[str, float]] = {}
     for multiplier in multipliers:
-        rows = surrogate.predict(scale(base_steps, multiplier))
+        rows = surrogate.predict(scale(base_steps, multiplier,
+                                       max_liquid_rate=max_liquid_rate))
         scores[multiplier] = discounted_margin_by_well(rows, norms, start_date.year)
 
     wells = sorted(
@@ -277,6 +279,8 @@ def choose_joint_rates(
     penalty: float = TRUST_PENALTY,
     weight: float = TRUST_WEIGHT,
     norms_file: Path = economics.NORMS_FILE,
+    carried_water: tuple[float, float] | None = None,
+    max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY,
     start: dict[tuple[str, str], float] | None = None,
     seed: int | None = None,
 ) -> list[JointRateChoice]:
@@ -373,9 +377,14 @@ def choose_joint_rates(
     selected = {
         control: (start or {}).get((control[0], control[1]), 1.0) for control in controls
     }
-    current_steps = _scale_individually(base_steps, selected)
+    # Кандидаты собираются тем же потолком кейса, каким цикл соберёт итоговое
+    # расписание. Иначе поиск оценивает скважину на 450 м³/сут, а собранный план
+    # ставит ей 320: множители выбираются по отклику, которого в плане не будет
+    # (вторая половина Н-18, найдена ревью ночного дифа — Р-44).
+    current_steps = _scale_individually(base_steps, selected,
+                                        max_liquid_rate=max_liquid_rate)
     current_chdd = _value_of(surrogate, current_steps, start_date, limits, norms, fluids,
-                             region, margin, penalty, weight, norms_file)
+                             region, margin, penalty, weight, norms_file, carried_water)
     if current_chdd == float("-inf"):
         # Стартовая точка сама вне доверенной области — ранжировать нечем и не от
         # чего. Продолжать нельзя не из осторожности, а арифметически: разность
@@ -398,9 +407,11 @@ def choose_joint_rates(
         best_chdd = current_chdd
         for multiplier in covered:
             candidate_multipliers = selected | {(kind, well, start): multiplier}
-            candidate = _scale_individually(base_steps, candidate_multipliers)
+            candidate = _scale_individually(base_steps, candidate_multipliers,
+                                            max_liquid_rate=max_liquid_rate)
             candidate_chdd = _value_of(surrogate, candidate, start_date, limits, norms,
-                                       fluids, region, margin, penalty, weight, norms_file)
+                                       fluids, region, margin, penalty, weight, norms_file,
+                                       carried_water)
             if candidate_chdd > best_chdd + 1e-9:
                 best_multiplier = multiplier
                 best_steps = candidate
@@ -427,6 +438,7 @@ def _value_of(
     penalty: float = TRUST_PENALTY,
     weight: float = TRUST_WEIGHT,
     norms_file: Path = economics.NORMS_FILE,
+    carried_water: tuple[float, float] | None = None,
 ) -> float:
     """Чего кандидат стоит — уже с учётом общего ресурса, если он задан.
 
@@ -439,7 +451,13 @@ def _value_of(
     if limits is None:
         value = _chdd(forecast, start_date, norms_file)
     else:
-        fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids)
+        # Перенос накопленного за историю — тот же, с каким приводит цикл
+        # (Р-204). Без него поиск ранжировал кандидатов по числу, которого в
+        # цикле не будет: на базовой точке это −128,3 млн руб. и 264 лишние
+        # срезки, а знак разницы зависит от истории кейса, а не от кандидата
+        # (Н-39).
+        fitted, _decisions = planner.enforce(steps, forecast, norms, limits, fluids,
+                                             carried_water=carried_water)
         value = _chdd(surrogate.predict(fitted), start_date, norms_file)
     # Расстояние меряется по **замыслу** кандидата, а не по расписанию после
     # планировщика, и это не мелочь: обучающие точки области собраны из
@@ -727,7 +745,8 @@ def _multiplier_of(spec: float | Mapping[str, float], well: str) -> float:
 
 def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
           multiplier: float,
-          wells: set[str] | None = None) -> list[ScheduleStep]:
+          wells: set[str] | None = None,
+          max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> list[ScheduleStep]:
     """Умножить дебит добывающих скважин на множитель.
 
     Ноль означает остановку, а не открытую скважину с нулевым дебитом: последнее
@@ -742,7 +761,7 @@ def scale(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
             if wells is not None and control.well not in wells:
                 producers.append(control)
                 continue
-            producers.append(_scaled(control, multiplier))
+            producers.append(_scaled(control, multiplier, max_liquid_rate))
         result.append(ScheduleStep(step.date, tuple(producers), step.injectors))
     return result
 
@@ -898,13 +917,22 @@ def _injection_pressure(steps: list[ScheduleStep] | tuple[ScheduleStep, ...]) ->
 
 
 def apply_choices(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
-                  choices: list[RateChoice] | list[JointRateChoice]) -> list[ScheduleStep]:
-    """Собрать расписание из выбранных по скважинам режимов."""
+                  choices: list[RateChoice] | list[JointRateChoice],
+                  max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY
+                  ) -> list[ScheduleStep]:
+    """Собрать расписание из выбранных по скважинам режимов.
+
+    `max_liquid_rate` — предел дебита **этого кейса**, из таблицы ЭЦН его
+    нормативов (`schedule.liquid_limit`). Умолчание — литерал 500 от Модели Z, и
+    на кейсе с верхним насосом, скажем, до 320 м³/сут оно значит вот что:
+    уставка зажимается до 500, `validate` тут же объявляет её запрещённой, и
+    поиск не соберёт ни одного кандидата с множителем больше единицы (Н-18).
+    """
     selected = {
         (choice.kind, choice.well, getattr(choice, "since", None)): choice.multiplier
         for choice in choices
     }
-    return _scale_individually(steps, selected)
+    return _scale_individually(steps, selected, max_liquid_rate=max_liquid_rate)
 
 
 def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
@@ -942,8 +970,14 @@ def explain(choices: list[RateChoice] | list[JointRateChoice]) -> str:
 
     gain = sum(choice.gain_m for choice in changed)
     stopped = sum(1 for choice in changed if choice.multiplier == 0)
+    # «С запасом» — не украшение: в этих полях лежит значение `_value_of`, то
+    # есть ЧДД приведённого расписания **минус конформный запас** (на замере
+    # ревизии 927,8 млн руб. при ЧДД 11 605,2 → печаталось 10 549,1). Прирост от
+    # этого не страдает — сдвиг сокращается, — а абсолютные числа не сходятся с
+    # `cycle.json:forecast_chdd_m`, и читателю объяснить расхождение было нечем
+    # (Р-68).
     objective = (
-        "прирост ЧДД фонда"
+        "прирост ЧДД фонда с запасом"
         if isinstance(choices[0], JointRateChoice)
         else "прирост дисконтированной маржи"
     )
@@ -1025,6 +1059,7 @@ def multipliers_of(reference: list[ScheduleStep] | tuple[ScheduleStep, ...],
 def _scale_individually(
     steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
     multipliers: dict[tuple[str, str, date | None], float],
+    max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY,
 ) -> list[ScheduleStep]:
     """Применить выбранные множители, каждый — со своей даты и до следующей."""
     by_control: dict[tuple[str, str], list[tuple[date | None, float]]] = {}
@@ -1036,7 +1071,9 @@ def _scale_individually(
     result: list[ScheduleStep] = []
     for step in steps:
         producers = tuple(
-            _scaled(control, _multiplier_at(by_control, "production", control.well, step.date))
+            _scaled(control,
+                    _multiplier_at(by_control, "production", control.well, step.date),
+                    max_liquid_rate)
             for control in step.producers
         )
         injectors = tuple(
@@ -1106,7 +1143,8 @@ def _chdd(rows: list[dict[str, Any]], start_date: date,
     ).chdd_m
 
 
-def _scaled(control: ProducerControl, multiplier: float) -> ProducerControl:
+def _scaled(control: ProducerControl, multiplier: float,
+            max_liquid_rate: float = MAX_LIQUID_RATE_M3_PER_DAY) -> ProducerControl:
     if multiplier == 1.0 or control.status != "OPEN":
         return control
     if multiplier == 0.0:
@@ -1127,7 +1165,7 @@ def _scaled(control: ProducerControl, multiplier: float) -> ProducerControl:
         control.well,
         control.status,
         control.mode,
-        min(rate, MAX_LIQUID_RATE_M3_PER_DAY),
+        min(rate, max_liquid_rate),
         control.bhp,
     )
 

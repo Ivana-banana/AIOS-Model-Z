@@ -1407,3 +1407,89 @@ def test_the_joint_search_covers_the_whole_horizon_by_default():
     assert _period_spans(steps, [None]) == {None: steps}
     assert len(_period_starts(steps, 2)) == 2
 
+
+def test_the_rate_ceiling_comes_from_the_case_pump_table_not_from_the_literal():
+    """Уставку зажимает предел ЭЦН кейса, а не литерал 500 от Модели Z.
+
+    `schedule.liquid_limit` берёт предел из таблицы насосов ТЕХ нормативов, по
+    которым считается ЧДД прогона. До 09.09 он доходил только до проверки
+    результата, а сборка кандидатов зажимала литералом 500: на кейсе с верхним
+    насосом до 320 м³/сут уставка становилась 500, проверка объявляла её
+    запрещённой — и поиск не собирал ни одного кандидата с множителем больше
+    единицы (Н-18).
+    """
+    from aios.deck import ProducerControl, ScheduleStep
+
+    steps = [ScheduleStep(date(2007, 1, 1),
+                          (ProducerControl("1", "OPEN", "LRAT", 300.0, 50.0),), ())]
+
+    assert optimise.scale(steps, 2.0)[0].producers[0].liquid_rate == 500.0
+    assert optimise.scale(
+        steps, 2.0, max_liquid_rate=320.0)[0].producers[0].liquid_rate == 320.0
+
+    choices = [optimise.RateChoice(well="1", multiplier=2.0,
+                                   baseline_margin_m=0.0, chosen_margin_m=1.0)]
+    applied = optimise.apply_choices(steps, choices, max_liquid_rate=320.0)
+
+    assert applied[0].producers[0].liquid_rate == 320.0
+
+    # И поиск обязан собирать кандидатов тем же потолком: иначе он оценивает
+    # скважину на 450 м³/сут, а собранный план ставит ей 320 — множители
+    # выбираются по отклику, которого в плане не будет (Р-44).
+    surrogate = DeclineSurrogate.fit(history("1", 0.5, 0.01), fluids=FLUIDS)
+    seen: list[float] = []
+    original = optimise._scale_individually
+
+    def spy(base, multipliers_, max_liquid_rate=MAX_LIQUID_RATE_M3_PER_DAY):
+        seen.append(max_liquid_rate)
+        return original(base, multipliers_, max_liquid_rate)
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(optimise, "_scale_individually", spy):
+        optimise.choose_joint_rates(
+            surrogate, plan(["1"], months=12), start_date=START,
+            multipliers=(1.0, 1.5), max_liquid_rate=320.0,
+        )
+
+    assert seen and set(seen) == {320.0}, (
+        f"поиск собирал кандидатов не потолком кейса: {sorted(set(seen))}"
+    )
+
+
+def test_the_search_fits_the_same_corridor_the_cycle_applies(norms, monkeypatch):
+    """Поиск обязан приводить кандидата тем же коридором, что и цикл.
+
+    `_value_of` считает ЧДД расписания, **приведённого** к ограничениям («сначала
+    срезка, потом деньги»), но звал `planner.enforce` без переноса накопленного
+    за историю, тогда как цикл приводит с ним (Р-204). Каждый кандидат
+    ранжировался по числу, которого в цикле не будет: на базовой точке это
+    −128,3 млн руб. и 264 лишние срезки, а знак разницы зависит от истории
+    кейса, а не от кандидата (Н-39).
+    """
+    from aios import planner as planner_module
+
+    norms_value = norms
+    seen: list[object] = []
+    original = planner_module.enforce
+
+    def spy(steps, forecast, norms_, limits_, fluids_, carried_water=None):
+        seen.append(carried_water)
+        return original(steps, forecast, norms_, limits_, fluids_,
+                        carried_water=carried_water)
+
+    monkeypatch.setattr(optimise.planner, "enforce", spy)
+
+    surrogate = DeclineSurrogate.fit(history("1", 0.5, 0.01), fluids=FLUIDS)
+    optimise._value_of(
+        surrogate, plan(["1"], months=12), START,
+        planner.Limits(enforce_water_balance=True,
+                       water_balance_rule="compensation",
+                       water_tolerance=1.3),
+        norms_value, FLUIDS, carried_water=(1000.0, 900.0),
+    )
+
+    assert seen == [(1000.0, 900.0)], (
+        "поиск привёл кандидата без переноса истории — то есть не тем коридором, "
+        f"каким приведёт цикл: {seen}"
+    )

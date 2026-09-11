@@ -2,6 +2,7 @@
 
 import csv
 import math
+import re
 import statistics
 from pathlib import Path
 
@@ -518,7 +519,12 @@ def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
     import re
 
     submission = _read("docs/submission.md")
-    declared = re.search(r"`(runs/[\w.-]+/wells_schedule\.inc)`", submission)
+    # Путь берётся тем же выражением, что и в `check_package.py`, — многоуровневым.
+    # Прежнее `runs/[\w.-]+/wells_schedule\.inc` не умело перешагнуть второй
+    # слэш, и с 08.09, когда заявка стала хвостом в подкаталоге `submission/`,
+    # сторож молча сторожил **исходный** файл прогона вместо сдаваемого: он
+    # тоже назван в документе, и регулярка находила его (Н-37).
+    declared = re.search(r"`(runs/[\w.-]+(?:/[\w.-]+)*/wells_schedule\.inc)`", submission)
     assert declared, "в docs/submission.md не найден сдаваемый файл"
     path = declared.group(1)
 
@@ -527,7 +533,11 @@ def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
     # мест пять, а не три: демонстрация тоже показывает файл, и на защите
     # показывают именно её (Б36)
     # в показе прогон назван каталогом, а не файлом — сравниваем по имени прогона
-    name = path.rsplit("/", 2)[-2]
+    # в показе прогон назван каталогом; у хвоста каталог прогона — на уровень выше
+    run = path.rsplit("/", 1)[0]
+    name = run.rsplit("/", 1)[-1]
+    if name == "submission":
+        name = run.rsplit("/", 2)[-2]
     assert name in _read("docs/presentation.md"), "шаг демозапуска ведёт не туда"
     assert name in _read("docs/demo.md"), "сценарий показа ведёт не туда"
     assert path in _read("docs/submission-day.md"), "паспорт отправки ведёт не туда"
@@ -538,7 +548,11 @@ def test_the_preflight_and_readme_point_at_the_file_we_actually_submit():
     # инструкции буквально, получил бы файл, которого мы не заявляем. Это ровно
     # тот механизм расхождения с пересчётом организаторов, о котором предупреждает
     # первый абзац самого документа.
+    # Кейс собирается в каталоге прогона, а сдаётся хвост из его подкаталога
+    # `submission/` — то же правило, что у `check_release_tag.reproduction_problem`.
     run = path.rsplit("/", 1)[0]
+    if run.endswith("/submission"):
+        run = run[: -len("/submission")]
     commands = submission[submission.index("## 3."):]
     commands = commands[:commands.index("## 4.")]
     assert f"{run}/RUN.DATA" in commands, (
@@ -576,8 +590,50 @@ def test_submission_day_sheet_keeps_the_release_gate_and_caveat():
     assert "не получен (В-04)" in sheet
     assert "docs/submission-day.md" in _read("README.md")
     assert "все шесть проверок" in _read("README.md")
-    assert "в **отдельной чистой копии** `submit-2026-09-08`" in sheet
+    # Тег берётся из якоря паспорта, а не литералом: замороженное имя тега
+    # означает сторожа, который краснеет на честном перевыпуске, — 09.09 это и
+    # случилось (Р-260). Проверяется связь: путь восстановления обязан звать
+    # ТОТ ЖЕ тег, который паспорт объявил действующим.
+    active = re.search(
+        r"\*\*Действующий тег заявки — `(submit-[\d.-]+)`\*\*", sheet)
+    assert active, "в паспорте нет якоря «Действующий тег заявки»"
+    assert f"в **отдельной чистой копии** `{active.group(1)}`" in sheet, (
+        f"путь восстановления зовёт не действующий тег {active.group(1)}"
+    )
     assert "вернуть в текущий `main`" in sheet
+
+
+def test_a_dated_revision_of_the_compliance_sheet_keeps_its_own_tag():
+    """Датированный снимок сверки по ТЗ описывает свой день, а не сегодняшний.
+
+    Обратная болезнь к Р-260. Там сторож требовал имя тега дословно и краснел
+    на честном перевыпуске; здесь имя тега перецеливали вместе со всем
+    документом — трижды подряд (`submit-2026-08-24.1` → `09-02` → `09-08` →
+    `09-09`), и абзац стал утверждать, что ревизия 01.09 на коммите `e49b60d`
+    (1 291 тест) сверилась с тегом, выпущенным 09.09. Это документ, который
+    читает жюри, и переписанный задним числом прогон в нём — не опечатка.
+
+    Проверяется не литерал ради литерала: исторический факт не меняется
+    никогда, а действующий тег живёт в якоре паспорта — и совпасть эти два
+    имени больше не могут.
+    """
+    sheet = _read("docs/tz-compliance.md")
+    snapshot = sheet[:sheet.index("**Дополнение вечером 01.09**")]
+
+    assert "тег `submit-2026-08-24.1` сходится с заявкой" in snapshot, (
+        "снимок ревизии 01.09 назван не тем тегом, который действовал на e49b60d"
+    )
+    assert "Имена тегов в датированных снимках не обновляются" in snapshot, (
+        "нет запрета, из-за отсутствия которого строку перецеливали трижды"
+    )
+
+    active = re.search(
+        r"\*\*Действующий тег заявки — `(submit-[\d.-]+)`\*\*",
+        _read("docs/submission-day.md"))
+    assert active, "в паспорте нет якоря «Действующий тег заявки»"
+    assert active.group(1) not in snapshot, (
+        f"датированный снимок перецелен на действующий тег {active.group(1)}"
+    )
 
 
 def test_submission_does_not_reopen_resolved_blockers():
@@ -915,6 +971,83 @@ def test_jury_documents_name_the_reference_numbers_the_files_give(published_refe
         assert _ru(opm.cumulative_chdd_m) in document, f"{name} не называет эталон OPM Flow"
         assert _ru(tnavigator.cumulative_chdd_m) in document, f"{name} не называет эталон тНавигатора"
         assert "1,20 %" in document, f"{name} не называет разрыв симуляторов"
+
+
+def test_the_gap_in_the_declared_window_is_named_where_the_jury_will_ask(
+        published_references):
+    """Разрыв схем В ОКНЕ ЗАЯВКИ назван числами из тех же файлов.
+
+    Числа 5 157,0 и 5 218,9 накоплены с 1991, а заявляется ЧДД за период
+    управления: у эталонного расчётчика окно расчёта и база дисконтирования —
+    один параметр `--start-year`, равный 2007 (Р-249). Годы 1991–2006 в
+    заявляемое число не входят вовсе, и разрыв там втрое больше. Сторож держит
+    в документе защиты именно оконные числа: спросят про них, а не про 1991
+    (Р-267).
+
+    Считаются они здесь, а не переписываются литералом, — иначе документ и
+    файлы организаторов разойдутся молча, как это уже было с порогом шлюза
+    (Р-265).
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from simulator_gap import npv_in_window
+
+    opm, tnavigator = published_references
+    in_window = {
+        "OPM Flow": npv_in_window(opm, 2007),
+        "тНавигатор": npv_in_window(tnavigator, 2007),
+    }
+    share = in_window["тНавигатор"] / in_window["OPM Flow"] - 1
+
+    # окно обязано давать разрыв меньше: годы разбуривания в заявку не входят
+    assert 0 < share < tnavigator.cumulative_chdd_m / opm.cumulative_chdd_m - 1
+
+    document = _read("docs/defence-qa.md")
+    for name, value in in_window.items():
+        assert _ru(value) in document, (
+            f"защита не называет эталон {name} в окне заявки: ожидалось {_ru(value)}"
+        )
+    printed = f"{100 * share:.2f}".replace(".", ",")
+    assert f"{printed} %" in document, (
+        f"защита не называет разрыв схем в окне заявки: ожидалось {printed} %"
+    )
+    # и направление: симулятор проверки даёт больше — это довод, а не деталь
+    assert in_window["тНавигатор"] > in_window["OPM Flow"]
+    assert "в нашу пользу" in document
+
+
+def test_the_conservative_uplift_compares_one_flag_with_itself(published_references):
+    """Прирост против ВАШЕЙ базы считается при одном `chargeInitialPump`.
+
+    Публикация организаторов посчитана при ДА (иначе не сходится счётчик
+    насосов: 145 против 55), а заявка — при НЕТ, как в поставленных нормативах.
+    Поставить 13 133,8 рядом с 11 904,0 и назвать разницу приростом значит
+    выдать цену флага (125,1 млн руб. на базе) за результат работы системы.
+
+    Выравнивание по вашей публикации даёт 13 023,2 против 11 904,0 — это и
+    обязано стоять в защите. Число считается здесь из книги, а не переписано
+    литералом.
+    """
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from simulator_gap import npv_in_window
+
+    _, tnavigator = published_references
+    their_base = npv_in_window(tnavigator, 2007)
+    ours_with_the_flag = 13_023.2  # docs/experiments.md, «Четыре системы отсчёта»
+
+    uplift = (ours_with_the_flag - their_base) / their_base * 100
+    printed = f"{uplift:.2f}".replace(".", ",")
+
+    document = _read("docs/defence-qa.md")
+    assert f"{printed} %" in document, (
+        f"защита не называет консервативный прирост: ожидалось {printed} %"
+    )
+    # и объясняет, почему нельзя считать иначе
+    assert "смешение флагов" in document
+    assert "13 023,2" in document, "защита не называет заявку в системе отсчёта публикации"
 
 
 def test_withdrawn_oil_gap_is_marked_as_withdrawn_wherever_it_appears():
@@ -1510,4 +1643,106 @@ def test_the_declared_uplift_is_the_difference_of_two_machine_traces():
     written = float(stated.group(1).replace("\u00a0", "").replace(" ", "").replace(",", "."))
     assert abs(written - uplift) <= 0.05, (
         f"заявленный прирост {written} не равен разности следов {uplift:.3f}"
+    )
+
+
+def test_the_documented_threshold_is_the_one_that_actually_guards():
+    """Порог в README — порог области ИЗ АРТЕФАКТА, а не из чужого набора.
+
+    Сверка с ТЗ 09.09 нашла разъезд, который не видно ни из одного прогона:
+    README печатал «порог 21,62» и ссылался на `artifacts/trust-gate.json`,
+    а поиск и `trust_gate.py --schedule` судят областью внутри
+    `artifacts/surrogate.joblib` — там порог **24,133**. То есть документ
+    описывал шлюз, который ничего не сторожит, и жюри читало число, не
+    относящееся к сдаваемому решению.
+
+    Число берётся из самого артефакта, а не повторяется литералом: тогда
+    переобучение суррогата не может тихо разойтись с документом.
+    """
+    import joblib
+
+    model = ROOT / "artifacts" / "surrogate.joblib"
+    if not model.is_file():
+        pytest.skip("нет artifacts/surrogate.joblib")
+
+    threshold = joblib.load(model).trust_region.threshold
+    shown = f"{threshold:.2f}".replace(".", ",")
+
+    readme = _read("README.md")
+    assert f"порог {shown}" in readme, (
+        f"README не называет действующий порог области: ожидалось «порог {shown}»"
+    )
+    # и 21,62 остаётся в README только как названное чужое число
+    if "21,62" in readme:
+        assert "Не путать" in readme, (
+            "21,62 упомянут в README без оговорки, чем он отличается от действующего"
+        )
+
+
+def test_the_shipped_trust_passport_matches_the_shipped_model():
+    """Паспорт шлюза в репозитории собран из того же артефакта, что мы сдаём.
+
+    Паспорт читает главная страница интерфейса. Пока его не было в git, она
+    отвечала «доверенная область не собрана» на клоне проверяющего — при том
+    что README обещал калиброванный шлюз (Р-265). Теперь он есть, и сторож
+    следит за тем, чтобы он не пережил переобучение молча: `model_hash` в нём
+    обязан быть хэшем сдаваемого суррогата.
+    """
+    import hashlib
+    import json as json_module
+
+    import joblib
+
+    model = ROOT / "artifacts" / "surrogate.joblib"
+    passport = ROOT / "artifacts" / "trust-gate.json"
+    assert passport.is_file(), "паспорт шлюза не в репозитории"
+
+    raw = json_module.loads(passport.read_text(encoding="utf-8"))
+    assert raw["calibrated"] is True, "паспорт есть, но шлюз не калиброван"
+    assert raw["conformal_samples"] == 9
+    assert round(raw["optimism_margin"], 1) == 927.8
+
+    if not model.is_file():
+        pytest.skip("нет artifacts/surrogate.joblib")
+    bundle = joblib.load(model)
+    assert raw["threshold_tau"] == pytest.approx(bundle.trust_region.threshold)
+    assert raw["model_hash"] == hashlib.sha256(model.read_bytes()).hexdigest(), (
+        "паспорт собран не тем суррогатом, который сдаётся"
+    )
+
+
+def test_the_training_report_ships_with_the_model_it_describes():
+    """Отчёт об обучении лежит в репозитории и описывает сдаваемую модель.
+
+    Сама модель в git с Р-197, а отчёт — нет: интерфейс на клоне проверяющего
+    печатал «Модель ещё не обучена: отчёт artifacts/surrogate-metrics.json
+    отсутствует», стоя рядом с файлом модели, и `_neural_available()` из-за
+    этого отключал нейросетевой путь целиком. При том что «качество суррогата»
+    — критерий трека 2, а README называет отчёт в комплекте поставки (Р-266).
+
+    Связь проверяется по содержанию, а не по наличию файла: seed и хэши
+    обучающих CSV в отчёте обязаны совпасть с теми, что зашиты в артефакт, —
+    иначе переобучение разойдётся с документом молча.
+    """
+    import json as json_module
+    import subprocess
+
+    import joblib
+
+    report = ROOT / "artifacts" / "surrogate-metrics.json"
+    assert report.is_file(), "отчёта об обучении нет"
+    tracked = subprocess.run(["git", "ls-files", "artifacts/surrogate-metrics.json"],
+                             cwd=ROOT, capture_output=True, text=True).stdout
+    assert tracked.strip(), "отчёт есть на диске, но не в git — клон его не получит"
+
+    raw = json_module.loads(report.read_text(encoding="utf-8"))
+    model = ROOT / "artifacts" / "surrogate.joblib"
+    if not model.is_file():
+        pytest.skip("нет artifacts/surrogate.joblib")
+
+    bundle = joblib.load(model)
+    assert raw["training"]["seed"] == bundle.metadata["seed"]
+    assert ({one["sha256"] for one in raw["training"]["datasets"]}
+            == {one["sha256"] for one in bundle.metadata["datasets"]}), (
+        "отчёт описывает не ту обучающую выборку, на которой собран артефакт"
     )

@@ -305,6 +305,35 @@ def unverified_numbers(text: str, evidence: Evidence) -> tuple[str, ...]:
     return tuple(dict.fromkeys(unknown))
 
 
+#: Слова, которыми текст объявляет полный расчёт состоявшимся.
+CONFIRMED_WORDS = (
+    "подтвержд", "полным расчётом", "полного расчёта", "полный расчёт",
+    "рассчитано на ггдм", "посчитано на ггдм",
+)
+
+
+def false_confirmation(text: str, evidence: Evidence) -> str | None:
+    """Текст объявляет полный расчёт, которого не было. `None` — не объявляет.
+
+    Статус — не число, и барьер чисел его не видел вовсе: ответ, где прирост
+    подписан «подтверждено полным расчётом ГГДМ» при `confirmed = False`,
+    проходил обе проверки. А это ровно то утверждение, из-за которого расхождение
+    заявленного ЧДД с пересчётом организаторов и становится дисквалификацией:
+    прогноз суррогата, поданный как факт ГГДМ (Р-51).
+
+    Обратную сторону не проверяем: не назвать подтверждение, когда оно есть, —
+    скромность, а не ложь.
+    """
+    if evidence.confirmed:
+        return None
+    lowered = text.lower()
+    for word in CONFIRMED_WORDS:
+        if word in lowered:
+            return (f"текст объявляет полный расчёт («{word}»), а факты говорят "
+                    "«ПРОГНОЗ суррогата, полным расчётом не подтверждено»")
+    return None
+
+
 def _quoted_facts(evidence: Evidence) -> str:
     """Весь текст, который модель видела и может процитировать дословно.
 
@@ -614,6 +643,22 @@ def _talk(evidence: Evidence,
     cached = _cache_path(settings, fingerprint)
     if cached is not None and cached.is_file():
         stored = json.loads(cached.read_text(encoding="utf-8"))
+        # Барьеры проходит и текст из кэша. Инвариант «ответ, не прошедший
+        # проверку, не может быть показан принятым — ни на странице цикла, ни в
+        # отчёте, ни в кэше» держался только на записи: файл кэша правится
+        # руками, приезжает с другой машины и — по плану `BLOCKED.md`, п. 0.2-бис
+        # — кладётся в сдаваемый пакет. Проверять его на чтении стоит доли
+        # секунды, а не проверять — значит показывать выдуманное число под
+        # подписью «проверка чисел пройдена» (Р-52).
+        rejected = _rejected(stored["text"], evidence)
+        if rejected:
+            return Explanation(
+                text=template_text(evidence),
+                source="cache-rejected",
+                fingerprint=fingerprint,
+                model=stored.get("model", ""),
+                rejected_numbers=rejected,
+            )
         return Explanation(
             text=stored["text"],
             source="cache",
@@ -669,10 +714,7 @@ def _talk(evidence: Evidence,
 
     # Два барьера, но одно число — одна строка отказа: выдуманное число ловят оба,
     # и печатать его дважды значит преувеличивать количество ошибок.
-    literal = unverified_numbers(text, evidence)
-    rejected = literal + tuple(f"{token} ({verdict})"
-                               for token, verdict in _broken_tuples(text, evidence)
-                               if token not in literal)
+    rejected = _rejected(text, evidence)
     if rejected:
         return Explanation(
             text=template_text(evidence),
@@ -694,6 +736,21 @@ def _talk(evidence: Evidence,
         )
 
     return Explanation(text=text, source="llm", fingerprint=fingerprint, model=settings.model)
+
+
+def _rejected(text: str, evidence: Evidence) -> tuple[str, ...]:
+    """Всё, из-за чего ответ нельзя показать принятым. Пусто — можно.
+
+    Три барьера, но одно число — одна строка отказа: выдуманное число ловят два
+    первых, и печатать его дважды значит преувеличивать количество ошибок.
+    Третий про статус: он не число, и первые два его не видят.
+    """
+    literal = unverified_numbers(text, evidence)
+    rejected = literal + tuple(f"{token} ({verdict})"
+                               for token, verdict in _broken_tuples(text, evidence)
+                               if token not in literal)
+    lie = false_confirmation(text, evidence)
+    return rejected + (lie,) if lie is not None else rejected
 
 
 def _broken_tuples(text: str, evidence: Evidence) -> tuple[tuple[str, str], ...]:

@@ -39,8 +39,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import random
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -212,13 +214,40 @@ def _run_tests(tests: list[str], timeout: float) -> bool:
             [sys.executable, "-m", "pytest", "-x", "-q", "-p", "no:warnings",
              "--no-header", *tests],
             capture_output=True, text=True, cwd=ROOT, timeout=timeout,
+            # Метка «этот pytest запущен мутацией». По ней вложенный `mutate.py`
+            # откажется работать — см. CHILD_MARKER.
+            env={**os.environ, CHILD_MARKER: "1"},
         )
     except subprocess.TimeoutExpired:
         return False
     return done.returncode == 0
 
 
+#: Переменная окружения, которой прогон метит запускаемый им `pytest`.
+#:
+#: Без неё инструмент складывается в форк-бомбу одним неверным аргументом:
+#: `--tests tests/test_mutate.py` означает, что на каждую мутацию запускается
+#: `pytest` того самого файла, который запускает `mutate.py` — и так вглубь без
+#: дна. В ночь на 09.09 это дважды уронило графическую сессию машины: 884 живых
+#: процесса, 19,6 ГБ RSS при 15,9 ГБ памяти, а `earlyoom` убивал не виновников
+#: (каждый процесс мелкий), а пользовательскую шину dbus вместе со всем рабочим
+#: столом. Диагноз соседней сессии, замер 01:40.
+#:
+#: Развязать рекурсию в самих тестах мало: аргумент передаёт человек, и ошибиться
+#: он может снова. Здесь стоит замок, который держит независимо от аргументов.
+CHILD_MARKER = "AIOS_MUTATE_CHILD"
+
+
 def main(argv: list[str] | None = None) -> int:
+    if os.environ.get(CHILD_MARKER) == "1":
+        print(
+            "мутационный прогон запущен изнутри мутационного прогона — отказ.\n"
+            "Скорее всего, в --tests передан файл, который сам зовёт mutate.py: "
+            "каждая мутация тогда порождает новый прогон, и так без дна. "
+            "Укажите в --tests тесты подопытного модуля, а не тесты инструмента.",
+            file=sys.stderr)
+        return 1
+
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--module", type=Path, required=True, help="файл, который мутируем")
@@ -257,6 +286,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"восстановлен {module.name} из бэкапа прерванного прогона",
               file=sys.stderr)
 
+    # Базовый прогон на НЕИЗМЕНЁННОМ модуле. Без него любая причина, по которой
+    # набор красен сам по себе — сломанный импорт, отсутствующая зависимость,
+    # один упавший тест, неверный `--tests`, замок `CHILD_MARKER`, — даёт
+    # «убито всё, выжило 0» и код 0. Это худший из возможных отчётов: он
+    # неотличим от настоящего успеха и читается как доказательство качества
+    # тестов. Ровно ту же ложь этот файл называет недопустимой в первом абзаце
+    # своей же документации, только там источником была сбитая нумерация.
+    #
+    # Найдено соседней сессией 09.09 по замеру, который я же и сделал: прогон с
+    # заведомо неверным `--tests` напечатал «убито 7, выжило 0» и вернул 0.
+    # Стоит один прогон набора; на дешёвом наборе это доли секунды.
+    if not _run_tests(tests, arguments.timeout):
+        print(
+            "тесты красные на неизменённом модуле — мутационный вердикт "
+            "бессмысленен: каждая мутация будет засчитана убитой. Почините "
+            f"набор или проверьте --tests ({' '.join(tests)}).",
+            file=sys.stderr)
+        return 1
+
     source = module.read_text(encoding="utf-8")
     every = plan(source)
     if not every:
@@ -273,12 +321,39 @@ def main(argv: list[str] | None = None) -> int:
         random.Random(arguments.seed).shuffle(order)
         chosen = order if arguments.limit == 0 else order[:arguments.limit]
 
-    print(f"модуль:  {module.relative_to(ROOT)}")
+    # Модуль бывает и вне репозитория (так его гоняют тесты самого инструмента),
+    # и `relative_to` на таком пути бросает ValueError — трассировкой, сразу
+    # после того, как бэкап уже снят.
+    inside = module.is_relative_to(ROOT)
+    print(f"модуль:  {module.relative_to(ROOT) if inside else module}")
     print(f"тесты:   {' '.join(tests)}")
     print(f"мутаций: {len(chosen)} из {len(every)} возможных, seed {arguments.seed}")
     print()
 
     shutil.copy2(module, backup)
+
+    # `finally` спасает от исключения и от Ctrl-C, но не от `SIGTERM`: так
+    # прогон убивает таймаут вызывающей команды или диспетчер задач, и модуль
+    # остаётся мутированным. Ровно это случилось 09.09 — `aios/run.py` пролежал
+    # переписанным `ast.unparse`, и заметил снова `ruff`, а не человек.
+    # Обработчик восстанавливает файл и выходит тем же кодом, что и без него.
+    def _restore_and_exit(number: int, _frame: object) -> None:
+        shutil.copy2(backup, module)
+        backup.unlink(missing_ok=True)
+        print(f"\nпрогон прерван сигналом {number}: {module.name} восстановлен",
+              file=sys.stderr)
+        raise SystemExit(128 + number)
+
+    # `getattr`, а не `hasattr(signal, number.name)`: кортеж собирается целиком
+    # до того, как условие вообще посмотрят, и на платформе без `SIGHUP`
+    # (Windows) обработчик падал бы `AttributeError` при сборке кортежа — то
+    # есть страховка ронялa бы прогон вместо того, чтобы его спасать (Р-46).
+    previous = {
+        number: signal.signal(number, _restore_and_exit)
+        for number in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None))
+        if number is not None
+    }
+
     survived: list[Mutation] = []
     broken = killed = 0
     started = time.monotonic()
@@ -299,8 +374,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{position:3d}/{len(chosen)}] {mark:7s} {mutation} "
                   f"({time.monotonic() - started:.0f} с)", flush=True)
     finally:
-        shutil.copy2(backup, module)
-        backup.unlink()
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+        # Обработчик сигнала мог восстановить и убрать бэкап раньше нас.
+        if backup.is_file():
+            shutil.copy2(backup, module)
+            backup.unlink()
 
     print()
     print(f"убито {killed}, выжило {len(survived)}, не собралось {broken}")

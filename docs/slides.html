@@ -407,7 +407,7 @@ body.overview .progress, body.overview .hint { display: none; }
         зоны, а не наше расписание (слайд 9).</li>
     </ul>
   </div>
-  <div class="src">Источники: docs/submission.md (разделы 1 и 3), тег submit-2026-09-08</div>
+  <div class="src">Источники: docs/submission.md (разделы 1 и 3), тег submit-2026-09-09</div>
 </section>
 
 <section data-kind="talk">
@@ -552,22 +552,24 @@ body.overview .progress, body.overview .hint { display: none; }
   <div class="slide-body">
     <h2>Итог и сверка с вашим расчётом</h2>
     <table>
-      <tr><td>эталон, тНавигатор</td><td class="num">5 218,9</td><td class="num">−0,21 %</td></tr>
-      <tr class="ours"><td>наш прогон, OPM Flow</td><td class="num">5 207,7</td><td class="num">—</td></tr>
-      <tr><td>эталон, OPM Flow</td><td class="num">5 157,0</td><td class="num">+0,98 %</td></tr>
-      <tr><td>разрыв между вашими расчётами</td><td class="num">61,9</td><td class="num">1,20 %</td></tr>
+      <tr><td>эталон, тНавигатор</td><td class="num">11 904,0</td><td class="num">—</td></tr>
+      <tr><td>эталон, OPM Flow</td><td class="num">11 869,6</td><td class="num">—</td></tr>
+      <tr class="ours"><td>разрыв между вашими расчётами</td><td class="num">+34,4</td><td class="num">+0,29 %</td></tr>
     </table>
-    <p class="sub" style="margin:0 0 20px;font-size:27px">млн руб., база 1991, chargeInitialPump = ДА —
-      система отсчёта вашей публикации; с 02.09 от неё же считается и заявка.</p>
+    <p class="sub" style="margin:0 0 20px;font-size:27px">млн руб., окно 2007–2025 — то же,
+      в котором заявляется число. С базой 1991 тот же разрыв 1,20 %: годы разбуривания
+      в заявку не входят.</p>
     <ul>
-      <li>По нефти с вашим OPM Flow сходимся на <b>0,01 %</b> за 32 года, по закачке —
-        в ноль, смен ЭЦН 145 против 145.</li>
-      <li>Границы называем сами: сверка сделана <b>на исторической истории</b>, а не на
-        нашем форсированном сценарии; <code>PINCHREG</code> никуда не делся, расчёт идёт
-        с ослабленным разбором.</li>
+      <li>Знак в нашу пользу: <b>тНавигатор даёт больше</b>. Закачка сходится в ноль —
+        её задаёт расписание; расходится только то, что решается уравнениями.</li>
+      <li>В вашей системе отсчёта (1991, chargeInitialPump = ДА) наш прогон лёг
+        <b>между двумя вашими</b>: 5 207,7 при 5 218,9 и 5 157,0; по нефти
+        <b>0,01 %</b> за 32 года.</li>
+      <li>Границу называем сами: сверка сделана <b>на истории</b>, а не на нашем
+        форсированном сценарии, и перенести её нечем.</li>
     </ul>
   </div>
-  <div class="src">Команда: <code>python scripts/compare_reference.py --charge-initial-pump --brief</code></div>
+  <div class="src">Команда: <code>python scripts/simulator_gap.py --rows runs/base/rows.csv</code></div>
 </section>
 
 <section class="backup">

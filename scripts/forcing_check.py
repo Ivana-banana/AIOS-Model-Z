@@ -41,6 +41,11 @@ def main() -> None:
                         help="заявляемый множитель отбора для того же порога")
     args = parser.parse_args()
 
+    # Отказ словами, а не FileNotFoundError: выгрузку называет человек (Р-62).
+    if not args.rows.is_file():
+        print(f"нет выгрузки {args.rows}: проверять форсаж не на чем. "
+              "Ожидается rows.csv из scripts/export_rows.py", file=sys.stderr)
+        return 1
     with args.rows.open(newline="", encoding="utf-8") as handle:
         rows = [row for row in csv.DictReader(handle)
                 if not args.since or str(row["DATA"]) >= args.since]

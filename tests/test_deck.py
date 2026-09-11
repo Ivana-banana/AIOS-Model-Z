@@ -623,3 +623,49 @@ def test_an_injector_without_a_named_fluid_is_water():
     assert fluids["9"] == "WATER", "пропущенная фаза не подставлена водой"
     assert fluids["8"] == "GAS", "названная фаза подменена водой"
 
+
+def test_july_is_read_in_both_canonical_spellings():
+    """`JLY` — второе каноническое сокращение июля в Eclipse, и деки им пишут.
+
+    Таблица входного контроля (`aios/deckcheck.py`) его знала, а таблица
+    разбора — нет: дек с такой датой проходил проверку и валился уже на разборе
+    голым `KeyError('JLY')` — без кода отказа и без подсказки. Две копии одной
+    таблицы разошлись ровно так, как расходятся все такие копии; теперь она одна.
+
+    Генератор при этом обязан писать `JUL`: наш файл читает их симулятор, и
+    вторая форма ему не нужна.
+    """
+    from aios import deckcheck
+
+    assert deck.parse_date_record(("1", "JLY", "2007")) == date(2007, 7, 1)
+    assert deck.parse_date_record(("1", "JUL", "2007")) == date(2007, 7, 1)
+    assert deck.parse_schedule_text("DATES\n 1 JLY 2007 /\n/\n").steps[0].date == \
+        date(2007, 7, 1)
+    assert deck.format_date_record(date(2007, 7, 1)) == "01 JUL 2007"
+    assert deckcheck._MONTHS is deck._MONTHS, (
+        "у контроля дека снова своя таблица месяцев — они разойдутся молча"
+    )
+
+
+def test_a_terminator_without_a_space_before_it_is_still_a_terminator():
+    """`50/` и `2*/` — законная запись Eclipse: пробел перед `/` не обязателен.
+
+    Токенизатор брал `\\S+` и втягивал косую черту в значение, после чего блок
+    оказывался «не закрыт одиночным /» и разбор отказывал целиком — на деке,
+    который симулятор читает без замечаний. На Модели Z дефект спит: её дек
+    пишет пробел. Просыпается на чужом деке валидационного кейса.
+
+    Отрезается только **хвостовая** косая черта: внутри токена она часть пути,
+    и `INCLUDE` без кавычек (законная форма, её пишет SPE9 из `opm-data`)
+    обязан остаться целым.
+    """
+    schedule = deck.parse_schedule_text(
+        "DATES\n 1 JAN 2007 /\n/\n\n"
+        "WCONPROD\n '1' 'OPEN' 'LRAT' 3* 30.0 1* 50/\n/\n")
+
+    assert len(schedule.steps) == 1
+    assert schedule.steps[0].producers[0].liquid_rate == 30.0
+    assert schedule.steps[0].producers[0].bhp == 50.0
+
+    assert deck.parse_keywords("INCLUDE\n  model/sch.inc /\n")[0].records == \
+        (("model/sch.inc",),), "косая черта внутри пути — не терминатор"

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -30,6 +31,31 @@ REQUIRED_COLUMNS: list[str] = list(chdd_model.REQUIRED_COLUMNS)
 
 #: Версия эталона, под которую написана обвязка. Обновили архив — обновить и тесты.
 VENDOR_VERSION: str = chdd_model.VERSION
+
+
+def vendor_environment() -> dict[str, str]:
+    """Окружение для запуска `РАСЧЕТ_ЧДД.py` подпроцессом.
+
+    Точка входа организаторов печатает по-русски и с `м³` — и в причине отказа
+    («Методика не допускает WLPR свыше 500 м³/сут»), и в замечании успешного
+    расчёта («Найдено значений WLPR выше 500 м³/сут»). Под `capture_output`
+    поток подпроцесса не консоль, поэтому Python берёт кодировку локали: на
+    русской Windows это cp1251, где `³` не существует. Дальше два разных вреда:
+
+    * **успешный расчёт объявляется отказом.** `print` замечания падает с
+      `UnicodeEncodeError` уже после того, как JSON записан, — код возврата 1,
+      и обвязка сообщает «эталонный расчётчик отказал», имея на руках готовое
+      число. Воспроизведено 09.09 на этой машине: строка с `WLPR 550` до
+      стартового года, `--start-year 2007` — код 1 с записанным `npv.json`;
+    * **причина отказа не читается.** Вендорный текст приходит байтами cp1251,
+      а обвязка декодирует UTF-8 — оператор получает `�` вместо «WLPR
+      свыше 500».
+
+    Вендор при этом не трогается: кодировку задаёт тот, кто его зовёт.
+    """
+    environment = dict(os.environ)
+    environment["PYTHONIOENCODING"] = "utf-8"
+    return environment
 
 
 @dataclass(frozen=True)
@@ -70,6 +96,26 @@ class NpvResult:
 def load_norms(norms_file: Path = NORMS_FILE) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Нормативы и таблица ЭЦН из файла организаторов — не из литералов в коде."""
     return excel_io.load_norms(norms_file)
+
+
+def charge_initial_pump(norms_file: Path = NORMS_FILE) -> bool | None:
+    """Значение флага `chargeInitialPump` из нормативов — или `None`, если его нет.
+
+    Флаг решает, платим ли мы за ЭЦН, уже стоящий в скважине на начало расчёта.
+    На заявке это 92,9 млн руб. разницы (`BLOCKED.md`, п. 0.1): два расчёта
+    одного и того же расписания с разными значениями флага дают разные деньги.
+    Поэтому он и попадает в машинный след — иначе следы неразличимы.
+
+    Значение читается из книги организаторов, а не задаётся у нас: «ДА»/«НЕТ»
+    в их файле, а не литерал в коде.
+    """
+    assumptions, _ = load_norms(norms_file)
+    value = assumptions.get("chargeInitialPump")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("да", "true", "yes", "1")
+    return None
 
 
 def load_records(source_file: Path) -> tuple[list[str], list[dict[str, Any]]]:

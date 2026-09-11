@@ -58,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="только покрытие, без сборки кейсов на диск")
     arguments = parser.parse_args(argv)
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     try:
         schedule = parse_schedule(layout(config.case.model_dir).one("SCHEDULE"))

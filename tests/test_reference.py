@@ -371,3 +371,62 @@ def test_events_agree_with_both_references_after_2004(
     tn_early = sum(tnavigator.rows[key][y] for y in early)
     assert opm_early == 108
     assert tn_early == 80
+
+
+# ── разрыв схем в окне, за которое заявляется число ──────────────────────────
+
+
+def test_the_window_of_the_gap_is_the_window_of_the_declared_number():
+    """Разрыв схем считается в том окне, в котором заявляется ЧДД.
+
+    До 09.09 он был известен только накопленным с начала книги — с 1991:
+    «1,20 % между расчётами организаторов». Но заявляется число за период
+    управления, а у эталонного расчётчика окно и база дисконтирования — один
+    параметр `--start-year`, и он равен 2007 (Р-249). Годы 1991–2006 в
+    заявляемое число не входят вовсе, а разрыв там втрое больше: на
+    разбуривании он доходит до 2,7 % по нефти. Считать его с 1991 значит
+    приписывать заявке чужую погрешность.
+    """
+    import simulator_gap
+
+    tables = simulator_gap.books()
+    assert len(tables) >= 2, "в docs/reference/ меньше двух раскладок"
+
+    for table in tables:
+        # тождество, которым проверяется само перенесение базы: сумма ЧДД с
+        # года, где коэффициент дисконтирования равен единице, и есть
+        # накопленное значение книги
+        assert simulator_gap.npv_in_window(table, table.start_year) == pytest.approx(
+            table.cumulative_chdd_m, abs=1e-9), table.path.name
+
+    wide = [simulator_gap.npv_in_window(one, 1991) for one in tables]
+    narrow = [simulator_gap.npv_in_window(one, 2007) for one in tables]
+
+    gap_wide = abs(wide[1] - wide[0]) / wide[0] * 100
+    gap_narrow = abs(narrow[1] - narrow[0]) / narrow[0] * 100
+
+    assert gap_wide == pytest.approx(1.20, abs=0.02), gap_wide
+    assert gap_narrow == pytest.approx(0.29, abs=0.02), gap_narrow
+    assert gap_narrow < gap_wide, (
+        "окно 2007 обязано давать разрыв меньше: годы разбуривания в заявку не входят"
+    )
+
+
+def test_injection_agrees_between_the_two_schemes_and_that_is_the_control():
+    """Закачка совпадает в ноль — это разделяющее наблюдение, а не совпадение.
+
+    Закачку задаёт расписание напрямую, нефть и жидкость получаются решением
+    уравнений. Если бы разошлась и она, перед нами были бы разные сценарии, а
+    не разные численные схемы, и сравнивать было бы нечего.
+    """
+    import simulator_gap
+
+    tables = simulator_gap.books()
+    years = [year for year in tables[0].years if year >= 2007]
+
+    worst = max(
+        abs(simulator_gap.relative(tables[1].series("Закачка")[year],
+                                   tables[0].series("Закачка")[year]))
+        for year in years
+    )
+    assert worst < 0.2, f"закачка разошлась на {worst:.2f} % — это разные сценарии"

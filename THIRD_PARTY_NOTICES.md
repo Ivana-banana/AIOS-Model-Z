@@ -25,7 +25,8 @@ notices, приложить текст лицензии, обозначить с
 
 Состав образа по `docker/Dockerfile`: база `ubuntu:24.04`; из `ppa:opm/ppa` —
 `libopm-simulators-bin` (OPM Flow) и его зависимости; `mpi-default-bin`,
-`python3`; далее `pip install -r requirements.txt`; затем копируются `aios/`,
+`python3`; далее `pip install --require-hashes -r requirements.lock`
+(39 пакетов с хэшами, `docker/Dockerfile:64`); затем копируются `aios/`,
 `scripts/`, `config.toml` и **`vendor/CHDD_PYTHON`** — код организаторов
 (см. `PROVENANCE_AND_RIGHTS.md`, п. 1).
 
@@ -38,9 +39,27 @@ notices, приложить текст лицензии, обозначить с
 | `opm-grid` (`libopm-grid`) | **2026.04-1~noble** | **GPL-3.0+** — формула `or later` подтверждена файлом `copyright` самого пакета; отдельные файлы GPL-2.0+ и «GPL-2 with DUNE exception» | https://github.com/OPM/opm-grid |
 | Open MPI (`libopenmpi3t64`, `mpi-default-bin`) | 4.1.6-7ubuntu2 и 1.15build1 | BSD-3-Clause (Open MPI) | https://www.open-mpi.org |
 | `resdata` | 6.3.3 | `GPL-3.0` — взято из метаданных установленного дистрибутива (`License-Expression`), проверено 22.08 | https://github.com/equinor/resdata |
+| `cwrap` | 1.6.16 | метаданные говорят `GPL-3.0`, а собственный notice пакета — «version 3 … or (at your option) any later version», то есть **GPL-3.0-or-later** | https://github.com/equinor/cwrap |
 
 Текст GPLv3 — `LICENSES/GPL-3.0.txt`; копия, приложенная самим `resdata`, —
-`LICENSES/resdata-6.3.3-GPL-3.0.txt`.
+`LICENSES/resdata-6.3.3-GPL-3.0.txt`; notice `cwrap` —
+`LICENSES/cwrap-1.6.16-GPL-3.0.txt`.
+
+`cwrap` — обязательная зависимость `resdata`, и до 09.09 в этом реестре её не
+было вовсе: раздел заведён ровно под GPLv3 §6, а компонент под GPL в нём
+отсутствовал.
+
+## 2-бис. LGPL-компоненты
+
+| Компонент | Версия | Лицензия | Текст в `LICENSES/` |
+|---|---|---|---|
+| `resfo` | 5.0.1 | LGPL-3.0-or-later | `resfo-5.0.1-LGPL-3.0-or-later.txt` |
+| `resfo-utilities` | 1.1.0 | LGPL-3.0-or-later | `resfo-utilities-1.1.0-LGPL-3.0-or-later.txt` |
+
+Обе — зависимости `resdata`, обе входят в образ через `requirements.lock`. Текст
+LGPLv3 — `LICENSES/LGPL-3.0.txt`. До 09.09 ни пакеты, ни текст лицензии в
+поставке не назывались: реестр описывал образ, собиравшийся из
+`requirements.txt`, а Dockerfile перешёл на lock ещё 22.08.
 
 **Откуда взяты версии и лицензии (важно для точности).** Не из образа, а из
 установки того же PPA `ppa:opm/ppa` в WSL Ubuntu 24.04 (noble) на машине А —
@@ -91,12 +110,19 @@ grep "^License:" /usr/share/doc/<пакет>/copyright | sort | uniq -c
 |---|---|---|---|
 | `numpy` | 2.5.2 | `BSD-3-Clause AND 0BSD AND MIT AND Zlib …` | `numpy-2.5.2-BSD-3-Clause.txt` |
 | `pandas` | 3.0.5 | BSD 3-Clause | `pandas-3.0.5-BSD-3-Clause.txt` |
-| `scipy` | 1.18.0 | BSD 3-Clause | `scipy-1.18.0-BSD-3-Clause.txt` |
+| `scipy` | **1.18.1** в `requirements.lock`; текст приложен от 1.18.0 — лицензия не менялась | BSD 3-Clause | `scipy-1.18.0-BSD-3-Clause.txt` |
+| `certifi` | 2026.7.22 | MPL-2.0 | https://mozilla.org/MPL/2.0/ |
 
-Остальные транзитивные пакеты (на 22.08 resolver выбирает около шестидесяти
-всего) здесь не перечислены: без lock-файла их состав не зафиксирован, и список
-устареет раньше, чем понадобится. Закрывается это lock-файлом с хэшами и SBOM
-образа — `BLOCKED.md`, п. 7.
+Остальные транзитивные пакеты перечислять построчно здесь незачем: состав
+образа **зафиксирован** `requirements.lock` — 39 пакетов, каждый с хэшем, и это
+и есть точный перечень. Прежняя редакция говорила «без lock-файла их состав не
+зафиксирован»; утверждение устарело 22.08, когда `docker/Dockerfile` перешёл на
+lock (`BLOCKED.md`, п. 7.1), и из-за него в реестре не оказалось трёх
+копилефт-компонентов — `cwrap`, `resfo`, `resfo-utilities` (найдено ревизией
+09.09). Копилефт из lock выбирается перебором метаданных установленных
+пакетов: `License-Expression` либо `License`, отбор по подстрокам GPL, MPL,
+EPL, CDDL. Тем же перебором сверена и версия SciPy — реестр называл 1.18.0,
+lock несёт 1.18.1.
 
 ## 4. Инструменты разработки
 

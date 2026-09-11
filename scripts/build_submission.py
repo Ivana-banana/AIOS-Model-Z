@@ -131,10 +131,16 @@ def reference_chdd(rows_file: Path, start_year: int, norms_file: Path,
         portable(item) if isinstance(item, Path) else str(item) for item in arguments
     ]
     completed = subprocess.run(command, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace")
+                               encoding="utf-8", errors="replace",
+                               env=economics.vendor_environment())
     if completed.returncode != 0:
         raise RuntimeError(
-            f"эталонный расчётчик отказал (код {completed.returncode}):\n{completed.stderr}"
+            f"эталонный расчётчик отказал (код {completed.returncode}):\n"
+            # Причину он печатает в stdout («Ошибка: …», РАСЧЕТ_ЧДД.py), а не в
+            # stderr, и до 09.09 сюда попадала пустая строка: оператор видел
+            # «отказал (код 1):» и ничего больше. Именно эту строку читают на
+            # валидационном кейсе, когда эталон отвергает выгрузку.
+            + "\n".join(part for part in (completed.stdout, completed.stderr) if part.strip())
         )
     raw = json.loads(json_file.read_text(encoding="utf-8"))
     return float(raw["summary"]["totalChddM"]), recorded
@@ -194,6 +200,10 @@ def main(argv: list[str] | None = None) -> int:
               "укажите отдельный каталог --out", file=sys.stderr)
         return 1
 
+    refusal = config_module.refusal(arguments.config)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 1
     config = config_module.load(arguments.config)
     refusal = norms_refusal(config.economics.norms_file)
     if refusal:
@@ -306,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
         "startYear": control_start.year,
         "vendorVersion": economics.VENDOR_VERSION,
         "normsSha256": digest(config.economics.norms_file, "sha256"),
+        "chargeInitialPump": economics.charge_initial_pump(config.economics.norms_file),
         "rowsMd5": digest(rows_file),
         "scheduleMd5": digest(target),
         "sourceScheduleMd5": digest(schedule_file),
