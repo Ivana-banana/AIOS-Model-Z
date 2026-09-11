@@ -47,7 +47,8 @@ SOFTWARE.
   `JOURNAL.md`, `HANDOFF.md`, `BLOCKED.md`, `MODIFICATIONS.md`,
   `STOP-BEFORE-SUBMIT.md`, `PROVENANCE_AND_RIGHTS.md`,
   `THIRD_PARTY_NOTICES.md`;
-* конфигурация и зависимости: `config.toml`, `config-doe-wide.toml`,
+* конфигурация и зависимости: `config.toml`, `config-model-z.toml`,
+  `config-doe-wide.toml`,
   `config-nobalance.toml`, `config-limits-check.toml`, `config-rehearsal.toml`,
   `pyproject.toml`, `requirements.txt`,
   `requirements-dev.txt`, `requirements-tools.txt`, `requirements.lock`,
@@ -67,6 +68,8 @@ SOFTWARE.
   приложен как свидетельство, а не как наш материал;
 * `manus-answered/` — отчёты внешнего разбора, выполненные сторонним сервисом по
   нашему запросу; авторство и условия использования не наши;
+* постановка валидационного кейса и расписание к нему, присланные
+  организаторами 11.09.2026, лежат в `materials/` — авторство и условия их;
 * `LICENSES/` — тексты чужих лицензий, приложенные дословно;
 * `data.7z`, `to-machine-b.7z` — архивы выгрузок и датасетов, производные от
   дека заказчика.

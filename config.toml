@@ -83,86 +83,60 @@ max_external_water_m3_per_day = 0
 # требуется: скважина кейса либо добывающая, либо нагнетательная, и в обоих
 # случаях остановка — это отсутствие режима у этой скважины в эти месяцы.
 
-[[limits.forced_shut_windows]]
-well = "90"
-start = 2007-04-01
-end = 2007-06-01
-
-[[limits.forced_shut_windows]]
-well = "27"
-start = 2007-12-01
-end = 2008-04-01
-
-[[limits.forced_shut_windows]]
-well = "54"
-start = 2008-03-01
-end = 2008-08-01
-
-[[limits.forced_shut_windows]]
-well = "59"
-start = 2008-10-01
-end = 2009-03-01
-
-[[limits.forced_shut_windows]]
-well = "75"
-start = 2009-05-01
-end = 2009-08-01
-
-[[limits.forced_shut_windows]]
-well = "6"
-start = 2009-12-01
-end = 2010-04-01
-
-[[limits.forced_shut_windows]]
-well = "3"
-start = 2020-04-01
-end = 2020-08-01
-
-[[limits.forced_shut_windows]]
-well = "26"
-start = 2020-11-01
-end = 2021-03-01
-
-[[limits.forced_shut_windows]]
-well = "30"
-start = 2021-05-01
-end = 2021-09-01
-
-[[limits.forced_shut_windows]]
-well = "24"
-start = 2021-12-01
-end = 2022-04-01
-
-[[limits.forced_shut_windows]]
-well = "47"
-start = 2022-06-01
-end = 2022-10-01
-
-[[limits.forced_shut_windows]]
-well = "13"
-start = 2023-02-01
-end = 2023-06-01
-
-# Скв. 54 останавливается во второй раз — окон у скважины может быть несколько.
-[[limits.forced_shut_windows]]
-well = "54"
-start = 2023-09-01
-end = 2024-01-01
-
-[[limits.forced_shut_windows]]
-well = "42"
-start = 2024-04-01
-end = 2024-08-01
-
-[[limits.forced_shut_windows]]
-well = "55"
-start = 2024-11-01
-end = 2025-03-01
-
-[[limits.forced_shut_windows]]
-well = "7"
-start = 2025-05-01
-end = 2025-09-01
+# --- необязательные ручки под валидационный кейс ------------------------------
+#
+# Ниже перечислены ключи, которых в этом файле нет намеренно: на Модели Z ни один
+# из них не нужен, а включённый по умолчанию любой из них изменил бы заявляемое
+# число. Кейс организаторов придёт со своими ограничениями («по давлениям, по
+# фонду, по закачке»), и тогда нужный ключ дописывается сюда — без правки кода.
+# Формы, которые мы не выражаем вовсе, перечислены в `docs/validation-case.md`,
+# раздел 9; там же сказано, что про них писать в отчёт.
+#
+# Пределы и режимы:
+#   min_producer_bhp_atm = 50            # иначе берётся из дека
+#   max_injector_bhp_atm = 300
+#   max_well_liquid_m3_per_day = 400     # потолок одной добывающей
+#   max_well_injection_m3_per_day = 300  # потолок одной нагнетательной
+#   max_field_liquid_m3_per_year = 4e6   # годовой объём отбора по объекту
+#   max_field_liquid_m3_total = 6e7      # то же за весь горизонт разработки
+#   max_field_injection_m3_total = 8e7
+#   max_watercut = 0.95                  # предел обводнённости (проверка по выгрузке)
+#   max_field_injection_m3_per_year = 6e6
+#   max_field_oil_t_per_day = 1200       # мощность УПН: предел по нефти
+#   max_field_water_t_per_day = 9000     # мощность УПСВ: предел по попутной воде
+#   water_tolerance_min = 0.85           # нижняя граница коридора баланса воды
+#   min_reservoir_pressure_atm = 50      # пластовое давление: проверка по факту
+#   max_reservoir_pressure_atm = 300
+#   field_limits_are_annual_average = true  # суточные пределы — среднее за год,
+#                                           # а не пик каждого месяца
+#
+# Фонд и мероприятия:
+#   controllable_wells = ["102", "305"]  # остальные остаются на историческом режиме
+#   forced_shut_wells = ["417"]          # остановлены на весь горизонт
+#   max_active_wells = 90
+#   max_events_per_year = 12             # остановки, пуски, переводы под закачку
+#   max_events_per_month = 3             # тот же счёт, но за календарный месяц
+#   min_regime_months = 3                # режим скважины держится не меньше трёх месяцев
+#   min_producer_rate_m3_per_day = 5     # ниже порога скважина не работает, а стоит
+#
+# Адресные потолки и группы:
+#   [limits.well_caps_m3_per_day]
+#   "102" = 250
+#
+#   [limits.well_groups]
+#   "куст-1" = ["102", "305"]            # скважина может входить в несколько групп
+#
+#   [limits.group_liquid_caps_m3_per_day]
+#   "куст-1" = 400
+#
+#   [limits.group_injection_caps_m3_per_day]
+#   "куст-1" = 300
+#
+# Обязательные остановки с окном дат (окон у скважины может быть несколько):
+#   [[limits.forced_shut_windows]]
+#   well = "102"
+#   start = 2027-01-01
+#   end = 2027-06-30
 
 [policy]
 lookback_months = 6
@@ -185,3 +159,73 @@ cache_dir = "artifacts/explanations"
 [run]
 seed = 20260817
 processes = 2
+
+# --- обязательные ремонты кейса --------------------------------------------
+# Стоят в конце файла намеренно: массив таблиц закрывает секцию [limits], и
+# ключ, дописанный после него, молча попал бы внутрь последнего окна, а не в
+# ограничения объекта.
+
+[[limits.forced_shut_windows]]
+well = "90"
+start = 2007-04-01
+end = 2007-06-01
+[[limits.forced_shut_windows]]
+well = "27"
+start = 2007-12-01
+end = 2008-04-01
+[[limits.forced_shut_windows]]
+well = "54"
+start = 2008-03-01
+end = 2008-08-01
+[[limits.forced_shut_windows]]
+well = "59"
+start = 2008-10-01
+end = 2009-03-01
+[[limits.forced_shut_windows]]
+well = "75"
+start = 2009-05-01
+end = 2009-08-01
+[[limits.forced_shut_windows]]
+well = "6"
+start = 2009-12-01
+end = 2010-04-01
+[[limits.forced_shut_windows]]
+well = "3"
+start = 2020-04-01
+end = 2020-08-01
+[[limits.forced_shut_windows]]
+well = "26"
+start = 2020-11-01
+end = 2021-03-01
+[[limits.forced_shut_windows]]
+well = "30"
+start = 2021-05-01
+end = 2021-09-01
+[[limits.forced_shut_windows]]
+well = "24"
+start = 2021-12-01
+end = 2022-04-01
+[[limits.forced_shut_windows]]
+well = "47"
+start = 2022-06-01
+end = 2022-10-01
+[[limits.forced_shut_windows]]
+well = "13"
+start = 2023-02-01
+end = 2023-06-01
+[[limits.forced_shut_windows]]
+well = "54"
+start = 2023-09-01
+end = 2024-01-01
+[[limits.forced_shut_windows]]
+well = "42"
+start = 2024-04-01
+end = 2024-08-01
+[[limits.forced_shut_windows]]
+well = "55"
+start = 2024-11-01
+end = 2025-03-01
+[[limits.forced_shut_windows]]
+well = "7"
+start = 2025-05-01
+end = 2025-09-01

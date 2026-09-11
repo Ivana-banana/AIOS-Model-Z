@@ -174,3 +174,14 @@ __pycache__/
 # Служебная передача между машинами А и Б (3,4 МБ): та же история, тот же путь —
 # файл едет архивом мимо git, отпечатки в HANDOFF.md.
 /to-machine-b.7z
+
+# Слитый PDF материалов (96 МБ): собирается локально из materials/, в git ему
+# места нет — правило «крупные бинарники не кладём» (CLAUDE.md).
+/merged.pdf
+
+# Деки и расписания валидационного кейса, собранные локально:
+# vendor/Model_Z_case — копия поставки с подменённым SCHEDULE (78 МБ),
+# vendor/case_deck* — промежуточные сборки adopt_history.
+/vendor/Model_Z_case/
+/vendor/case_deck/
+/vendor/case_deck_opm_sch.inc
