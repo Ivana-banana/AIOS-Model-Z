@@ -286,6 +286,125 @@ def compensation_problems(rows: list[dict[str, Any]],
     return over
 
 
+ROLLING_COMPENSATION_MONTHS = 3
+"""Окно скользящего среднего компенсации, месяцев — умолчание валидационного кейса.
+
+Кейс задаёт его словами: «Для оценки используется скользящее среднее за три
+месяца, чтобы единичный ремонт или запуск скважины не приводил к формальному
+нарушению условия». Величина здесь — умолчание, а не константа: в конфигурации
+есть ключ `compensation_window_months`, и другой кейс назовёт другое число.
+"""
+
+
+@dataclass(frozen=True)
+class MonthBalance:
+    """Баланс по объекту за календарный месяц, поверхностные условия."""
+
+    stamp: str
+    """Метка месяца `YYYY-MM` — так же, как она приходит в колонке DATA."""
+
+    oil_m3: float
+    water_m3: float
+    injected_m3: float
+    days: float
+
+    @property
+    def liquid_m3(self) -> float:
+        return self.oil_m3 + self.water_m3
+
+
+def by_month(rows: list[dict[str, Any]], fluids: Fluids | None = None) -> list[MonthBalance]:
+    """Тот же баланс, что `by_year`, но помесячно.
+
+    Нужен там, где ограничение сформулировано «в любой момент времени» или через
+    скользящее окно: годовой свод такие условия проверить не может в принципе —
+    он усредняет ровно то, что проверяется.
+    """
+    fluids = fluids or Fluids()
+    totals: dict[str, list[float]] = {}
+
+    for row in rows:
+        # Отбор строк — тот же, что в `by_year`: строка с любым отрицательным
+        # приращением исключается целиком, а не обнуляется.
+        if not counted_by_methodology(row):
+            continue
+        stamp = str(row["DATA"])[:7]
+        bucket = totals.setdefault(stamp, [0.0, 0.0, 0.0])
+        bucket[0] += row["WOMT_Diff"] * 1000.0 / fluids.oil_density
+        bucket[1] += max(row["WLPT_Diff"] - row["WOMT_Diff"], 0.0) * 1000.0 / fluids.water_density
+        bucket[2] += row["WWIT_Diff"]
+
+    return [
+        MonthBalance(stamp=stamp, oil_m3=values[0], water_m3=values[1],
+                     injected_m3=values[2], days=days_of({stamp}))
+        for stamp, values in sorted(totals.items())
+    ]
+
+
+def rolling_compensation_problems(rows: list[dict[str, Any]],
+                                  fluids: Fluids | None = None,
+                                  ceiling: float = 1.15,
+                                  floor: float = 0.85,
+                                  oil_fvf: float = 1.0,
+                                  water_fvf: float = 1.0,
+                                  window: int = ROLLING_COMPENSATION_MONTHS) -> list[str]:
+    """Нарушения коридора компенсации по скользящему среднему за `window` месяцев.
+
+    Третья формулировка баланса — и первая, заданная кейсом дословно, а не
+    выведенная нами. От `compensation_problems` отличается окном и только им:
+    та судит по накопленному с начала горизонта, эта — по последним трём
+    месяцам. Разница не косметическая. Накопленное отношение к 2020 году
+    держится инерцией предыдущих тринадцати лет и не заметит, что весь 2019-й
+    объект недокомпенсирован на 30 %; скользящее окно заметит. Обратное тоже
+    верно: одиночный месяц с остановленной нагнетательной скважиной в накоплении
+    не виден, а в окне из одного месяца был бы нарушением — поэтому кейс и
+    требует именно окна, а не месяца.
+
+    Среднее считается **отношением сумм** за окно, а не средним из трёх
+    помесячных отношений. Это не вкус: помесячное отношение при почти нулевом
+    отборе улетает в бесконечность, и среднее из таких чисел говорит о
+    делении на малое, а не о заводнении. Отношение сумм — та же величина, что
+    считает промысел, и она невосприимчива к короткому простою.
+
+    Окна короче `window` месяцев пропускаются: первые месяцы горизонта оценивать
+    неполным окном значило бы вернуть ровно ту чувствительность к единичному
+    событию, ради устранения которой окно и введено.
+
+    `oil_fvf`, `water_fvf` — объёмные коэффициенты, смысл и умолчания те же, что
+    у `compensation_problems`.
+    """
+    if window < 1:
+        raise ValueError(f"окно скользящей компенсации должно быть не меньше месяца, получено {window}")
+    if floor > ceiling:
+        raise ValueError(
+            f"пустой коридор компенсации: нижняя граница {floor:.10g} выше верхней {ceiling:.10g}"
+        )
+
+    months = by_month(rows, fluids)
+    over: list[str] = []
+    for end in range(window - 1, len(months)):
+        chunk = months[end - window + 1:end + 1]
+        withdrawn = sum(item.oil_m3 * oil_fvf + item.water_m3 * water_fvf for item in chunk)
+        injected = sum(item.injected_m3 * water_fvf for item in chunk)
+        span = f"{chunk[0].stamp}…{chunk[-1].stamp}"
+        if withdrawn <= 0:
+            if injected > 0:
+                over.append(f"{span}: закачано {injected:,.0f} м³ при нулевом отборе — "
+                            f"возмещать нечего")
+            continue
+        ratio = injected / withdrawn
+        # Допуск тот же и по той же причине, что в `compensation_problems`:
+        # планировщик приводит закачку ровно к границе, и без допуска его
+        # собственная срезка объявляется нарушением в последнем знаке.
+        if ratio > ceiling * (1 + 1e-9):
+            over.append(f"{span}: компенсация {ratio * 100:.0f}% по скользящему среднему за "
+                        f"{window} мес. — выше предела {ceiling * 100:.0f}%")
+        elif ratio < floor * (1 - 1e-9):
+            over.append(f"{span}: компенсация {ratio * 100:.0f}% по скользящему среднему за "
+                        f"{window} мес. — ниже границы {floor * 100:.0f}%")
+    return over
+
+
 def historic_external_water(rows: list[dict[str, Any]],
                             fluids: Fluids | None = None) -> float:
     """Максимальный годовой приток сторонней воды в истории объекта, м³/сут.

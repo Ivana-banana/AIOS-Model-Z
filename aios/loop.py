@@ -662,9 +662,21 @@ def _case_problems(steps: list[ScheduleStep] | tuple[ScheduleStep, ...],
         first_year = min((int(str(row["DATA"])[:4]) for row in rows), default=None)
         carried = _carried_water(history_rows, first_year, limits, fluids)
         if limits.water_balance_rule == "compensation":
-            left += balance.compensation_problems(
-                rows, fluids, limits.water_tolerance, floor=limits.water_tolerance_min,
-                carried=carried)
+            if limits.compensation_window_months is not None:
+                # Кейс задал окно словами — значит судим окном, а не накоплением.
+                # Перенос истории здесь не нужен и был бы ошибкой: скользящее
+                # окно по построению смотрит только на последние месяцы, и
+                # приклеивать к нему накопленное с 1991 года значит считать
+                # другую величину.
+                left += balance.rolling_compensation_problems(
+                    rows, fluids, limits.water_tolerance,
+                    floor=limits.water_tolerance_min if limits.water_tolerance_min
+                    is not None else 0.0,
+                    window=limits.compensation_window_months)
+            else:
+                left += balance.compensation_problems(
+                    rows, fluids, limits.water_tolerance, floor=limits.water_tolerance_min,
+                    carried=carried)
         elif limits.water_balance_rule == "external_water":
             left += balance.external_water_problems(
                 rows, fluids, limits.max_external_water_m3_per_day)

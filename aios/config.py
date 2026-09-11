@@ -180,6 +180,7 @@ def load(path: str | Path = DEFAULT_PATH) -> Config:
             # изменилось бы от одной правки схемы.
             water_tolerance_min=_optional_positive(limits, "water_tolerance_min",
                                                    "limits", source),
+            compensation_window_months=_optional_window(limits, source),
             # Ручки под валидационный кейс (Р-110). У всех умолчание «ключа нет —
             # ограничения нет»: это единственные ключи в конфигурации, которые
             # можно не писать, и так сделано намеренно. Кейс придёт со своим
@@ -355,6 +356,24 @@ def _reject_unknown_limits(section: dict, source: Path) -> None:
             f"и условие кейса не применилось бы молча. Известные ключи: "
             f"{', '.join(sorted(known))}"
         )
+
+
+def _optional_window(section: dict, source: Path) -> int | None:
+    """Окно скользящей компенсации в месяцах. Ключа нет — судим по накопленному.
+
+    Читается целым и только целым: 3.0 из TOML — уже вещественное, а окно в
+    «трёх с половиной месяцах» не выражается шагом расписания.
+    """
+    key = "compensation_window_months"
+    if key not in section:
+        return None
+    value = section[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(
+            f"В {source} значение {key} в секции [limits] должно быть целым числом "
+            f"месяцев не меньше 1, получено {value!r}"
+        )
+    return value
 
 
 def _shut_windows(section: dict, source: Path) -> tuple[ShutWindow, ...] | None:
