@@ -17,7 +17,7 @@ import pytest
 
 from aios import balance, config
 
-CASE = Path(__file__).resolve().parents[1] / "config-case.toml"
+CASE = Path(__file__).resolve().parents[1] / "config.toml"
 
 
 @pytest.fixture(scope="module")

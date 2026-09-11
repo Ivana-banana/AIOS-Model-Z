@@ -65,7 +65,7 @@ RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock
 
 COPY aios /opt/aios/aios
 COPY scripts /opt/aios/scripts
-COPY config.toml /opt/aios/config.toml
+COPY config.toml config-model-z.toml config-doe-wide.toml config-nobalance.toml config-rehearsal.toml config-limits-check.toml /opt/aios/
 COPY vendor/CHDD_PYTHON /opt/aios/vendor/CHDD_PYTHON
 
 # Лицензии едут вместе с образом, а не остаются в репозитории: получатель образа
